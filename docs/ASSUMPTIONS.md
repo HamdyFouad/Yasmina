@@ -1,8 +1,9 @@
-# P0 Inference Notes — Domain Schema Assumptions
+# P0/P1 Inference Notes — Domain & Service Assumptions
 
-Sections 5–8 of `docs/DETAILED_SPEC.md` (field-by-field schemas) are not yet
-published. This file records the contract that was inferred for P0.1/P0.2 so it
-can be reconciled with the authoritative spec later.
+Sections 5–8 of `docs/DETAILED_SPEC.md` (field-by-field schemas and pricing
+rules) are not yet published. This file records the contract inferred for the
+P0 foundation and the P1 parsers/pricing/matching services so it can be
+reconciled with the authoritative spec later.
 
 ## Conventions
 
@@ -24,6 +25,29 @@ can be reconciled with the authoritative spec later.
 | `SupplierQuoteLine` | line number, description, tender item link, material/colour/size, quantity/unit, unit price, MOQ, volume tiers, pack, GTIN, delivery days |
 | `CustomerOffer` | offer number, customer, tender link, status, lines, margin, net/VAT/gross, validity, terms, Ed25519 approval, ERPNext reference, GAEB export path |
 
+## Service assumptions (P1)
+
+- **Pricing:** volume tier price applies to the whole line quantity; the highest
+  qualifying tier wins. MOQ/pack rounding is opt-in (`round_to_moq=True`) because
+  the customer-facing quantity usually stays at the tendered amount. Margin is a
+  fraction (0.15 = 15 %), unit prices round half-up to 4 dp, totals to 2 dp.
+- **Matching:** stage 1 rejects only when both sides expose a conflicting
+  material/colour/glove size/unit — missing catalogue attributes are not
+  penalized. Stage 2 uses 40 % lexical / 60 % embedding cosine by default, with
+  a small exact-attribute bonus; callers supply query embeddings from pgvector.
+- **GAEB parsing:** full OZ is used as `position_number`; missing quantities,
+  unknown units and duplicate positions are reported as warnings. Missing dates
+  fall back to `now + 30 days`; missing clients use a placeholder.
+- **GAEB writing:** only approved offers with an Ed25519 signature and payload
+  hash may produce `.x84`. Position prices are matched by full OZ, falling back
+  to the leaf OZ.
+- **GAEB validation:** penny reconciliation compares item and document totals
+  with a one-cent threshold. XSD validation requires an explicit `xsd_dir`; the
+  official schemas are not bundled with the project.
+- **PDF parsing:** Docling table rows are mapped through German header aliases;
+  rows without a position, description or positive quantity are skipped with a
+  warning.
+
 ## Open questions for spec reconciliation
 
 1. Exact naming of the GAEB/PDF "source format" enum values.
@@ -36,7 +60,8 @@ can be reconciled with the authoritative spec later.
 
 ## Hash-chained audit log
 
-`audit_logs` is append-only (UPDATE/DELETE blocked by trigger) and chained with
-SHA-256 over canonical JSON including `id`, `occurred_at`, `event_type`,
-`actor`, `entity_type`, `entity_id`, `payload` and `prev_hash`. The audit writer
-service (not part of P0) must serialize entries and verify the chain.
+`audit_logs` is append-only (UPDATE/DELETE/TRUNCATE blocked by triggers) and
+chained with SHA-256 over canonical JSON including `id`, `occurred_at`,
+`event_type`, `actor`, `entity_type`, `entity_id`, `payload` and `prev_hash`.
+The audit writer service (not yet implemented) must serialize entries and verify
+the chain.

@@ -6,10 +6,10 @@
 cleaning & hygiene supplies sector** — paper towels, nitrile/latex gloves, and
 waste bags across all thicknesses, volumes and colour standards.
 
-> **Status:** P0 foundation complete (configuration, strict domain schemas, ORM,
-> PostgreSQL/pgvector migrations, hash-chained audit log). Parsers, pricing /
-> matching services, LangGraph agents and e-invoicing generators are the next
-> milestones.
+> **Status:** P0 foundation and the P1 parsing/pricing/matching core are complete:
+> GAEB/PDF ingestion, XSD/penny validation, deterministic pricing, hybrid matching
+> and the FastAPI startup lifecycle. LangGraph agents, ERPNext/n8n integrations
+> and e-invoicing generators are the next milestones.
 
 ---
 
@@ -63,10 +63,13 @@ src/
     schemas.py           # strict Pydantic v2 domain models
     orm.py               # SQLAlchemy 2.0 mappings + pgvector
   parsers/
-    normalizers.py       # German text → enums / Decimal (implemented)
-    pdf_parser.py        # planned
-    gaeb_parser.py       # planned
-  services/              # planned: matching, pricing, unit conversion
+    normalizers.py       # German text → enums / Decimal
+    gaeb_parser.py       # pyGAEB .x83/.d83 reader, approved .x84 writer
+    gaeb_validator.py    # XSD + penny reconciliation
+    pdf_parser.py        # Docling LV table extraction
+  services/
+    pricing_service.py   # pure-Decimal tiers, MOQ, margin, VAT
+    matching_service.py  # two-stage rule filter + lexical/embedding ranking
   agents/                # planned: LangGraph state machine
   integrations/          # planned: ERPNext, n8n, Telegram clients
   generators/            # planned: ZUGFeRD, XRechnung
@@ -173,9 +176,27 @@ PostgreSQL, pgvector, MinIO authentication or ClamAV fail, startup aborts with a
 python -m pytest -q
 ```
 
-The current 140 tests cover normalizers, settings, strict schemas, ORM metadata,
-pgvector/HNSW configuration, MinIO/ClamAV preflight checks, FastAPI lifespan,
-and offline migration rendering.
+The current 170 tests cover normalizers, settings, strict schemas, ORM metadata,
+pgvector/HNSW configuration, GAEB parsing/validation, PDF table extraction,
+pricing, hybrid matching, FastAPI lifespan and offline migration rendering.
+
+### Parsing, pricing and matching
+
+```python
+from decimal import Decimal
+
+from src.parsers.gaeb_parser import parse_gaeb, write_x84
+from src.services.pricing_service import PricingService
+from src.services.matching_service import HybridMatchingService
+
+parsed = parse_gaeb("tender.x83")
+pricing = PricingService().price_offer(quote.lines, margin_rate=Decimal("0.15"))
+matches = HybridMatchingService().rank(tender_item, catalog_candidates)
+```
+
+GAEB validation supports optional XSD schemas (point `xsd_dir` at the official
+GAEB 2021-05 schemas) and always runs deterministic penny reconciliation. The
+X84 writer refuses unsigned or non-approved offers.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs the same suite on Python 3.11
 and 3.12, compiles the sources, renders the initial Alembic migration SQL and
@@ -244,10 +265,10 @@ the default application secret.
 - [x] P0.1 — tooling, environment, Docker services (PostgreSQL/pgvector, MinIO,
       ClamAV, n8n), configuration, preflight checks
 - [x] P0.2 — strict schemas, ORM, pgvector, Alembic, audit log
-- [ ] P1 — GAEB/PDF parsers, unit conversion, pricing & matching services
+- [x] P1 — GAEB/PDF parsers, XSD/penny validation, pricing and hybrid matching
 - [x] P1 — FastAPI health/readiness endpoints and startup preflight lifespan
-- [ ] P1 — business endpoints, LangGraph orchestration, HITL approval service
-- [ ] P2 — ERPNext/n8n integrations, ZUGFeRD/XRechnung, GAEB `.x84` export
+- [ ] P1 — unit conversion, business endpoints, LangGraph orchestration, HITL signature verification
+- [ ] P2 — ERPNext/n8n integrations, ZUGFeRD/XRechnung generators
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and
 `docs/ASSUMPTIONS.md` for fields inferred while Sections 5–8 are still being

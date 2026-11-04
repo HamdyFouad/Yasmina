@@ -294,6 +294,15 @@ def normalize_material(raw: str | None) -> MaterialType:
     if scanned is not None:
         return scanned
 
+    # German compounds such as "Nitrilhandschuhe" or "Papierhandtücher" do not
+    # have word boundaries before the material keyword.
+    for keyword in sorted(GERMAN_MATERIAL_MAP, key=len, reverse=True):
+        if len(keyword) < 4 or keyword not in cleaned:
+            continue
+        if keyword == "latex" and "latexfrei" in cleaned:
+            continue
+        return GERMAN_MATERIAL_MAP[keyword]
+
     return MaterialType.NOT_APPLICABLE
 
 
