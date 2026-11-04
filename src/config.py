@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     minio_bucket: str = "yasmina"
     minio_secure: bool = False
 
+    # --- ClamAV ------------------------------------------------------------
+    clamav_host: str = "localhost"
+    clamav_port: int = Field(default=3310, ge=1, le=65535)
+    clamav_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    preflight_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+
     # --- LLM / embeddings --------------------------------------------------
     deepseek_api_key: SecretStr | None = None
     deepseek_base_url: str = "https://api.deepseek.com/v1"
@@ -158,6 +164,13 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
+
+    @property
+    def asyncpg_dsn(self) -> str:
+        """Database URL in the plain ``postgresql://`` form asyncpg expects."""
+
+        assert self.database_url is not None  # guaranteed by validator
+        return self.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
 
     @property
     def database_dsn_safe(self) -> str:

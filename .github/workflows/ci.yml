@@ -53,6 +53,7 @@ jobs:
           grep -q "CREATE EXTENSION IF NOT EXISTS vector" migration.sql
           grep -q "USING hnsw (embedding vector_cosine_ops)" migration.sql
           grep -q "CREATE TRIGGER trg_audit_logs_append_only" migration.sql
+          grep -q "CREATE TRIGGER trg_audit_logs_no_truncate" migration.sql
           grep -q "INSERT INTO alembic_version" migration.sql
           echo "Migration SQL rendered and verified."
 

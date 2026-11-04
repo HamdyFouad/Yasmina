@@ -3,7 +3,7 @@
 # ERPNext is intentionally NOT part of this stack: it is deployed as a separate
 # isolated system and reached only through its REST API (see AGENTS.md).
 #
-# Start core services:      docker compose up -d postgres minio
+# Start core services:      docker compose up -d postgres minio clamav
 # Start with automation:    docker compose --profile automation up -d
 #
 # The application itself runs on the host (uvicorn), not in this compose file.
@@ -35,7 +35,9 @@ services:
       - yasmina
 
   minio:
-    image: minio/minio:latest
+    # Upstream MinIO registries stopped serving anonymous pulls; pgsty mirrors
+    # the official release binaries. Release tags are pinned for reproducibility.
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
     container_name: yasmina-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -57,7 +59,7 @@ services:
       - yasmina
 
   minio-init:
-    image: minio/mc:latest
+    image: pgsty/mc:RELEASE.2026-10-26T00-00-00Z
     container_name: yasmina-minio-init
     depends_on:
       minio:
@@ -73,6 +75,25 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-yasmina-minio-secret}
       MINIO_BUCKET: ${MINIO_BUCKET:-yasmina}
     restart: "no"
+    networks:
+      - yasmina
+
+  clamav:
+    image: clamav/clamav:stable
+    container_name: yasmina-clamav
+    restart: unless-stopped
+    environment:
+      CLAMAV_NO_MILTERD: "true"
+    ports:
+      - "127.0.0.1:${CLAMAV_PORT:-3310}:3310"
+    volumes:
+      - clamav_data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
     networks:
       - yasmina
 
@@ -114,4 +135,5 @@ networks:
 volumes:
   postgres_data:
   minio_data:
+  clamav_data:
   n8n_data:

@@ -38,6 +38,7 @@ When given an implementation task:
 - Setup: `python -m pip install -e ".[dev]"` and copy `.env.example` to `.env`.
 - Tests: `python -m pytest -q` (config lives in `pyproject.toml`).
 - Lint / types: `ruff check .` and `mypy src`.
-- Infrastructure: `docker compose up -d postgres minio` (add `--profile automation` for n8n).
+- Infrastructure: `docker compose up -d postgres minio clamav` (add `--profile automation` for n8n).
+- Preflight: `python -m src.preflight` (or `python -m src.preflight --json`).
 - Migrations: `alembic upgrade head`; offline SQL preview: `alembic upgrade head --sql`.
 - Spec gaps and inferred schema fields are tracked in `docs/ASSUMPTIONS.md`.

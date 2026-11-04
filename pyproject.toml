@@ -51,6 +51,9 @@ dev = [
 [project.urls]
 Repository = "https://github.com/HamdyFouad/Yasmina"
 
+[project.scripts]
+yasmina-preflight = "src.preflight:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
 

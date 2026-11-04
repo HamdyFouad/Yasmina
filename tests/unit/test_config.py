@@ -25,6 +25,15 @@ def test_explicit_sync_url_is_upgraded_to_asyncpg() -> None:
     settings = make_settings(database_url="postgresql://u:p@db:5432/yasmina")
 
     assert settings.database_url == "postgresql+asyncpg://u:p@db:5432/yasmina"
+    assert settings.asyncpg_dsn == "postgresql://u:p@db:5432/yasmina"
+
+
+def test_clamav_defaults() -> None:
+    settings = make_settings()
+
+    assert settings.clamav_host == "localhost"
+    assert settings.clamav_port == 3310
+    assert settings.preflight_timeout_seconds == 5.0
 
 
 def test_unsupported_database_scheme_is_rejected() -> None:

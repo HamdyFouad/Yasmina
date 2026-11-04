@@ -602,8 +602,8 @@ class AuditLog(Base):
     """Append-only, hash-chained audit entry.
 
     ``id`` doubles as the chain position. ``prev_hash`` is the ``entry_hash``
-    of the previous row (``NULL`` for genesis). Rows are immutable: the initial
-    migration installs a trigger rejecting UPDATE and DELETE.
+    of the previous row (``NULL`` for genesis). Rows are immutable: migrations
+    install triggers rejecting UPDATE, DELETE and TRUNCATE.
     """
 
     __tablename__ = "audit_logs"

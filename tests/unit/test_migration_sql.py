@@ -27,6 +27,7 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert "CREATE TABLE audit_logs" in sql
     assert "USING hnsw (embedding vector_cosine_ops)" in sql
     assert "CREATE TRIGGER trg_audit_logs_append_only" in sql
+    assert "CREATE TRIGGER trg_audit_logs_no_truncate" in sql
     assert "INSERT INTO alembic_version" in sql
     assert sql.rstrip().endswith("COMMIT;")
 
