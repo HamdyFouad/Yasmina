@@ -422,13 +422,14 @@ def write_x84(
     prog_system: str = "Project Yasmina",
     prog_name: str = "Yasmina",
     xsd_dir: str | Path | None = None,
-    approval_service: ApprovalService | None = None,
+    approval_service: ApprovalService,
 ) -> tuple[str, ...]:
     """Write an approved offer as a GAEB ``.x84`` bid.
 
     The pyGAEB document from :func:`parse_gaeb` must be reused so the bid keeps
     the tender's positions and identifiers. Unit prices are copied from the
-    offer lines by position number.
+    offer lines by position number. ``approval_service`` must verify the
+    offer's Ed25519 signature against the configured public key.
     """
 
     try:
@@ -441,7 +442,7 @@ def write_x84(
         raise GaebExportError(f"GAEB bid output must use the .x84 extension, got {output_path.suffix!r}")
 
     _ensure_exportable(offer)
-    if approval_service is not None and not approval_service.verify(offer):
+    if not approval_service.verify(offer):
         raise GaebExportError("offer Ed25519 signature does not verify against the configured public key")
 
     prices: dict[str, Decimal] = {}

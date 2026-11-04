@@ -18,11 +18,15 @@ from src.models.enums import (
 )
 from src.models.schemas import CustomerOffer, CustomerOfferLine, q2, q4
 from src.parsers.gaeb_parser import GaebExportError, parse_gaeb, write_x84
+from src.services.approval_service import ApprovalService, generate_keypair, sign_offer
 
 pygaeb = pytest.importorskip("pygaeb")
 
 from pygaeb import ExchangePhase, GAEBParser, GAEBWriter  # noqa: E402
 from pygaeb.builder import BoQBuilder  # noqa: E402
+
+PRIVATE_KEY_HEX, PUBLIC_KEY_HEX = generate_keypair()
+APPROVAL = ApprovalService(PUBLIC_KEY_HEX)
 
 
 def build_x83(workspace_tmp: Path) -> Path:
@@ -65,21 +69,25 @@ def make_offer(item_position: str, *, status: CustomerOfferStatus = CustomerOffe
     )
     net = line.total_net
     vat = q2(net * Decimal("0.19"))
-    return CustomerOffer(
+    draft = CustomerOffer(
         offer_number="AN-2026-0001",
         customer_name="Stadt Muster",
-        status=status,
+        status=CustomerOfferStatus.DRAFT,
         lines=[line],
         margin_rate=margin,
         total_net=net,
         total_vat=vat,
         total_gross=q2(net + vat),
         valid_until=date(2026, 12, 31),
-        ed25519_approval_signature="ab" * 64,
-        approval_payload_hash="cd" * 32,
-        approved_by="C. Mueller",
-        approved_at=datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc),
     )
+    if status is CustomerOfferStatus.APPROVED:
+        return sign_offer(
+            draft,
+            PRIVATE_KEY_HEX,
+            approver="C. Mueller",
+            approved_at=datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc),
+        )
+    return draft
 
 
 def test_parse_x83_into_tender(workspace_tmp) -> None:  # type: ignore[no-untyped-def]
@@ -112,7 +120,7 @@ def test_write_x84_with_approved_offer(workspace_tmp) -> None:  # type: ignore[n
     offer = make_offer(parsed.tender.items[0].position_number)
     output = workspace_tmp / "bid.x84"
 
-    warnings = write_x84(parsed.document, offer, output)
+    warnings = write_x84(parsed.document, offer, output, approval_service=APPROVAL)
 
     assert output.is_file()
     assert isinstance(warnings, tuple)
@@ -121,6 +129,21 @@ def test_write_x84_with_approved_offer(workspace_tmp) -> None:  # type: ignore[n
     assert written_item.unit_price == Decimal("11.0000")
     assert written_item.total_price == Decimal("110.00")
     assert written.grand_total == Decimal("110.00")
+
+
+def test_write_x84_rejects_wrong_approval_key(workspace_tmp) -> None:  # type: ignore[no-untyped-def]
+    path = build_x83(workspace_tmp)
+    parsed = parse_gaeb(path)
+    offer = make_offer(parsed.tender.items[0].position_number)
+    _, wrong_public = generate_keypair()
+
+    with pytest.raises(GaebExportError, match="does not verify"):
+        write_x84(
+            parsed.document,
+            offer,
+            workspace_tmp / "bid.x84",
+            approval_service=ApprovalService(wrong_public),
+        )
 
 
 def test_write_x84_requires_approval(workspace_tmp) -> None:  # type: ignore[no-untyped-def]
@@ -132,7 +155,7 @@ def test_write_x84_requires_approval(workspace_tmp) -> None:  # type: ignore[no-
     )
 
     with pytest.raises(GaebExportError, match="not approved"):
-        write_x84(parsed.document, offer, workspace_tmp / "bid.x84")
+        write_x84(parsed.document, offer, workspace_tmp / "bid.x84", approval_service=APPROVAL)
 
 
 def test_write_x84_requires_x84_suffix(workspace_tmp) -> None:  # type: ignore[no-untyped-def]
@@ -141,7 +164,7 @@ def test_write_x84_requires_x84_suffix(workspace_tmp) -> None:  # type: ignore[n
     offer = make_offer(parsed.tender.items[0].position_number)
 
     with pytest.raises(GaebExportError, match=".x84"):
-        write_x84(parsed.document, offer, workspace_tmp / "bid.x83")
+        write_x84(parsed.document, offer, workspace_tmp / "bid.x83", approval_service=APPROVAL)
 
 
 def test_parse_rejects_unsupported_extension(workspace_tmp) -> None:  # type: ignore[no-untyped-def]

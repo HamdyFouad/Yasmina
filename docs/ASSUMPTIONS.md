@@ -61,8 +61,9 @@ reconciled with the authoritative spec later.
   UTF-8) covering the offer, its lines, totals, approver and approval timestamp.
   The Ed25519 signature signs those bytes; the stored SHA-256 hash is a separate
   integrity value. Private keys never belong on the application server.
-- The X84 writer can verify against an `ApprovalService`; the orchestration layer
-  always passes the configured verifier.
+- The X84 writer requires a configured `ApprovalService` and verifies the offer
+  signature cryptographically before writing; the orchestration layer supplies
+  the public-key verifier.
 
 ## Open questions for spec reconciliation
 

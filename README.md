@@ -181,7 +181,7 @@ PostgreSQL, pgvector, MinIO authentication or ClamAV fail, startup aborts with a
 python -m pytest -q
 ```
 
-The current 183 tests cover normalizers, settings, strict schemas, ORM metadata,
+The current 184 tests cover normalizers, settings, strict schemas, ORM metadata,
 pgvector/HNSW configuration, GAEB parsing/validation, PDF table extraction,
 pricing, hybrid matching, LangGraph orchestration, Ed25519 approval, FastAPI
 lifespan and offline migration rendering.
@@ -202,7 +202,8 @@ matches = HybridMatchingService().rank(tender_item, catalog_candidates)
 
 GAEB validation supports optional XSD schemas (point `xsd_dir` at the official
 GAEB 2021-05 schemas) and always runs deterministic penny reconciliation. The
-X84 writer refuses unsigned or non-approved offers.
+X84 writer requires an approved offer plus an `ApprovalService` that verifies
+the Ed25519 signature.
 
 ### Agent workflow and HITL approval
 
