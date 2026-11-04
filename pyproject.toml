@@ -48,6 +48,9 @@ dev = [
     "mypy>=1.11",
 ]
 
+[project.urls]
+Repository = "https://github.com/HamdyFouad/Yasmina"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
 

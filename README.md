@@ -1,5 +1,7 @@
 # Project Yasmina
 
+[![CI](https://github.com/HamdyFouad/Yasmina/actions/workflows/ci.yml/badge.svg)](https://github.com/HamdyFouad/Yasmina/actions/workflows/ci.yml)
+
 **AI-orchestrated B2B sourcing, pricing and tender-bidding engine for the German
 cleaning & hygiene supplies sector** — paper towels, nitrile/latex gloves, and
 waste bags across all thicknesses, volumes and colour standards.
@@ -132,6 +134,10 @@ python -m pytest -q
 
 The current 126 tests cover normalizers, settings, strict schemas, ORM metadata,
 pgvector/HNSW configuration and offline migration rendering.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the same suite on Python 3.11
+and 3.12, compiles the sources, renders the initial Alembic migration SQL and
+checks that `.env` is never tracked.
 
 ---
 

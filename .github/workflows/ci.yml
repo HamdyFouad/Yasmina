@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run unit tests
+        run: python -m pytest -q
+
+      - name: Compile sources
+        run: python -m compileall -q src alembic tests
+
+      - name: Render initial migration SQL
+        run: python -m alembic upgrade head --sql > migration.sql
+
+      - name: Verify migration SQL
+        run: |
+          grep -q "CREATE EXTENSION IF NOT EXISTS vector" migration.sql
+          grep -q "USING hnsw (embedding vector_cosine_ops)" migration.sql
+          grep -q "CREATE TRIGGER trg_audit_logs_append_only" migration.sql
+          grep -q "INSERT INTO alembic_version" migration.sql
+          echo "Migration SQL rendered and verified."
+
+      - name: Ensure .env is not tracked
+        run: |
+          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+            echo "ERROR: .env must never be committed."
+            exit 1
+          fi
+          echo ".env is not tracked."
