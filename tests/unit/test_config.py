@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from src.config import Settings
+from src.config import Settings, ensure_env_file
 
 
 def make_settings(**overrides: object) -> Settings:
@@ -65,3 +65,24 @@ def test_pricing_defaults() -> None:
     assert settings.default_vat_rate == pytest.approx(0.19)
     assert settings.default_margin_rate == pytest.approx(0.15)
     assert settings.embedding_dimensions == 1024
+
+
+def test_ensure_env_file_copies_template_once(workspace_tmp, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.delenv("APP_ENV", raising=False)
+    template = workspace_tmp / "example.env"
+    template.write_text("APP_ENV=local\n", encoding="utf-8")
+    env = workspace_tmp / "local.env"
+
+    assert ensure_env_file(env, template) is True
+    assert env.read_text(encoding="utf-8") == "APP_ENV=local\n"
+    assert ensure_env_file(env, template) is False
+
+
+def test_ensure_env_file_never_copies_in_production(workspace_tmp, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("APP_ENV", "production")
+    template = workspace_tmp / "example.env"
+    template.write_text("APP_ENV=production\n", encoding="utf-8")
+    env = workspace_tmp / "production.env"
+
+    assert ensure_env_file(env, template) is False
+    assert not env.exists()

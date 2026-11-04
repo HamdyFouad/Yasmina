@@ -7,7 +7,9 @@ so they never leak into logs or tracebacks.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
@@ -16,7 +18,7 @@ from urllib.parse import quote_plus, urlsplit
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-__all__ = ["Settings", "get_settings", "reset_settings_cache"]
+__all__ = ["Settings", "ensure_env_file", "get_settings", "reset_settings_cache"]
 
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _SUPPORTED_DB_SCHEMES = {"postgresql", "postgresql+asyncpg"}
@@ -182,6 +184,29 @@ class Settings(BaseSettings):
             return self.database_url
         masked = parts._replace(netloc=f"{parts.username}:***@{parts.hostname}:{parts.port}")
         return masked.geturl()
+
+
+def ensure_env_file(
+    env_path: Path | None = None,
+    template_path: Path | None = None,
+) -> bool:
+    """Create a local ``.env`` from ``.env.example`` when it is missing.
+
+    Returns ``True`` when a file was created. Production is deliberately
+    excluded: production deployments must inject real secrets through the
+    environment instead of silently copying development placeholders.
+    """
+
+    env = env_path if env_path is not None else Path(".env")
+    template = template_path if template_path is not None else Path(".env.example")
+
+    if env.exists() or not template.is_file():
+        return False
+    if os.getenv("APP_ENV", "").strip().lower() == "production":
+        return False
+
+    shutil.copyfile(template, env)
+    return True
 
 
 @lru_cache(maxsize=1)

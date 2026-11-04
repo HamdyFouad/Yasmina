@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from src.config import Settings, get_settings
+from src.config import Settings, ensure_env_file, get_settings, reset_settings_cache
 
 __all__ = [
     "CheckResult",
@@ -168,6 +168,37 @@ def _http_probe(url: str, timeout: float) -> tuple[bool, str]:
         return False, str(getattr(exc, "reason", exc))
 
 
+def _minio_bucket_check(settings: Settings) -> tuple[bool, str]:
+    """Authenticate against MinIO and verify the configured bucket is reachable."""
+
+    try:
+        from minio import Minio
+        from minio.error import S3Error
+    except ImportError as exc:  # pragma: no cover - dependency is mandatory
+        return False, f"minio client is not installed: {exc}"
+
+    endpoint = settings.minio_endpoint.strip()
+    secure = settings.minio_secure or endpoint.startswith("https://")
+    endpoint = endpoint.removeprefix("https://").removeprefix("http://").rstrip("/")
+
+    client = Minio(
+        endpoint,
+        access_key=settings.minio_access_key.get_secret_value(),
+        secret_key=settings.minio_secret_key.get_secret_value(),
+        secure=secure,
+    )
+    try:
+        exists = client.bucket_exists(settings.minio_bucket)
+    except S3Error as exc:
+        return False, f"S3 {exc.code}: {exc.message}"
+    except Exception as exc:
+        return False, str(exc)
+
+    if not exists:
+        return False, f"bucket {settings.minio_bucket!r} does not exist or is not accessible"
+    return True, f"authenticated; bucket {settings.minio_bucket!r} accessible"
+
+
 async def check_minio(settings: Settings, options: PreflightOptions) -> CheckResult:
     if "minio" in options.skip:
         return CheckResult("minio", "skipped", "skipped via --skip minio")
@@ -176,14 +207,17 @@ async def check_minio(settings: Settings, options: PreflightOptions) -> CheckRes
     if "://" not in endpoint:
         scheme = "https" if settings.minio_secure else "http"
         endpoint = f"{scheme}://{endpoint}"
-    ok, detail = await asyncio.to_thread(_http_probe, f"{endpoint}/minio/health/live", options.timeout)
-    if not ok:
-        return CheckResult("minio", "fail", f"{settings.minio_endpoint}: {detail}")
-    return CheckResult(
-        "minio",
-        "ok",
-        f"{settings.minio_endpoint} reachable (bucket {settings.minio_bucket!r} configured)",
+    healthy, health_detail = await asyncio.to_thread(
+        _http_probe, f"{endpoint}/minio/health/live", options.timeout
     )
+    if not healthy:
+        return CheckResult("minio", "fail", f"{settings.minio_endpoint}: {health_detail}")
+
+    authenticated, auth_detail = await asyncio.to_thread(_minio_bucket_check, settings)
+    if not authenticated:
+        return CheckResult("minio", "fail", f"{settings.minio_endpoint}: {auth_detail}")
+
+    return CheckResult("minio", "ok", f"{settings.minio_endpoint} {auth_detail}")
 
 
 async def check_n8n(settings: Settings, options: PreflightOptions) -> CheckResult:
@@ -374,6 +408,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+
+    if ensure_env_file():
+        reset_settings_cache()
+        print("Created .env from .env.example", file=sys.stderr)
 
     try:
         settings = get_settings()

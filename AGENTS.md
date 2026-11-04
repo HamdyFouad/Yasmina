@@ -35,8 +35,9 @@ When given an implementation task:
 3. Verify that unit tests pass and that strict mode validation does not encounter un-normalized string errors.
 
 ## 6. Build, Run & Verification Commands
-- Setup: `python -m pip install -e ".[dev]"` and copy `.env.example` to `.env`.
+- Setup: `python -m pip install -e ".[dev]"`; `.env` is created from `.env.example` on first preflight/API start (copy it manually for other tooling).
 - Tests: `python -m pytest -q` (config lives in `pyproject.toml`).
+- API: `python -m uvicorn src.main:app --host 127.0.0.1 --port 8000 --reload` (startup runs preflight).
 - Lint / types: `ruff check .` and `mypy src`.
 - Infrastructure: `docker compose up -d postgres minio clamav` (add `--profile automation` for n8n).
 - Preflight: `python -m src.preflight` (or `python -m src.preflight --json`).

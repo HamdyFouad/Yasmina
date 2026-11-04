@@ -12,6 +12,7 @@ from src.preflight import (
     check_clamav,
     check_configuration,
     check_filesystem,
+    check_minio,
     parse_args,
     run_preflight,
 )
@@ -93,6 +94,31 @@ def test_all_services_can_be_skipped(workspace_tmp) -> None:  # type: ignore[no-
     assert by_name["clamav"].status == "skipped"
     assert by_name["n8n"].status == "skipped"
     assert not any(result.status == "fail" for result in results)
+
+
+def test_minio_check_reports_authentication_failures(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("src.preflight._http_probe", lambda url, timeout: (True, "HTTP 200"))
+    monkeypatch.setattr("src.preflight._minio_bucket_check", lambda settings: (False, "S3 AccessDenied"))
+    settings = make_settings()
+
+    result = asyncio.run(check_minio(settings, PreflightOptions()))
+
+    assert result.status == "fail"
+    assert "AccessDenied" in result.detail
+
+
+def test_minio_check_passes_with_authenticated_bucket(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("src.preflight._http_probe", lambda url, timeout: (True, "HTTP 200"))
+    monkeypatch.setattr(
+        "src.preflight._minio_bucket_check",
+        lambda settings: (True, "authenticated; bucket 'yasmina' accessible"),
+    )
+    settings = make_settings()
+
+    result = asyncio.run(check_minio(settings, PreflightOptions()))
+
+    assert result.status == "ok"
+    assert "bucket 'yasmina'" in result.detail
 
 
 def test_clamav_ping_against_local_fake_daemon() -> None:

@@ -56,6 +56,7 @@ Core principles:
 ```text
 src/
   config.py              # pydantic-settings configuration
+  main.py                # FastAPI app + startup preflight lifespan
   preflight.py           # startup checks (config, DB, MinIO, ClamAV, n8n)
   models/
     enums.py             # canonical StrEnums
@@ -99,12 +100,16 @@ python -m pip install -e ".[dev]"
 
 ### 2. Configure
 
+The first preflight or API startup copies `.env.example` to `.env` when the file
+is missing (local/test only; production must inject environment variables).
+Copying manually is optional:
+
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Replace every `change-me` placeholder. `.env` is git-ignored and must never be
-committed.
+Replace every `change-me` placeholder before using shared infrastructure. `.env`
+is git-ignored and must never be committed.
 
 ### 3. Start infrastructure
 
@@ -143,18 +148,34 @@ python -m src.preflight --skip n8n --skip clamav
 
 The preflight verifies configuration guardrails, the writable export directory,
 PostgreSQL connectivity plus schema (pgvector, Alembic revision, audit triggers,
-HNSW index), MinIO health, the ClamAV daemon and n8n reachability. It exits
-non-zero on a failed required check; `n8n` only warns unless `--require-n8n` is
-passed. The installed console script is `yasmina-preflight`.
+HNSW index), MinIO authentication and bucket access, the ClamAV daemon and n8n
+reachability. It exits non-zero on a failed required check; `n8n` only warns
+unless `--require-n8n` is passed. The installed console script is
+`yasmina-preflight`.
 
-### 6. Run tests
+### 6. Run the API
+
+```powershell
+python -m uvicorn src.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+The FastAPI lifespan runs the full preflight before accepting requests. If
+PostgreSQL, pgvector, MinIO authentication or ClamAV fail, startup aborts with a
+`Startup preflight failed` error.
+
+- `GET /healthz` — process liveness
+- `GET /readyz` — startup preflight results
+- `GET /docs` — OpenAPI UI
+
+### 7. Run tests
 
 ```powershell
 python -m pytest -q
 ```
 
-The current 134 tests cover normalizers, settings, strict schemas, ORM metadata,
-pgvector/HNSW configuration, preflight checks and offline migration rendering.
+The current 140 tests cover normalizers, settings, strict schemas, ORM metadata,
+pgvector/HNSW configuration, MinIO/ClamAV preflight checks, FastAPI lifespan,
+and offline migration rendering.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs the same suite on Python 3.11
 and 3.12, compiles the sources, renders the initial Alembic migration SQL and
@@ -224,7 +245,8 @@ the default application secret.
       ClamAV, n8n), configuration, preflight checks
 - [x] P0.2 — strict schemas, ORM, pgvector, Alembic, audit log
 - [ ] P1 — GAEB/PDF parsers, unit conversion, pricing & matching services
-- [ ] P1 — FastAPI endpoints, LangGraph orchestration, HITL approval service
+- [x] P1 — FastAPI health/readiness endpoints and startup preflight lifespan
+- [ ] P1 — business endpoints, LangGraph orchestration, HITL approval service
 - [ ] P2 — ERPNext/n8n integrations, ZUGFeRD/XRechnung, GAEB `.x84` export
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

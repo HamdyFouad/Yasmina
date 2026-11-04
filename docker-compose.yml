@@ -79,7 +79,7 @@ services:
       - yasmina
 
   clamav:
-    image: clamav/clamav:stable
+    image: clamav/clamav:1.5.4-debian
     container_name: yasmina-clamav
     restart: unless-stopped
     environment:
@@ -98,7 +98,7 @@ services:
       - yasmina
 
   n8n:
-    image: n8nio/n8n:latest
+    image: n8nio/n8n:2.47.2
     container_name: yasmina-n8n
     profiles: ["automation"]
     restart: unless-stopped
