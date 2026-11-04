@@ -50,11 +50,31 @@ def test_ed25519_public_key_validation() -> None:
         make_settings(ed25519_approval_public_key="not-a-key")
 
 
-def test_production_requires_changed_secret() -> None:
+def test_production_requires_changed_secrets() -> None:
     with pytest.raises(ValidationError, match="APP_SECRET_KEY"):
         make_settings(app_env="production", app_secret_key="change-me-app-secret")
 
-    settings = make_settings(app_env="production", app_secret_key="a-real-secret")
+    with pytest.raises(ValidationError, match="JWT_SECRET_KEY"):
+        make_settings(
+            app_env="production",
+            app_secret_key="a-real-secret",
+            jwt_secret_key="change-me-jwt-secret-change-me-now",
+        )
+
+    with pytest.raises(ValidationError, match="API_ADMIN_PASSWORD"):
+        make_settings(
+            app_env="production",
+            app_secret_key="a-real-secret",
+            jwt_secret_key="a-real-jwt-secret-with-32-bytes",
+            api_admin_password="change-me-admin-password",
+        )
+
+    settings = make_settings(
+        app_env="production",
+        app_secret_key="a-real-secret",
+        jwt_secret_key="a-real-jwt-secret-with-32-bytes",
+        api_admin_password="a-real-admin-password",
+    )
     assert settings.is_production is True
 
 

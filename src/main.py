@@ -15,6 +15,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from src.api.routes import approvals, auth, tenders
+from src.api.store import TenderStore
 from src.config import Settings, ensure_env_file, get_settings, reset_settings_cache
 from src.preflight import CheckResult, PreflightOptions, run_preflight
 
@@ -27,10 +29,11 @@ def _failures(checks: list[CheckResult]) -> list[CheckResult]:
     return [check for check in checks if check.status == "fail"]
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, *, run_startup_checks: bool = True) -> FastAPI:
     """Create the FastAPI application.
 
     ``settings`` is injectable for tests; production uses ``get_settings()``.
+    ``run_startup_checks=False`` skips external preflight for mocked API tests.
     """
 
     @asynccontextmanager
@@ -43,18 +46,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logger.info("created .env from .env.example")
             current = get_settings()
 
-        checks = await run_preflight(
-            current,
-            PreflightOptions(timeout=current.preflight_timeout_seconds),
-        )
-        failures = _failures(checks)
-        if failures:
-            details = "; ".join(f"{check.name}: {check.detail}" for check in failures)
-            raise RuntimeError(f"Startup preflight failed: {details}")
-
         app.state.settings = current
-        app.state.preflight = tuple(checks)
-        logger.info("preflight passed (env=%s)", current.app_env)
+        if run_startup_checks:
+            checks = await run_preflight(
+                current,
+                PreflightOptions(timeout=current.preflight_timeout_seconds),
+            )
+            failures = _failures(checks)
+            if failures:
+                details = "; ".join(f"{check.name}: {check.detail}" for check in failures)
+                raise RuntimeError(f"Startup preflight failed: {details}")
+            app.state.preflight = tuple(checks)
+            logger.info("preflight passed (env=%s)", current.app_env)
+        else:
+            app.state.preflight = ()
         yield
 
     application = FastAPI(
@@ -63,6 +68,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version="0.1.0",
         lifespan=app_lifespan,
     )
+    application.state.tender_store = TenderStore()
+    application.include_router(auth.router, prefix="/api/v1")
+    application.include_router(tenders.router, prefix="/api/v1")
+    application.include_router(approvals.router, prefix="/api/v1")
 
     @application.get("/healthz", tags=["ops"])
     async def healthz() -> dict[str, str]:

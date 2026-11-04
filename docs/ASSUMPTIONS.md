@@ -33,8 +33,10 @@ reconciled with the authoritative spec later.
   fraction (0.15 = 15 %), unit prices round half-up to 4 dp, totals to 2 dp.
 - **Matching:** stage 1 rejects only when both sides expose a conflicting
   material/colour/glove size/unit — missing catalogue attributes are not
-  penalized. Stage 2 uses 40 % lexical / 60 % embedding cosine by default, with
-  a small exact-attribute bonus; callers supply query embeddings from pgvector.
+  penalized. `PgVectorCatalogRepository` filters in SQL and orders by pgvector
+  cosine distance; stage 2 uses 40 % lexical / 60 % embedding cosine by default,
+  with a small exact-attribute bonus. A query embedding must come from an
+  embedding provider; the API currently accepts one embedding per match request.
 - **GAEB parsing:** full OZ is used as `position_number`; missing quantities,
   unknown units and duplicate positions are reported as warnings. Missing dates
   fall back to `now + 30 days`; missing clients use a placeholder.
@@ -64,6 +66,20 @@ reconciled with the authoritative spec later.
 - The X84 writer requires a configured `ApprovalService` and verifies the offer
   signature cryptographically before writing; the orchestration layer supplies
   the public-key verifier.
+
+## API assumptions (P1)
+
+- JWT uses HS256 with a configurable secret/issuer and roles `admin`, `sales`,
+  `approver`, `viewer`. Only the single admin credential can obtain a token from
+  `/auth/token`; sales/approver tokens must be minted by an external identity
+  layer for now.
+- Uploaded tenders and their parsed pyGAEB documents live in a process-local
+  store. Multi-worker deployments need a database/object-storage repository.
+- Uploads are limited by `MAX_UPLOAD_SIZE_MB`; ClamAV scanning is not yet wired
+  into the HTTP upload path.
+- `POST /tenders/{id}/workflow` returns `pending_approval` for an unsigned offer
+  and `approved` once a correctly signed offer is supplied. `export_path` is
+  restricted to `GAEB_EXPORT_DIR`.
 
 ## Open questions for spec reconciliation
 

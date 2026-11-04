@@ -3,8 +3,8 @@
 Stage 1 applies deterministic compatibility filters (material, colour, glove
 size, unit). Stage 2 ranks the surviving candidates with a hybrid score:
 German-aware lexical similarity plus optional embedding cosine similarity.
-All scoring is deterministic; embeddings are supplied by the caller (pgvector
-retrieval or a batch embedding job).
+Candidates can be supplied in memory, or retrieved directly from PostgreSQL via
+the pgvector-backed :class:`PgVectorCatalogRepository`.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ __all__ = [
     "MatchResult",
     "MatchingError",
     "MatchingService",
+    "PgVectorCatalogRepository",
     "candidate_from_orm",
     "cosine_similarity",
     "lexical_similarity",
@@ -197,6 +198,61 @@ def candidate_from_orm(article: Any) -> CatalogCandidate:
     )
 
 
+class PgVectorCatalogRepository:
+    """Retrieve candidate articles from PostgreSQL with pgvector ordering.
+
+    Stage 1 filters run in SQL (with nullable catalogue attributes treated as
+    compatible). Stage 2 ranking remains in Python so lexical similarity and
+    exact attribute matching stay deterministic.
+    """
+
+    def __init__(self, session: Any) -> None:
+        self.session = session
+
+    async def candidates(
+        self,
+        item: TenderItem,
+        *,
+        query_embedding: Sequence[float] | None = None,
+        limit: int = 100,
+    ) -> list[CatalogCandidate]:
+        if limit < 1:
+            raise MatchingError("candidate limit must be at least 1")
+
+        from sqlalchemy import or_, select
+
+        from src.models.orm import CatalogArticle
+
+        statement = select(CatalogArticle)
+        if item.material is not None:
+            statement = statement.where(
+                or_(CatalogArticle.material == item.material, CatalogArticle.material.is_(None))
+            )
+        if item.color is not None:
+            statement = statement.where(
+                or_(CatalogArticle.color == item.color, CatalogArticle.color.is_(None))
+            )
+        if item.glove_size is not GloveSize.NOT_APPLICABLE:
+            statement = statement.where(
+                or_(
+                    CatalogArticle.glove_size == item.glove_size,
+                    CatalogArticle.glove_size == GloveSize.NOT_APPLICABLE,
+                )
+            )
+        if item.unit is not UnitOfMeasure.NOT_APPLICABLE:
+            statement = statement.where(
+                or_(CatalogArticle.unit == item.unit, CatalogArticle.unit.is_(None))
+            )
+        if query_embedding is not None:
+            statement = statement.where(CatalogArticle.embedding.is_not(None)).order_by(
+                CatalogArticle.embedding.cosine_distance(list(query_embedding))
+            )
+        statement = statement.limit(limit)
+
+        result = await self.session.execute(statement)
+        return [candidate_from_orm(row) for row in result.scalars().all()]
+
+
 class HybridMatchingService:
     """Deterministic two-stage matcher.
 
@@ -297,6 +353,30 @@ class HybridMatchingService:
 
         results.sort(key=lambda result: (-result.score, result.candidate.article_number))
         return results[:limit]
+
+    async def match_database(
+        self,
+        session: Any,
+        item: TenderItem,
+        *,
+        query_embedding: Sequence[float] | None = None,
+        limit: int = 5,
+        candidate_limit: int = 100,
+    ) -> list[MatchResult]:
+        """Retrieve candidates from PostgreSQL and rank them in one call."""
+
+        repository = PgVectorCatalogRepository(session)
+        candidates = await repository.candidates(
+            item,
+            query_embedding=query_embedding,
+            limit=candidate_limit,
+        )
+        return self.rank(
+            item,
+            candidates,
+            query_embedding=query_embedding,
+            limit=limit,
+        )
 
 
 MatchingService = HybridMatchingService

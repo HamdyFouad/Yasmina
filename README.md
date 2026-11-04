@@ -6,10 +6,11 @@
 cleaning & hygiene supplies sector** — paper towels, nitrile/latex gloves, and
 waste bags across all thicknesses, volumes and colour standards.
 
-> **Status:** P0 foundation and the P1 parsing/pricing/matching/agent core are
-> complete: GAEB/PDF ingestion, XSD/penny validation, deterministic pricing,
-> hybrid matching, LangGraph orchestration, DeepSeek extraction and Ed25519
-> approval. ERPNext/n8n integrations and e-invoicing generators remain.
+> **Status:** P0 foundation and the P1 core are complete: GAEB/PDF ingestion,
+> XSD/penny validation, deterministic pricing, pgvector hybrid matching,
+> LangGraph orchestration, DeepSeek extraction, Ed25519 approval and a
+> JWT-secured FastAPI business API. ERPNext/n8n integrations and e-invoicing
+> generators remain.
 
 ---
 
@@ -56,8 +57,18 @@ Core principles:
 ```text
 src/
   config.py              # pydantic-settings configuration
+  db.py                  # async SQLAlchemy engine/session factory
   main.py                # FastAPI app + startup preflight lifespan
   preflight.py           # startup checks (config, DB, MinIO, ClamAV, n8n)
+  api/
+    security.py          # JWT issuance/validation + RBAC roles
+    deps.py              # auth, DB session and tender-store dependencies
+    schemas.py           # API request DTOs and payload parsers
+    store.py             # process-local tender store
+    routes/
+      auth.py            # POST /auth/token
+      tenders.py         # upload, match, price, workflow
+      approvals.py       # verify and approve offers
   models/
     enums.py             # canonical StrEnums
     schemas.py           # strict Pydantic v2 domain models
@@ -69,7 +80,7 @@ src/
     pdf_parser.py        # Docling LV table extraction
   services/
     pricing_service.py   # pure-Decimal tiers, MOQ, margin, VAT
-    matching_service.py  # two-stage rule filter + lexical/embedding ranking
+    matching_service.py  # pgvector retrieval + lexical/embedding ranking
     approval_service.py  # canonical payload, Ed25519 sign/verify/apply
   agents/
     graph.py             # LangGraph workflow and routing
@@ -175,16 +186,45 @@ PostgreSQL, pgvector, MinIO authentication or ClamAV fail, startup aborts with a
 - `GET /readyz` — startup preflight results
 - `GET /docs` — OpenAPI UI
 
-### 7. Run tests
+### 7. Business API
+
+All business routes live under `/api/v1` and require a JWT bearer token.
+
+| Method | Path | Role |
+|---|---|---|
+| POST | `/auth/token` | admin credentials |
+| POST | `/tenders/upload` | sales/admin |
+| POST | `/tenders/{id}/match` | sales/admin |
+| POST | `/tenders/{id}/price` | sales/admin |
+| POST | `/tenders/{id}/workflow` | sales/admin |
+| POST | `/approvals/verify` | viewer/approver/admin |
+| POST | `/approvals/approve` | approver/admin |
+
+```powershell
+$token = (Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/auth/token `
+  -ContentType "application/json" `
+  -Body '{"username":"admin","password":"change-me-admin-password"}').access_token
+
+$headers = @{ Authorization = "Bearer $token" }
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/tenders/upload `
+  -Headers $headers -Form @{ file = Get-Item .\tender.x83 }
+```
+
+The matching route retrieves candidates directly from `catalog_articles` using
+pgvector cosine distance. The workflow route runs the LangGraph state machine;
+it returns `pending_approval` until a signed offer is supplied, then
+`approved`. Tenders are held in a process-local store in this revision.
+
+### 8. Run tests
 
 ```powershell
 python -m pytest -q
 ```
 
-The current 184 tests cover normalizers, settings, strict schemas, ORM metadata,
+The current 190 tests cover normalizers, settings, strict schemas, ORM metadata,
 pgvector/HNSW configuration, GAEB parsing/validation, PDF table extraction,
 pricing, hybrid matching, LangGraph orchestration, Ed25519 approval, FastAPI
-lifespan and offline migration rendering.
+business routes, RBAC and offline migration rendering.
 
 ### Parsing, pricing and matching
 
@@ -255,6 +295,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | Group | Examples |
 |---|---|
 | Application | `APP_ENV`, `APP_DEBUG`, `APP_SECRET_KEY`, `APP_TIMEZONE` |
+| API / JWT | `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `JWT_EXPIRY_MINUTES`, `API_ADMIN_*`, `MAX_UPLOAD_SIZE_MB` |
 | PostgreSQL | `POSTGRES_*`, optional `DATABASE_URL`, `DATABASE_ECHO` |
 | MinIO | `MINIO_*` |
 | ClamAV | `CLAMAV_HOST`, `CLAMAV_PORT`, `CLAMAV_TIMEOUT_SECONDS` |
@@ -267,7 +308,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | Pricing | `DEFAULT_VAT_RATE`, `DEFAULT_MARGIN_RATE`, `OFFER_VALIDITY_DAYS` |
 
 Secrets use `SecretStr` and are masked in logs; production refuses to start with
-the default application secret.
+the default application, JWT or API-admin secrets.
 
 ---
 
@@ -313,7 +354,8 @@ the default application secret.
 - [x] P1 — FastAPI health/readiness endpoints and startup preflight lifespan
 - [x] P1 — LangGraph orchestration and DeepSeek extraction client
 - [x] P1 — Ed25519 approval payload, signing, verification and approval gate
-- [ ] P1 — unit conversion, business endpoints
+- [x] P1 — pgvector catalogue retrieval, JWT/RBAC FastAPI business API and API integration tests
+- [ ] P1 — unit conversion, durable API persistence, refresh tokens and advanced RBAC
 - [ ] P2 — ERPNext/n8n integrations, ZUGFeRD/XRechnung generators
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

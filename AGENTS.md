@@ -20,6 +20,8 @@
 ## 4. Directory Structure Enforcement
 Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 10):
 - `src/config.py` (pydantic-settings)
+- `src/db.py` (async SQLAlchemy session factory)
+- `src/api/` (`security.py`, `deps.py`, `schemas.py`, `store.py`, `routes/tenders.py`, `routes/approvals.py`, `routes/auth.py`)
 - `src/models/` (`enums.py`, `schemas.py`, `orm.py`)
 - `src/parsers/` (`normalizers.py`, `pdf_parser.py`, `gaeb_parser.py`, `gaeb_validator.py`)
 - `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`; `unit_converter.py` planned)

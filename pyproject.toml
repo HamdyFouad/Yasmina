@@ -14,6 +14,8 @@ authors = [{ name = "Project Yasmina" }]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "pyjwt>=2.8",
     "pydantic>=2.8,<3",
     "pydantic-settings>=2.4",
     "email-validator>=2.2",
@@ -25,6 +27,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "httpx>=0.27",
     "cryptography>=42",
+    "langgraph>=0.2",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +36,6 @@ parsing = [
     "pygaeb",
 ]
 ai = [
-    "langgraph>=0.2",
     "langchain-openai>=0.2",
     "langgraph-checkpoint-postgres>=1.0",
 ]

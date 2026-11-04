@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     app_timezone: str = "Europe/Berlin"
     app_secret_key: SecretStr = SecretStr("change-me-app-secret")
 
+    # --- API / JWT ---------------------------------------------------------
+    jwt_secret_key: SecretStr = SecretStr("change-me-jwt-secret-change-me-now")
+    jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"
+    jwt_expiry_minutes: int = Field(default=60, ge=1, le=1440)
+    jwt_issuer: str = "yasmina"
+    api_admin_username: str = "admin"
+    api_admin_password: SecretStr = SecretStr("change-me-admin-password")
+    max_upload_size_mb: int = Field(default=25, ge=1, le=200)
+
     # --- Database ----------------------------------------------------------
     postgres_user: str = "yasmina"
     postgres_password: SecretStr = SecretStr("yasmina")
@@ -155,8 +164,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _check_production_guardrails(self) -> Self:
-        if self.app_env == "production" and self.app_secret_key.get_secret_value() == "change-me-app-secret":
-            raise ValueError("APP_SECRET_KEY must be changed in production")
+        if self.app_env == "production":
+            if self.app_secret_key.get_secret_value() == "change-me-app-secret":
+                raise ValueError("APP_SECRET_KEY must be changed in production")
+            if self.jwt_secret_key.get_secret_value() == "change-me-jwt-secret-change-me-now":
+                raise ValueError("JWT_SECRET_KEY must be changed in production")
+            if self.api_admin_password.get_secret_value() == "change-me-admin-password":
+                raise ValueError("API_ADMIN_PASSWORD must be changed in production")
         return self
 
     # ------------------------------------------------------------------

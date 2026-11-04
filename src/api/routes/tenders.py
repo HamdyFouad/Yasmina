@@ -1,0 +1,267 @@
+"""Tender upload, pgvector matching, pricing and workflow endpoints."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+from uuid import UUID, uuid4
+
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
+
+from src.agents.graph import run_agent
+from src.agents.nodes import price_offer
+from src.agents.state import initial_state
+from src.api.context import build_agent_context
+from src.api.deps import get_app_settings, get_session, get_store, require_roles
+from src.api.schemas import (
+    MatchPayload,
+    PricePayload,
+    WorkflowPayload,
+    parse_customer_offer,
+    parse_supplier_quotes,
+)
+from src.api.security import Principal, Role
+from src.api.store import StoredTender
+from src.config import Settings
+from src.models.enums import ProcurementProcedure, TenderSourceFormat
+from src.models.schemas import CustomerOffer, Tender
+from src.parsers.gaeb_parser import GaebParseError, parse_gaeb
+from src.parsers.pdf_parser import PdfParseError, PdfParserUnavailable, parse_pdf
+from src.services.matching_service import HybridMatchingService, MatchResult, MatchingError
+
+__all__ = ["router"]
+
+router = APIRouter(prefix="/tenders", tags=["tenders"])
+
+_UPLOAD_DIR = Path("var/uploads")
+
+
+def _match_payload(result: MatchResult) -> dict[str, Any]:
+    return {
+        "article_number": result.candidate.article_number,
+        "description": result.candidate.description,
+        "score": result.score,
+        "lexical_score": result.lexical_score,
+        "semantic_score": result.semantic_score,
+        "matched_attributes": list(result.matched_attributes),
+        "reasons": list(result.reasons),
+    }
+
+
+def _tender_or_404(tender_id: UUID, request: Request) -> StoredTender:
+    stored = get_store(request).get(tender_id)
+    if stored is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tender not found")
+    return stored
+
+
+def _pdf_tender(filename: str, items: list[Any], warnings: list[str]) -> Tender:
+    tender_id = uuid4()
+    updated_items = [item.model_copy(update={"tender_id": tender_id}) for item in items]
+    now = datetime.now(timezone.utc)
+    return Tender(
+        id=tender_id,
+        tender_number=(Path(filename).stem or "PDF-TENDER")[:64],
+        title=(Path(filename).stem or "PDF tender")[:512],
+        client_name="Unbekannter Auftraggeber",
+        procedure=ProcurementProcedure.OPEN_PROCEDURE,
+        source_format=TenderSourceFormat.PDF_DOCLING,
+        submission_deadline=now + timedelta(days=30),
+        items=updated_items,
+        metadata={"source_file": filename, "pdf_warnings": warnings},
+    )
+
+
+def _export_target(settings: Settings, raw: str) -> Path:
+    root = settings.gaeb_export_dir.resolve()
+    candidate = Path(raw)
+    target = (candidate if candidate.is_absolute() else root / candidate).resolve()
+    if not target.is_relative_to(root):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="export_path must stay inside GAEB_EXPORT_DIR",
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+@router.post("/upload", status_code=status.HTTP_201_CREATED)
+async def upload_tender(
+    request: Request,
+    file: UploadFile = File(...),
+    settings: Settings = Depends(get_app_settings),
+    _: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
+) -> dict[str, Any]:
+    """Parse a GAEB X83/D83 or PDF LV and keep it for later workflow steps."""
+
+    filename = file.filename or "upload"
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".x83", ".d83", ".pdf"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="unsupported file type; expected .x83, .d83 or .pdf",
+        )
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="empty upload")
+    if len(data) > settings.max_upload_size_mb * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"upload exceeds {settings.max_upload_size_mb} MB",
+        )
+
+    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    path = _UPLOAD_DIR / f"{uuid4().hex}{suffix}"
+    path.write_bytes(data)
+
+    warnings: list[str] = []
+    document: Any = None
+    try:
+        if suffix == ".pdf":
+            parsed_pdf = await run_in_threadpool(parse_pdf, path)
+            tender = _pdf_tender(filename, list(parsed_pdf.items), list(parsed_pdf.warnings))
+            warnings = list(parsed_pdf.warnings)
+        else:
+            parsed_gaeb = await run_in_threadpool(parse_gaeb, path)
+            tender = parsed_gaeb.tender
+            document = parsed_gaeb.document
+            warnings = list(parsed_gaeb.warnings)
+    except PdfParserUnavailable as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except (GaebParseError, PdfParseError, ValidationError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    get_store(request).put(
+        StoredTender(
+            tender=tender,
+            document=document,
+            source_filename=filename,
+            source_path=path,
+        )
+    )
+    return {
+        "tender_id": str(tender.id),
+        "tender": tender.model_dump(mode="json"),
+        "warnings": warnings,
+    }
+
+
+@router.post("/{tender_id}/match")
+async def match_tender(
+    tender_id: UUID,
+    payload: MatchPayload,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_app_settings),
+    _: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
+) -> dict[str, Any]:
+    """Query catalogue embeddings from PostgreSQL and rank matches."""
+
+    stored = _tender_or_404(tender_id, request)
+    if payload.query_embedding is not None and len(payload.query_embedding) != settings.embedding_dimensions:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"query_embedding must have {settings.embedding_dimensions} dimensions",
+        )
+
+    matcher = HybridMatchingService()
+    matches: dict[str, list[dict[str, Any]]] = {}
+    try:
+        for item in stored.tender.items:
+            results = await matcher.match_database(
+                session,
+                item,
+                query_embedding=payload.query_embedding,
+                limit=payload.limit,
+            )
+            if results:
+                matches[item.position_number] = [_match_payload(result) for result in results]
+    except MatchingError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"catalogue database unavailable: {exc}",
+        ) from exc
+
+    return {"tender_id": str(tender_id), "matches": matches}
+
+
+@router.post("/{tender_id}/price")
+async def price_tender(
+    tender_id: UUID,
+    payload: PricePayload,
+    request: Request,
+    settings: Settings = Depends(get_app_settings),
+    _: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
+) -> dict[str, Any]:
+    """Price stored tender positions against supplied supplier quotes."""
+
+    stored = _tender_or_404(tender_id, request)
+    try:
+        quotes = parse_supplier_quotes(payload.supplier_quotes)
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    context = build_agent_context(settings)
+    state = initial_state(
+        tender=stored.tender,
+        supplier_quotes=quotes,
+        request=payload.offer_request.to_request(),
+        gaeb_document=stored.document,
+    )
+    result = price_offer(state, context)
+    offer = result.get("offer")
+    if offer is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"errors": result.get("errors", []), "warnings": result.get("warnings", [])},
+        )
+    return {
+        "offer": offer.model_dump(mode="json"),
+        "warnings": result.get("warnings", []),
+    }
+
+
+@router.post("/{tender_id}/workflow")
+async def run_tender_workflow(
+    tender_id: UUID,
+    payload: WorkflowPayload,
+    request: Request,
+    settings: Settings = Depends(get_app_settings),
+    _: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
+) -> dict[str, Any]:
+    """Run the LangGraph workflow; pending/approved status is returned as data."""
+
+    stored = _tender_or_404(tender_id, request)
+    try:
+        quotes = parse_supplier_quotes(payload.supplier_quotes)
+        offer = parse_customer_offer(payload.offer) if payload.offer is not None else None
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    export_path = _export_target(settings, payload.export_path) if payload.export_path else None
+    context = build_agent_context(settings)
+    state = initial_state(
+        tender=stored.tender,
+        supplier_quotes=quotes,
+        request=payload.offer_request.to_request(),
+        offer=offer,
+        gaeb_document=stored.document,
+        export_path=str(export_path) if export_path else None,
+    )
+    result = run_agent(state, context)
+    result_offer: CustomerOffer | None = result.get("offer")
+    return {
+        "status": result.get("status"),
+        "offer": result_offer.model_dump(mode="json") if result_offer is not None else None,
+        "errors": result.get("errors", []),
+        "warnings": result.get("warnings", []),
+        "exported_path": result.get("exported_path"),
+    }
