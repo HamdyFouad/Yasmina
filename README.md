@@ -6,10 +6,10 @@
 cleaning & hygiene supplies sector** — paper towels, nitrile/latex gloves, and
 waste bags across all thicknesses, volumes and colour standards.
 
-> **Status:** P0 foundation and the P1 parsing/pricing/matching core are complete:
-> GAEB/PDF ingestion, XSD/penny validation, deterministic pricing, hybrid matching
-> and the FastAPI startup lifecycle. LangGraph agents, ERPNext/n8n integrations
-> and e-invoicing generators are the next milestones.
+> **Status:** P0 foundation and the P1 parsing/pricing/matching/agent core are
+> complete: GAEB/PDF ingestion, XSD/penny validation, deterministic pricing,
+> hybrid matching, LangGraph orchestration, DeepSeek extraction and Ed25519
+> approval. ERPNext/n8n integrations and e-invoicing generators remain.
 
 ---
 
@@ -70,7 +70,12 @@ src/
   services/
     pricing_service.py   # pure-Decimal tiers, MOQ, margin, VAT
     matching_service.py  # two-stage rule filter + lexical/embedding ranking
-  agents/                # planned: LangGraph state machine
+    approval_service.py  # canonical payload, Ed25519 sign/verify/apply
+  agents/
+    graph.py             # LangGraph workflow and routing
+    nodes.py             # enrich, match, price, approval gate, export
+    state.py             # typed state, dependencies and offer request
+    deepseek.py          # DeepSeek structured extraction client
   integrations/          # planned: ERPNext, n8n, Telegram clients
   generators/            # planned: ZUGFeRD, XRechnung
 alembic/                 # async migrations (0001 schema, 0002 audit guard)
@@ -176,9 +181,10 @@ PostgreSQL, pgvector, MinIO authentication or ClamAV fail, startup aborts with a
 python -m pytest -q
 ```
 
-The current 170 tests cover normalizers, settings, strict schemas, ORM metadata,
+The current 183 tests cover normalizers, settings, strict schemas, ORM metadata,
 pgvector/HNSW configuration, GAEB parsing/validation, PDF table extraction,
-pricing, hybrid matching, FastAPI lifespan and offline migration rendering.
+pricing, hybrid matching, LangGraph orchestration, Ed25519 approval, FastAPI
+lifespan and offline migration rendering.
 
 ### Parsing, pricing and matching
 
@@ -197,6 +203,43 @@ matches = HybridMatchingService().rank(tender_item, catalog_candidates)
 GAEB validation supports optional XSD schemas (point `xsd_dir` at the official
 GAEB 2021-05 schemas) and always runs deterministic penny reconciliation. The
 X84 writer refuses unsigned or non-approved offers.
+
+### Agent workflow and HITL approval
+
+```python
+from src.agents.graph import build_agent_graph
+from src.agents.state import AgentContext, OfferRequest, initial_state
+from src.services.approval_service import ApprovalService
+
+context = AgentContext(
+    approval=ApprovalService(settings.ed25519_approval_public_key),
+    llm=deepseek_client,  # optional; None disables LLM enrichment
+)
+graph = build_agent_graph(context)
+result = graph.invoke(
+    initial_state(
+        tender=tender,
+        supplier_quotes=quotes,
+        catalog=candidates,
+        request=OfferRequest(customer_name="Stadt Muster", offer_number="AN-2026-1", valid_until=deadline),
+    )
+)
+```
+
+The graph enriches missing specs with DeepSeek, matches the catalogue, prices
+deterministically, and stops at `pending_approval` with an unsigned
+`CustomerOffer`. A human signs the canonical payload out-of-band; rerun with the
+approved offer to pass the cryptographic gate and export X84. The server only
+needs `ED25519_APPROVAL_PUBLIC_KEY`; private keys stay with the approver.
+
+```powershell
+# approver workstation
+yasmina-approval sign --offer offer.json --private-key-file approver.key `
+  --approver "C. Mueller" --output signed.json
+
+# server / CI
+yasmina-approval verify --offer signed.json --public-key $env:ED25519_APPROVAL_PUBLIC_KEY
+```
 
 GitHub Actions (`.github/workflows/ci.yml`) runs the same suite on Python 3.11
 and 3.12, compiles the sources, renders the initial Alembic migration SQL and
@@ -267,7 +310,9 @@ the default application secret.
 - [x] P0.2 — strict schemas, ORM, pgvector, Alembic, audit log
 - [x] P1 — GAEB/PDF parsers, XSD/penny validation, pricing and hybrid matching
 - [x] P1 — FastAPI health/readiness endpoints and startup preflight lifespan
-- [ ] P1 — unit conversion, business endpoints, LangGraph orchestration, HITL signature verification
+- [x] P1 — LangGraph orchestration and DeepSeek extraction client
+- [x] P1 — Ed25519 approval payload, signing, verification and approval gate
+- [ ] P1 — unit conversion, business endpoints
 - [ ] P2 — ERPNext/n8n integrations, ZUGFeRD/XRechnung generators
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

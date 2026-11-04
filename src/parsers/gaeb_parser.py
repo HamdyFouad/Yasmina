@@ -35,6 +35,7 @@ from src.parsers.normalizers import (
     normalize_material,
     normalize_unit_of_measure,
 )
+from src.services.approval_service import ApprovalService
 
 __all__ = [
     "GaebExportError",
@@ -421,6 +422,7 @@ def write_x84(
     prog_system: str = "Project Yasmina",
     prog_name: str = "Yasmina",
     xsd_dir: str | Path | None = None,
+    approval_service: ApprovalService | None = None,
 ) -> tuple[str, ...]:
     """Write an approved offer as a GAEB ``.x84`` bid.
 
@@ -439,6 +441,8 @@ def write_x84(
         raise GaebExportError(f"GAEB bid output must use the .x84 extension, got {output_path.suffix!r}")
 
     _ensure_exportable(offer)
+    if approval_service is not None and not approval_service.verify(offer):
+        raise GaebExportError("offer Ed25519 signature does not verify against the configured public key")
 
     prices: dict[str, Decimal] = {}
     for line in offer.lines:

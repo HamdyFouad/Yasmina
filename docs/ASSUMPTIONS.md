@@ -48,6 +48,22 @@ reconciled with the authoritative spec later.
   rows without a position, description or positive quantity are skipped with a
   warning.
 
+## Agent and approval assumptions (P1.2/P1.3)
+
+- The LangGraph workflow is single-pass and sync: enrich → match → price →
+  approval gate → X84 export. A resumed pass can carry a signed offer and skip
+  re-pricing. Statuses are `pending_approval`, `approved`, `approval_invalid`,
+  `exported` and `failed`.
+- DeepSeek is used only to fill missing material/colour/size/thickness/pack
+  hints. Its output is normalized before merge; LLM failures are warnings, not
+  hard failures.
+- The approval payload is canonical JSON (sorted keys, compact separators,
+  UTF-8) covering the offer, its lines, totals, approver and approval timestamp.
+  The Ed25519 signature signs those bytes; the stored SHA-256 hash is a separate
+  integrity value. Private keys never belong on the application server.
+- The X84 writer can verify against an `ApprovalService`; the orchestration layer
+  always passes the configured verifier.
+
 ## Open questions for spec reconciliation
 
 1. Exact naming of the GAEB/PDF "source format" enum values.

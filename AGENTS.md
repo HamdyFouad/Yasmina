@@ -22,8 +22,8 @@ Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 
 - `src/config.py` (pydantic-settings)
 - `src/models/` (`enums.py`, `schemas.py`, `orm.py`)
 - `src/parsers/` (`normalizers.py`, `pdf_parser.py`, `gaeb_parser.py`, `gaeb_validator.py`)
-- `src/services/` (`matching_service.py`, `pricing_service.py`, `unit_converter.py`)
-- `src/agents/` (LangGraph state machine & nodes)
+- `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`; `unit_converter.py` planned)
+- `src/agents/` (`graph.py`, `nodes.py`, `state.py`, `deepseek.py`)
 - `src/integrations/` (`erpnext_client.py`, `n8n_client.py`, `telegram_notifier.py`)
 - `src/generators/` (`zugferd_generator.py`, `xrechnung_generator.py`)
 - `tests/` (unit, integration, evals with German golden fixtures)
@@ -41,5 +41,6 @@ When given an implementation task:
 - Lint / types: `ruff check .` and `mypy src`.
 - Infrastructure: `docker compose up -d postgres minio clamav` (add `--profile automation` for n8n).
 - Preflight: `python -m src.preflight` (or `python -m src.preflight --json`).
+- Approval: `yasmina-approval sign|verify` (see `src/services/approval_service.py`).
 - Migrations: `alembic upgrade head`; offline SQL preview: `alembic upgrade head --sql`.
 - Spec gaps and inferred schema fields are tracked in `docs/ASSUMPTIONS.md`.

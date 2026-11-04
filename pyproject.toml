@@ -48,6 +48,7 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
     "pygaeb",
+    "langgraph>=0.2",
 ]
 
 [project.urls]
@@ -55,6 +56,7 @@ Repository = "https://github.com/HamdyFouad/Yasmina"
 
 [project.scripts]
 yasmina-preflight = "src.preflight:main"
+yasmina-approval = "src.services.approval_service:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
