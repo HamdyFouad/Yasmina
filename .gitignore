@@ -1,0 +1,32 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.deps/
+build/
+dist/
+
+# Tooling caches
+.pytest_cache/
+pytest-cache-files-*/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors
+.idea/
+.vscode/
+
+# Local artefacts
+var/
+*.log
+*.sqlite3
+.DS_Store
+Thumbs.db

@@ -1,0 +1,36 @@
+"""Alembic offline-render test: the initial migration must produce valid PostgreSQL SQL."""
+
+from __future__ import annotations
+
+import io
+from pathlib import Path
+
+from alembic import command
+from alembic.config import Config
+
+from src.config import reset_settings_cache
+
+ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
+
+
+def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://yasmina:secret@localhost:5432/yasmina")
+    reset_settings_cache()
+
+    buffer = io.StringIO()
+    config = Config(str(ALEMBIC_INI), output_buffer=buffer)
+    command.upgrade(config, "head", sql=True)
+    sql = buffer.getvalue()
+
+    assert "CREATE EXTENSION IF NOT EXISTS vector" in sql
+    assert "CREATE TABLE tenders" in sql
+    assert "CREATE TABLE audit_logs" in sql
+    assert "USING hnsw (embedding vector_cosine_ops)" in sql
+    assert "CREATE TRIGGER trg_audit_logs_append_only" in sql
+    assert "INSERT INTO alembic_version" in sql
+    assert sql.rstrip().endswith("COMMIT;")
+
+    # Every domain table is created exactly once.
+    assert sql.count("CREATE TABLE ") == 11  # 10 domain tables + alembic_version
+
+    reset_settings_cache()
