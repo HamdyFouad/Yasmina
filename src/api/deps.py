@@ -9,6 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.security import AuthError, Principal, Role, decode_access_token
+from src.agents.checkpoint import SqlAlchemyCheckpointSaver
 from src.config import Settings, get_settings
 from src.db import get_session_factory
 from src.integrations.clamav_client import ClamAVScanner
@@ -16,6 +17,7 @@ from src.integrations.erpnext_client import ERPNextClient
 from src.integrations.minio_client import MinioObjectStorage
 from src.integrations.n8n_client import N8nClient
 from src.repositories.integration_repository import IntegrationRepository
+from src.repositories.offer_repository import OfferRepository
 from src.repositories.supplier_quote_repository import SupplierQuoteRepository
 from src.repositories.tender_repository import TenderRepository
 from src.services.audit_service import AuditService
@@ -29,10 +31,12 @@ __all__ = [
     "get_integration_repository",
     "get_n8n_client",
     "get_object_storage",
+    "get_offer_repository",
     "get_principal",
     "get_session",
     "get_supplier_quote_repository",
     "get_tender_repository",
+    "get_workflow_checkpointer",
     "require_roles",
 ]
 
@@ -133,3 +137,15 @@ def get_supplier_quote_repository(
     session: AsyncSession = Depends(get_session),
 ) -> SupplierQuoteRepository:
     return SupplierQuoteRepository(session)
+
+
+def get_offer_repository(
+    session: AsyncSession = Depends(get_session),
+) -> OfferRepository:
+    return OfferRepository(session)
+
+
+def get_workflow_checkpointer(
+    settings: Settings = Depends(get_app_settings),
+) -> SqlAlchemyCheckpointSaver:
+    return SqlAlchemyCheckpointSaver(get_session_factory(settings))

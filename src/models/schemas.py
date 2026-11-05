@@ -396,7 +396,9 @@ class CustomerOffer(YasminaSchema):
     approved_by: Annotated[str, Field(min_length=1, max_length=256)] | None = None
     approved_at: AwareDatetime | None = None
 
+    owner: Annotated[str, Field(min_length=1, max_length=128)] | None = None
     erpnext_quotation_name: Annotated[str, Field(max_length=140)] | None = None
+    invoice_artifacts: dict[str, Any] = Field(default_factory=dict)
     gaeb_export_path: Annotated[str, Field(max_length=512)] | None = None
 
     notes: Annotated[str, Field(max_length=8000)] | None = None

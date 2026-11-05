@@ -22,8 +22,10 @@ from src.api.deps import (
     get_audit_service,
     get_clamav_scanner,
     get_object_storage,
+    get_offer_repository,
     get_session,
     get_tender_repository,
+    get_workflow_checkpointer,
 )
 from src.api.security import Role, create_access_token
 from src.config import Settings
@@ -31,6 +33,7 @@ from src.integrations.clamav_client import ClamAVResult
 from src.main import create_app
 from src.models.enums import GloveSize, MaterialType, StandardizedColor, UnitOfMeasure
 from src.models.schemas import CustomerOffer, SupplierQuote, SupplierQuoteLine
+from src.repositories.offer_repository import StoredOffer
 from src.repositories.tender_repository import StoredTender
 from src.services.approval_service import generate_keypair, sign_offer
 
@@ -210,6 +213,32 @@ class FakeAudit:
         self.entries.append(kwargs)
 
 
+class FakeOfferRepository:
+    def __init__(self) -> None:
+        self.offers: dict[str, CustomerOffer] = {}
+
+    async def get_by_number(self, offer_number: str) -> StoredOffer | None:
+        offer = self.offers.get(offer_number)
+        return StoredOffer(offer=offer, created=False) if offer is not None else None
+
+    async def get(self, offer_id):  # type: ignore[no-untyped-def]
+        for offer in self.offers.values():
+            if offer.id == offer_id:
+                return StoredOffer(offer=offer, created=False)
+        return None
+
+    async def save(self, offer: CustomerOffer, *, commit: bool = True) -> StoredOffer:
+        created = offer.offer_number not in self.offers
+        self.offers[offer.offer_number] = offer
+        return StoredOffer(offer=offer, created=created)
+
+    async def list(self, **kwargs):  # type: ignore[no-untyped-def]
+        return list(self.offers.values())
+
+    async def count(self, **kwargs) -> int:  # type: ignore[no-untyped-def]
+        return len(self.offers)
+
+
 @pytest.fixture()
 def api(workspace_tmp):  # type: ignore[no-untyped-def]
     app = create_app(make_settings(), run_startup_checks=False)
@@ -217,6 +246,7 @@ def api(workspace_tmp):  # type: ignore[no-untyped-def]
     repository = FakeTenderRepository()
     storage = FakeStorage()
     audit = FakeAudit()
+    offers = FakeOfferRepository()
 
     async def fake_get_session():
         yield fake_session
@@ -226,7 +256,10 @@ def api(workspace_tmp):  # type: ignore[no-untyped-def]
     app.dependency_overrides[get_clamav_scanner] = lambda: CleanScanner()
     app.dependency_overrides[get_object_storage] = lambda: storage
     app.dependency_overrides[get_audit_service] = lambda: audit
+    app.dependency_overrides[get_offer_repository] = lambda: offers
+    app.dependency_overrides[get_workflow_checkpointer] = lambda: None
     app.state.test_audit = audit
+    app.state.test_offers = offers
     with TestClient(app) as client:
         yield client, app, fake_session
 

@@ -14,6 +14,7 @@ from src.api.deps import (
     get_audit_service,
     get_erpnext_client,
     get_object_storage,
+    get_offer_repository,
     get_session,
     require_roles,
 )
@@ -28,6 +29,13 @@ from src.integrations.minio_client import (
     object_name_for_invoice,
 )
 from src.models.enums import AuditEventType
+from src.models.schemas import CustomerOffer
+from src.repositories.offer_repository import (
+    OfferRepository,
+    OfferRepositoryConflict,
+    OfferRepositoryError,
+    StoredOffer,
+)
 from src.services.approval_service import ApprovalError, ApprovalService
 from src.services.audit_service import AuditService, AuditServiceError
 
@@ -73,11 +81,12 @@ async def approve_offer_endpoint(
     settings: Settings = Depends(get_app_settings),
     storage: MinioObjectStorage = Depends(get_object_storage),
     erpnext: ERPNextClient = Depends(get_erpnext_client),
+    repository: OfferRepository = Depends(get_offer_repository),
     audit: AuditService = Depends(get_audit_service),
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_roles(Role.APPROVER, Role.ADMIN)),
 ) -> dict[str, Any]:
-    """Verify an external signature, then create e-invoice/ERPNext artefacts."""
+    """Verify, persist and complete an approval idempotently by offer number."""
 
     try:
         offer = parse_customer_offer(payload.offer)
@@ -95,11 +104,65 @@ async def approve_offer_endpoint(
     except ApprovalError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    artifacts: dict[str, Any] | None = None
-    if payload.invoice is not None:
+    existing = await repository.get_by_number(approved.offer_number)
+    if existing is not None:
+        current = existing.offer
+        if current.id != approved.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="offer_number is already persisted with a different offer id",
+            )
+        if (
+            current.ed25519_approval_signature is not None
+            and current.ed25519_approval_signature != approved.ed25519_approval_signature
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="offer_number is already approved with a different signature",
+            )
+        if (
+            current.approval_payload_hash is not None
+            and current.approval_payload_hash != approved.approval_payload_hash
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="offer_number is already approved with a different payload",
+            )
+        approved = approved.model_copy(
+            update={
+                "id": current.id,
+                "owner": current.owner or payload.owner or approved.owner or principal.sub,
+                "created_at": current.created_at,
+                "invoice_artifacts": dict(current.invoice_artifacts),
+                "erpnext_quotation_name": current.erpnext_quotation_name,
+            }
+        )
+    else:
+        approved = approved.model_copy(
+            update={"owner": payload.owner or approved.owner or principal.sub}
+        )
+
+    # Persist the cryptographically approved state before external side effects,
+    # so a failed invoice/ERP call can be retried by submitting the same offer.
+    async def _persist(value: CustomerOffer) -> StoredOffer:
+        try:
+            return await repository.save(value)
+        except OfferRepositoryConflict as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except OfferRepositoryError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"offer persistence failed: {exc}",
+            ) from exc
+
+    stored = await _persist(approved)
+
+    persisted = stored.offer
+    artifacts: dict[str, Any] | None = dict(persisted.invoice_artifacts) or None
+    if payload.invoice is not None and not persisted.invoice_artifacts:
         try:
             artifacts = await generate_invoice_artifacts(
-                approved,
+                persisted,
                 settings,
                 payload.invoice,
                 storage,
@@ -107,20 +170,30 @@ async def approve_offer_endpoint(
         except (InvoiceWiringError, ObjectStorageError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"offer approved but e-invoice generation failed: {exc}",
+                detail=f"offer approved and persisted, but e-invoice generation failed: {exc}",
             ) from exc
+        persisted = persisted.model_copy(update={"invoice_artifacts": artifacts})
+        persisted = (await _persist(persisted)).offer
+        artifacts = dict(persisted.invoice_artifacts)
 
-    if erpnext.configured:
+    if persisted.erpnext_quotation_name:
+        erpnext_result: dict[str, Any] = {
+            "status": "existing",
+            "quotation_name": persisted.erpnext_quotation_name,
+            "created": False,
+        }
+    elif erpnext.configured:
         try:
-            quotation = await erpnext.create_quotation(approved)
+            quotation = await erpnext.create_quotation(persisted)
         except ERPNextError as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"offer approved but ERPNext quotation creation failed: {exc}",
+                detail=f"offer approved and persisted, but ERPNext quotation creation failed: {exc}",
             ) from exc
 
-        approved = approved.model_copy(update={"erpnext_quotation_name": quotation.name})
-        erpnext_result: dict[str, Any] = {
+        persisted = persisted.model_copy(update={"erpnext_quotation_name": quotation.name})
+        persisted = (await _persist(persisted)).offer
+        erpnext_result = {
             "status": "created" if quotation.created else "existing",
             **quotation.as_dict(),
         }
@@ -129,12 +202,12 @@ async def approve_offer_endpoint(
                 event_type=AuditEventType.ERP_QUOTATION_CREATED,
                 actor=principal.sub,
                 entity_type="customer_offer",
-                entity_id=str(approved.id),
+                entity_id=str(persisted.id),
                 payload={
-                    "offer_number": approved.offer_number,
+                    "offer_number": persisted.offer_number,
                     "quotation_name": quotation.name,
                     "created": quotation.created,
-                    "approved_by": approved.approved_by,
+                    "approved_by": persisted.approved_by,
                 },
                 commit=False,
             )
@@ -152,9 +225,10 @@ async def approve_offer_endpoint(
         }
 
     return {
-        "offer": approved.model_dump(mode="json"),
+        "offer": persisted.model_dump(mode="json"),
         "artifacts": artifacts,
         "erpnext": erpnext_result,
+        "created": stored.created,
     }
 
 

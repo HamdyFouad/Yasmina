@@ -25,11 +25,15 @@ from src.agents.nodes import (
 )
 from src.agents.state import AgentContext, AgentState, initial_state
 
-__all__ = ["build_agent_graph", "run_agent"]
+__all__ = ["build_agent_graph", "run_agent", "run_agent_async"]
 
 
-def build_agent_graph(context: AgentContext) -> Any:
-    """Compile the deterministic workflow with injected services."""
+def build_agent_graph(context: AgentContext, *, checkpointer: Any | None = None) -> Any:
+    """Compile the deterministic workflow with injected services.
+
+    When ``checkpointer`` is provided, LangGraph stores the state machine's
+    checkpoints through that saver. The API passes a PostgreSQL-backed saver.
+    """
 
     graph = StateGraph(AgentState)
     graph.add_node("triage", lambda state: triage_tender(state, context))
@@ -58,10 +62,23 @@ def build_agent_graph(context: AgentContext) -> Any:
         {"export": "export", "stop": END},
     )
     graph.add_edge("export", END)
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def run_agent(state: AgentState, context: AgentContext) -> AgentState:
-    """Invoke one workflow pass and return the final state."""
+    """Invoke one workflow pass synchronously (tests/offline tooling)."""
 
     return build_agent_graph(context).invoke(state)  # type: ignore[return-value]
+
+
+async def run_agent_async(
+    state: AgentState,
+    context: AgentContext,
+    *,
+    checkpointer: Any | None = None,
+    config: dict[str, Any] | None = None,
+) -> AgentState:
+    """Invoke one workflow pass asynchronously, optionally with checkpointing."""
+
+    graph = build_agent_graph(context, checkpointer=checkpointer)
+    return await graph.ainvoke(state, config=config or {})  # type: ignore[return-value]

@@ -115,6 +115,7 @@ class ApprovalPayload(BaseModel):
     signature: str = Field(min_length=128, max_length=128)
     approver: str = Field(min_length=1, max_length=256)
     approved_at: datetime | None = None
+    owner: str | None = Field(default=None, min_length=1, max_length=128)
     invoice: InvoiceRequestPayload | None = None
 
 

@@ -1,4 +1,4 @@
-# P0–P3 Inference Notes — Domain & Service Assumptions
+# P0–P4 Inference Notes — Domain & Service Assumptions
 
 Sections 5–8 of `docs/DETAILED_SPEC.md` (field-by-field schemas and pricing
 rules) are not yet published. This file records the contract inferred for the
@@ -177,6 +177,30 @@ reconciled with the authoritative spec later.
   worker exposes an immediate `scrape` command and a long-running `schedule`
   command; production still injects the pipeline hook when a real ingestion
   queue/graph should be triggered.
+
+## Offer persistence & workflow memory assumptions (P4.1)
+
+- `customer_offers` now stores `owner` and `invoice_artifacts` (MinIO object
+  metadata). `CustomerOffer` exposes the same fields; the Ed25519 signature
+  deliberately excludes them, so artifact/ERP updates do not invalidate an
+  approval.
+- Approval is idempotent by `offer_number`. The first request persists the
+  approved state before invoice/ERP side effects. A replay with the same
+  signature and payload hash returns the stored offer and artifacts; a
+  different signature/hash returns `409`. A failed invoice/ERP call leaves the
+  approved row in place so the client can retry the missing side effect.
+- The approval payload accepts an optional `owner` (sales subject). If omitted,
+  the signed offer's `owner` is used, then the authenticated approver. Sales
+  users can only read offers where `owner == JWT subject`; viewers and admins
+  can read all. Approvers are not granted the read routes by default.
+- LangGraph uses `SqlAlchemyCheckpointSaver`, a local equivalent of
+  `AsyncPostgresSaver`, with checkpoint header/blob/write tables. Project
+  Pydantic models, enums and workflow dataclasses are explicitly registered
+  with the serializer. The API thread key is
+  `tender:<tender_id>:<offer_number>`.
+- The two live PostgreSQL tests are skipped unless
+  `YASMINA_TEST_DATABASE_URL` is set; CI without a provisioned database still
+  runs the mocked offer/checkpoint behaviour tests.
 
 ## E-invoicing assumptions (P2.1)
 

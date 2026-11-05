@@ -14,7 +14,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
-from src.agents.graph import run_agent
+from src.agents.checkpoint import SqlAlchemyCheckpointSaver
+from src.agents.graph import run_agent_async
 from src.agents.nodes import price_offer
 from src.agents.state import initial_state
 from src.api.context import build_agent_context
@@ -23,8 +24,10 @@ from src.api.deps import (
     get_audit_service,
     get_clamav_scanner,
     get_object_storage,
+    get_offer_repository,
     get_session,
     get_tender_repository,
+    get_workflow_checkpointer,
     require_roles,
 )
 from src.api.schemas import (
@@ -46,6 +49,11 @@ from src.models.enums import ProcurementProcedure, TenderSourceFormat
 from src.models.schemas import CustomerOffer, Tender
 from src.parsers.gaeb_parser import GaebParseError, parse_gaeb
 from src.parsers.pdf_parser import PdfParseError, PdfParserUnavailable, parse_pdf
+from src.repositories.offer_repository import (
+    OfferRepository,
+    OfferRepositoryConflict,
+    OfferRepositoryError,
+)
 from src.repositories.tender_repository import (
     StoredTender,
     TenderRepository,
@@ -347,9 +355,11 @@ async def run_tender_workflow(
     tender_id: UUID,
     payload: WorkflowPayload,
     repository: TenderRepository = Depends(get_tender_repository),
+    offer_repository: OfferRepository = Depends(get_offer_repository),
     storage: MinioObjectStorage = Depends(get_object_storage),
     settings: Settings = Depends(get_app_settings),
-    _: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
+    checkpointer: SqlAlchemyCheckpointSaver = Depends(get_workflow_checkpointer),
+    principal: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
 ) -> dict[str, Any]:
     """Run the LangGraph workflow; pending/approved status is returned as data."""
 
@@ -371,8 +381,30 @@ async def run_tender_workflow(
         gaeb_document=stored.document,
         export_path=str(export_path) if export_path else None,
     )
-    result = run_agent(state, context)
+    result = await run_agent_async(
+        state,
+        context,
+        checkpointer=checkpointer,
+        config={
+            "configurable": {
+                "thread_id": f"tender:{tender_id}:{payload.offer_request.offer_number}"
+            }
+        },
+    )
     result_offer: CustomerOffer | None = result.get("offer")
+    if result_offer is not None:
+        result_offer = result_offer.model_copy(
+            update={"owner": result_offer.owner or principal.sub}
+        )
+        try:
+            await offer_repository.save(result_offer)
+        except OfferRepositoryConflict as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except OfferRepositoryError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"offer persistence failed: {exc}",
+            ) from exc
     return {
         "status": result.get("status"),
         "offer": result_offer.model_dump(mode="json") if result_offer is not None else None,

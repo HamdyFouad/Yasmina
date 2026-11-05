@@ -19,6 +19,9 @@ EXPECTED_TABLES = {
     "catalog_articles",
     "audit_logs",
     "integration_idempotency",
+    "workflow_checkpoints",
+    "workflow_checkpoint_blobs",
+    "workflow_checkpoint_writes",
 }
 
 
@@ -105,3 +108,24 @@ def test_integration_idempotency_shape() -> None:
         "ck_integration_idempotency_status_valid",
         "ck_integration_idempotency_request_hash_format",
     } <= constraint_names
+
+
+def test_offer_persistence_and_workflow_checkpoint_columns() -> None:
+    offers = Base.metadata.tables["customer_offers"]
+    checkpoints = Base.metadata.tables["workflow_checkpoints"]
+    blobs = Base.metadata.tables["workflow_checkpoint_blobs"]
+    writes = Base.metadata.tables["workflow_checkpoint_writes"]
+
+    assert offers.c.owner.type.length == 128
+    assert offers.c.invoice_artifacts.nullable is False
+    assert "ix_customer_offers_owner" in {index.name for index in offers.indexes}
+    assert checkpoints.c.checkpoint_blob.type.__class__.__name__ == "LargeBinary"
+    assert {"thread_id", "checkpoint_ns", "checkpoint_id"} <= {
+        column.name for column in checkpoints.primary_key.columns
+    }
+    assert {"thread_id", "checkpoint_ns", "channel", "version"} == {
+        column.name for column in blobs.primary_key.columns
+    }
+    assert {"thread_id", "checkpoint_ns", "checkpoint_id", "task_id", "idx"} == {
+        column.name for column in writes.primary_key.columns
+    }

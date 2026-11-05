@@ -6,12 +6,12 @@
 cleaning & hygiene supplies sector** — paper towels, nitrile/latex gloves, and
 waste bags across all thicknesses, volumes and colour standards.
 
-> **Status:** P0 foundation, P1 core, durable PostgreSQL tender persistence,
-> MinIO object storage, ClamAV-scanned/audited uploads, Ed25519 approval with
-> automatic XRechnung/ZUGFeRD generation, ERPNext quotation sync,
-> HMAC-authenticated n8n RFQ/quote flows, compliant portal scrapers, live
-> DeepSeek/Docling paths, deterministic unit conversion and the daily scrape
-> worker are complete.
+> **Status:** P0 foundation, P1 core, durable PostgreSQL tender/offer
+> persistence, MinIO object storage, ClamAV-scanned/audited uploads, Ed25519
+> approval with automatic XRechnung/ZUGFeRD generation, ERPNext quotation
+> sync, HMAC-authenticated n8n RFQ/quote flows, compliant portal scrapers, live
+> DeepSeek/Docling paths, deterministic unit conversion, PostgreSQL LangGraph
+> checkpoints and the daily scrape worker are complete.
 
 ---
 
@@ -68,10 +68,12 @@ src/
     routes/
       auth.py            # POST /auth/token
       tenders.py         # upload (scanned), match, price, workflow
-      approvals.py       # verify/approve offers, ERPNext quotation + invoices
+      approvals.py       # idempotent approval, offer persistence, ERPNext + invoices
+      offers.py          # owner-aware offer retrieval
       integrations.py    # n8n RFQ dispatch + signed quote callback
   repositories/
     tender_repository.py # PostgreSQL tender/position persistence
+    offer_repository.py  # offer lines, artifacts and ERPNext names
     integration_repository.py # durable idempotency-key ledger
     supplier_quote_repository.py # inbound n8n quote persistence
   models/
@@ -92,6 +94,7 @@ src/
   worker.py              # one-off/daily portal scrape CLI worker
   agents/
     graph.py             # LangGraph workflow and routing
+    checkpoint.py        # SQLAlchemy-backed checkpoint saver
     nodes.py             # enrich, match, price, approval gate, export
     state.py             # typed state, dependencies and offer request
     deepseek.py          # DeepSeek structured extraction client
@@ -108,7 +111,7 @@ src/
     leitweg.py           # Leitweg-ID format + MOD-97-10 validation
     zugferd_generator.py # Factur-X/ZUGFeRD 2.2 CII + PDF embedding
     xrechnung_generator.py # XRechnung 3.0 UBL XML
-alembic/                 # async migrations (0001 schema, 0002 audit guard, 0003 idempotency)
+alembic/                 # async migrations (0001 schema, 0002 audit guard, 0003 idempotency, 0004 offers/checkpoints)
 docker/                  # PostgreSQL bootstrap (pgvector, n8n database)
 docs/
   DETAILED_SPEC.md       # authoritative engineering specification
@@ -223,6 +226,8 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | POST | `/approvals/verify` | viewer/approver/admin |
 | POST | `/approvals/approve` | approver/admin |
 | GET | `/approvals/{offer_number}/documents/{format}` | viewer/approver/admin |
+| GET | `/offers` | sales (own), viewer/admin (all) |
+| GET | `/offers/{id}` | sales (own), viewer/admin (all) |
 | POST | `/integrations/rfq/dispatch` | sales/admin |
 | POST | `/integrations/n8n/supplier-quotes` | n8n HMAC signature |
 
@@ -249,6 +254,19 @@ ZUGFeRD PDF and stores them under `offers/{offer_number}/` in MinIO. The downloa
 endpoint serves `format=xrechnung|zugferd`. If ERPNext credentials are configured,
 approval also creates (or returns) the matching ERPNext Quotation and stores its
 name on the offer.
+
+Approval is now idempotent by `offer_number`: the approved state is persisted
+before invoice/ERP side effects, retries return the same offer and artifacts,
+and reusing an offer number with a different signature/payload returns `409`.
+Workflow runs persist their generated drafts as well, so the pending offer can
+be resumed and approved after a worker restart. The optional `owner` field in
+the approval payload assigns the sales owner (default: the signed offer's
+owner, then the authenticated approver).
+`GET /offers` and `GET /offers/{id}` expose durable offers; sales users are
+limited to their own `owner`, while viewers and admins can read all. LangGraph
+checkpoints are stored in PostgreSQL (`workflow_checkpoint*`) with the workflow
+thread key `tender:<id>:<offer_number>`, so a worker restart can resume the
+state machine.
 
 #### ERPNext and n8n integration
 
@@ -327,14 +345,22 @@ after the metadata row is committed.
 python -m pytest -q
 ```
 
-The current 266 tests cover normalizers, settings, strict schemas, ORM metadata,
-pgvector/HNSW configuration, GAEB parsing/validation, PDF table extraction,
-pricing, unit conversion, hybrid matching, LangGraph triage/enrichment,
-Ed25519 approval, ClamAV scanning and audit chaining, MinIO object flows,
-ERPNext retries/payload mapping, n8n HMAC callbacks and idempotency, portal
-robots/rate/UA/artifact handling, CPV-filtered HTML extraction, cron scheduling,
-FastAPI business routes, RBAC, tender persistence, e-invoicing and offline
-migration rendering.
+The current 273 tests pass (plus two optional PostgreSQL-only tests that are
+skipped unless `YASMINA_TEST_DATABASE_URL` is set) and cover normalizers,
+settings, strict schemas, ORM metadata, pgvector/HNSW configuration, GAEB
+parsing/validation, PDF table extraction, pricing, unit conversion, hybrid
+matching, LangGraph triage/enrichment and checkpointing, Ed25519 approval,
+offer persistence/idempotency, ClamAV scanning and audit chaining, MinIO object
+flows, ERPNext retries/payload mapping, n8n HMAC callbacks and idempotency,
+portal robots/rate/UA/artifact handling, CPV-filtered HTML extraction, cron
+scheduling, FastAPI business routes, RBAC, tender persistence, e-invoicing and
+offline migration rendering.
+
+```powershell
+# optional live PostgreSQL offer/checkpoint tests (after alembic upgrade head)
+$env:YASMINA_TEST_DATABASE_URL = "postgresql+asyncpg://yasmina:yasmina@localhost:5432/yasmina"
+python -m pytest -q tests/integration/test_offer_workflow_db.py
+```
 
 ### Parsing, pricing and matching
 
@@ -506,6 +532,8 @@ the default application, JWT, API-admin or n8n HMAC secrets.
 | Offer totals | Pydantic validators + `total_gross = total_net + total_vat` |
 | Ed25519 format | 128 lowercase hex characters (64-byte signature) |
 | Audit immutability | `BEFORE UPDATE/DELETE/TRUNCATE` triggers raising an exception |
+| Offer idempotency | unique `offer_number` + approval signature/payload comparison |
+| Workflow durability | PostgreSQL checkpoint header/blob/write tables |
 | Vector search | `vector(1024)` + HNSW `vector_cosine_ops` (`m=16`, `ef_construction=64`) |
 
 ---
@@ -535,6 +563,7 @@ the default application, JWT, API-admin or n8n HMAC secrets.
 - [x] P2.1 — ZUGFeRD 2.2/Factur-X and XRechnung 3.0 generators with Leitweg-ID validation
 - [x] P2.2 — robots-compliant Bayern/Bund portal scrapers, raw artifacts, CPV filter and ingestion bridge
 - [x] P3 — live DeepSeek triage/spec extraction, real Docling PDF path, unit conversion and daily scrape worker
+- [x] P4.1 — durable offer persistence, idempotent approvals, owner-aware offer API and PostgreSQL LangGraph checkpoints
 - [ ] P1 — refresh tokens and advanced RBAC
 - [ ] P2 — Telegram notifier and production ERPNext/n8n workflow templates
 

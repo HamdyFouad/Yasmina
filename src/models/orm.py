@@ -37,6 +37,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     Numeric,
     String,
@@ -75,6 +76,9 @@ __all__ = [
     "SupplierQuoteTier",
     "Tender",
     "TenderItem",
+    "WorkflowCheckpoint",
+    "WorkflowCheckpointBlob",
+    "WorkflowCheckpointWrite",
 ]
 
 NAMING_CONVENTION = {
@@ -441,7 +445,11 @@ class CustomerOffer(Base, TimestampMixin):
     approved_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
     erpnext_quotation_name: Mapped[str | None] = mapped_column(String(140), nullable=True, unique=True)
+    invoice_artifacts: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     gaeb_export_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -493,6 +501,7 @@ class CustomerOffer(Base, TimestampMixin):
         ),
         Index("ix_customer_offers_status", "status"),
         Index("ix_customer_offers_customer", "customer_name"),
+        Index("ix_customer_offers_owner", "owner"),
     )
 
 
@@ -624,6 +633,71 @@ class IntegrationIdempotency(Base, TimestampMixin):
         CheckConstraint("request_hash ~ '^[0-9a-f]{64}$'", name="request_hash_format"),
         Index("ix_integration_idempotency_status", "status"),
         Index("ix_integration_idempotency_operation", "operation"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# LangGraph workflow checkpoints
+# ---------------------------------------------------------------------------
+
+
+class WorkflowCheckpoint(Base):
+    """Durable LangGraph checkpoint header.
+
+    Channel values are stored separately in :class:`WorkflowCheckpointBlob` so
+    LangGraph's serializer can round-trip Pydantic/Decimal/UUID state without
+    placing business models directly into JSONB.
+    """
+
+    __tablename__ = "workflow_checkpoints"
+
+    thread_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    checkpoint_ns: Mapped[str] = mapped_column(String(255), primary_key=True, default="")
+    checkpoint_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    parent_checkpoint_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    checkpoint_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    checkpoint_blob: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    metadata_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    metadata_blob: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("ix_workflow_checkpoints_thread", "thread_id", "checkpoint_ns"),)
+
+
+class WorkflowCheckpointBlob(Base):
+    """Serialized LangGraph channel value for one checkpoint namespace/version."""
+
+    __tablename__ = "workflow_checkpoint_blobs"
+
+    thread_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    checkpoint_ns: Mapped[str] = mapped_column(String(255), primary_key=True)
+    channel: Mapped[str] = mapped_column(String(255), primary_key=True)
+    version: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    value_blob: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class WorkflowCheckpointWrite(Base):
+    """Pending LangGraph task write, replayed after a worker restart."""
+
+    __tablename__ = "workflow_checkpoint_writes"
+
+    thread_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    checkpoint_ns: Mapped[str] = mapped_column(String(255), primary_key=True)
+    checkpoint_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    idx: Mapped[int] = mapped_column(Integer, primary_key=True)
+    channel: Mapped[str] = mapped_column(String(255), nullable=False)
+    value_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    value_blob: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    task_path: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
 

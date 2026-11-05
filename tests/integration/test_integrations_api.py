@@ -19,9 +19,11 @@ from src.api.deps import (
     get_erpnext_client,
     get_integration_repository,
     get_n8n_client,
+    get_offer_repository,
     get_session,
     get_supplier_quote_repository,
     get_tender_repository,
+    get_workflow_checkpointer,
 )
 from src.api.security import Role, create_access_token
 from src.config import Settings
@@ -49,6 +51,7 @@ from src.models.schemas import (
     q4,
 )
 from src.repositories.integration_repository import IdempotencyRecord
+from src.repositories.offer_repository import StoredOffer
 from src.repositories.supplier_quote_repository import StoredSupplierQuote
 from src.repositories.tender_repository import StoredTender
 from src.services.approval_service import generate_keypair, sign_offer
@@ -270,6 +273,32 @@ class FakeERPNext:
         )
 
 
+class FakeOfferRepository:
+    def __init__(self) -> None:
+        self.offers: dict[str, CustomerOffer] = {}
+
+    async def get_by_number(self, offer_number: str) -> StoredOffer | None:
+        offer = self.offers.get(offer_number)
+        return StoredOffer(offer=offer, created=False) if offer is not None else None
+
+    async def save(self, offer: CustomerOffer, *, commit: bool = True) -> StoredOffer:
+        created = offer.offer_number not in self.offers
+        self.offers[offer.offer_number] = offer
+        return StoredOffer(offer=offer, created=created)
+
+    async def get(self, offer_id: Any) -> StoredOffer | None:
+        for offer in self.offers.values():
+            if offer.id == offer_id:
+                return StoredOffer(offer=offer, created=False)
+        return None
+
+    async def list(self, **kwargs: Any) -> list[CustomerOffer]:
+        return list(self.offers.values())
+
+    async def count(self, **kwargs: Any) -> int:
+        return len(self.offers)
+
+
 @pytest.fixture()
 def api() -> Any:
     app = create_app(SETTINGS, run_startup_checks=False)
@@ -280,6 +309,7 @@ def api() -> Any:
     quote_repository = FakeQuoteRepository()
     n8n = FakeN8n(SETTINGS)
     erpnext = FakeERPNext()
+    offers = FakeOfferRepository()
 
     async def fake_session() -> Any:
         yield session
@@ -291,6 +321,8 @@ def api() -> Any:
     app.dependency_overrides[get_supplier_quote_repository] = lambda: quote_repository
     app.dependency_overrides[get_n8n_client] = lambda: n8n
     app.dependency_overrides[get_erpnext_client] = lambda: erpnext
+    app.dependency_overrides[get_offer_repository] = lambda: offers
+    app.dependency_overrides[get_workflow_checkpointer] = lambda: None
 
     with TestClient(app) as client:
         yield SimpleNamespace(
@@ -303,6 +335,7 @@ def api() -> Any:
             quotes=quote_repository,
             n8n=n8n,
             erpnext=erpnext,
+            offers=offers,
         )
 
 
