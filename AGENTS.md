@@ -27,7 +27,7 @@ Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 
 - `src/parsers/` (`normalizers.py`, `pdf_parser.py`, `gaeb_parser.py`, `gaeb_validator.py`)
 - `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`; `unit_converter.py` planned)
 - `src/agents/` (`graph.py`, `nodes.py`, `state.py`, `deepseek.py`)
-- `src/integrations/` (`clamav_client.py`; ERPNext, n8n and Telegram planned)
+- `src/integrations/` (`clamav_client.py`, `minio_client.py`, `erpnext_client.py`, `n8n_client.py`; Telegram planned)
 - `src/generators/` (`invoice_models.py`, `leitweg.py`, `zugferd_generator.py`, `xrechnung_generator.py`)
 - `tests/` (unit, integration, evals with German golden fixtures)
 
@@ -45,5 +45,5 @@ When given an implementation task:
 - Infrastructure: `docker compose up -d postgres minio clamav` (add `--profile automation` for n8n).
 - Preflight: `python -m src.preflight` (or `python -m src.preflight --json`).
 - Approval: `yasmina-approval sign|verify` (see `src/services/approval_service.py`).
-- Migrations: `alembic upgrade head`; offline SQL preview: `alembic upgrade head --sql`.
+- Migrations: `python -m alembic upgrade head`; offline SQL preview: `python -m alembic upgrade head --sql`.
 - Spec gaps and inferred schema fields are tracked in `docs/ASSUMPTIONS.md`.

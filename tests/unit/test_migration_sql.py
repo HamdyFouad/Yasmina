@@ -25,6 +25,7 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert "CREATE EXTENSION IF NOT EXISTS vector" in sql
     assert "CREATE TABLE tenders" in sql
     assert "CREATE TABLE audit_logs" in sql
+    assert "CREATE TABLE integration_idempotency" in sql
     assert "USING hnsw (embedding vector_cosine_ops)" in sql
     assert "CREATE TRIGGER trg_audit_logs_append_only" in sql
     assert "CREATE TRIGGER trg_audit_logs_no_truncate" in sql
@@ -32,6 +33,6 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert sql.rstrip().endswith("COMMIT;")
 
     # Every domain table is created exactly once.
-    assert sql.count("CREATE TABLE ") == 11  # 10 domain tables + alembic_version
+    assert sql.count("CREATE TABLE ") == 12  # 11 domain tables + alembic_version
 
     reset_settings_cache()

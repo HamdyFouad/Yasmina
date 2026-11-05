@@ -10,12 +10,13 @@ Audit log
 
 ``entry_hash = sha256(canonical_json({...}))``
 
-where the hashed payload contains ``id`` (the monotonic sequence), an
-ISO-8601 UTC ``occurred_at``, ``event_type``, ``actor``, ``entity_type``,
-``entity_id``, ``payload`` and ``prev_hash``. Canonical JSON means UTF-8,
-sorted keys, ``separators=(",", ":")`` and ``ensure_ascii=False``. The database
-enforces the chain shape (64-char lowercase hex hashes, unique ``entry_hash``)
-and blocks UPDATE/DELETE with a trigger created by the initial migration.
+where the hashed payload contains an ISO-8601 UTC ``occurred_at``,
+``event_type``, ``actor``, ``entity_type``, ``entity_id``, ``payload`` and
+``prev_hash``. The database-generated ``id`` is deliberately excluded so the
+hash can be computed before insert. Canonical JSON means UTF-8, sorted keys,
+``separators=(",", ":")`` and ``ensure_ascii=False``. The database enforces the
+chain shape (64-char lowercase hex hashes, unique ``entry_hash``) and blocks
+UPDATE/DELETE with a trigger created by the initial migration.
 """
 
 from __future__ import annotations
@@ -67,6 +68,7 @@ __all__ = [
     "CatalogArticle",
     "CustomerOffer",
     "CustomerOfferLine",
+    "IntegrationIdempotency",
     "Supplier",
     "SupplierQuote",
     "SupplierQuoteLine",
@@ -590,6 +592,38 @@ class CatalogArticle(Base, TimestampMixin):
             postgresql_with={"m": 16, "ef_construction": 64},
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# External integration idempotency
+# ---------------------------------------------------------------------------
+
+
+class IntegrationIdempotency(Base, TimestampMixin):
+    """Tracks outbound webhook and inbound callback idempotency keys.
+
+    A key is reserved before an integration side effect. ``pending`` means a
+    concurrent or crashed attempt owns the key, ``succeeded`` stores the exact
+    API response for replay, and ``failed`` may be retried explicitly.
+    """
+
+    __tablename__ = "integration_idempotency"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    operation: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    response: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'succeeded', 'failed')",
+            name="status_valid",
+        ),
+        CheckConstraint("request_hash ~ '^[0-9a-f]{64}$'", name="request_hash_format"),
+        Index("ix_integration_idempotency_status", "status"),
+        Index("ix_integration_idempotency_operation", "operation"),
     )
 
 

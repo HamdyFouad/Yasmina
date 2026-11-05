@@ -6,8 +6,9 @@ import json
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import AwareDatetime, BaseModel, EmailStr, Field
 
 from src.agents.state import OfferRequest
 from src.models.schemas import CustomerOffer, SupplierQuote
@@ -19,6 +20,9 @@ __all__ = [
     "MatchPayload",
     "OfferRequestPayload",
     "PricePayload",
+    "RFQDispatchPayload",
+    "RFQSupplier",
+    "SupplierQuoteCallbackPayload",
     "TokenRequest",
     "VerifyPayload",
     "WorkflowPayload",
@@ -64,6 +68,29 @@ class PricePayload(BaseModel):
 class WorkflowPayload(PricePayload):
     offer: dict[str, Any] | None = None
     export_path: str | None = None
+
+
+class RFQSupplier(BaseModel):
+    """One supplier contact targeted by an RFQ dispatch."""
+
+    supplier_id: UUID | None = None
+    name: str = Field(min_length=1, max_length=256)
+    email: EmailStr
+    contact_name: str | None = Field(default=None, max_length=256)
+
+
+class RFQDispatchPayload(BaseModel):
+    tender_id: UUID
+    suppliers: list[RFQSupplier] = Field(min_length=1, max_length=200)
+    response_deadline: AwareDatetime | None = None
+    notes: str | None = Field(default=None, max_length=4000)
+
+
+class SupplierQuoteCallbackPayload(BaseModel):
+    """n8n callback envelope containing one or more canonical supplier quotes."""
+
+    event_id: str | None = Field(default=None, min_length=1, max_length=128)
+    quotes: list[dict[str, Any]] = Field(min_length=1, max_length=500)
 
 
 class InvoiceBuyerPayload(BaseModel):

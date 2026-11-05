@@ -8,10 +8,10 @@ waste bags across all thicknesses, volumes and colour standards.
 
 > **Status:** P0 foundation, P1 core, durable PostgreSQL tender persistence,
 > MinIO object storage, ClamAV-scanned/audited uploads, Ed25519 approval with
-> automatic XRechnung/ZUGFeRD generation, and the P2.1 e-invoicing generators are
-> complete. GAEB/PDF ingestion, XSD/penny validation, deterministic pricing,
-> pgvector matching, LangGraph and DeepSeek extraction are in place.
-> ERPNext/n8n integrations remain.
+> automatic XRechnung/ZUGFeRD generation, ERPNext quotation sync and
+> HMAC-authenticated n8n RFQ/quote flows are complete. GAEB/PDF ingestion,
+> XSD/penny validation, deterministic pricing, pgvector matching, LangGraph and
+> DeepSeek extraction are in place.
 
 ---
 
@@ -68,9 +68,12 @@ src/
     routes/
       auth.py            # POST /auth/token
       tenders.py         # upload (scanned), match, price, workflow
-      approvals.py       # verify and approve offers
+      approvals.py       # verify/approve offers, ERPNext quotation + invoices
+      integrations.py    # n8n RFQ dispatch + signed quote callback
   repositories/
     tender_repository.py # PostgreSQL tender/position persistence
+    integration_repository.py # durable idempotency-key ledger
+    supplier_quote_repository.py # inbound n8n quote persistence
   models/
     enums.py             # canonical StrEnums
     schemas.py           # strict Pydantic v2 domain models
@@ -89,13 +92,13 @@ src/
     nodes.py             # enrich, match, price, approval gate, export
     state.py             # typed state, dependencies and offer request
     deepseek.py          # DeepSeek structured extraction client
-  integrations/          # ClamAV + MinIO clients; ERPNext/n8n/Telegram planned
+  integrations/          # ClamAV, MinIO, ERPNext and n8n clients
   generators/
     invoice_models.py    # shared invoice/party/line models
     leitweg.py           # Leitweg-ID format + MOD-97-10 validation
     zugferd_generator.py # Factur-X/ZUGFeRD 2.2 CII + PDF embedding
     xrechnung_generator.py # XRechnung 3.0 UBL XML
-alembic/                 # async migrations (0001 schema, 0002 audit guard)
+alembic/                 # async migrations (0001 schema, 0002 audit guard, 0003 idempotency)
 docker/                  # PostgreSQL bootstrap (pgvector, n8n database)
 docs/
   DETAILED_SPEC.md       # authoritative engineering specification
@@ -206,6 +209,8 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | POST | `/approvals/verify` | viewer/approver/admin |
 | POST | `/approvals/approve` | approver/admin |
 | GET | `/approvals/{offer_number}/documents/{format}` | viewer/approver/admin |
+| POST | `/integrations/rfq/dispatch` | sales/admin |
+| POST | `/integrations/n8n/supplier-quotes` | n8n HMAC signature |
 
 ```powershell
 $token = (Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/auth/token `
@@ -227,7 +232,33 @@ persisted in PostgreSQL through `TenderRepository`.
 
 Approving an offer with an `invoice` block generates both XRechnung XML and
 ZUGFeRD PDF and stores them under `offers/{offer_number}/` in MinIO. The download
-endpoint serves `format=xrechnung|zugferd`.
+endpoint serves `format=xrechnung|zugferd`. If ERPNext credentials are configured,
+approval also creates (or returns) the matching ERPNext Quotation and stores its
+name on the offer.
+
+#### ERPNext and n8n integration
+
+- `ERPNextClient` synchronizes Items by `item_code` and Suppliers by
+  `supplier_name`; quotations are looked up by the deterministic
+  `Yasmina <offer-number> | <customer>` title before creation. Transient HTTP
+  429/5xx responses are retried with exponential backoff.
+- `POST /integrations/rfq/dispatch` requires an `Idempotency-Key` header. The
+  key, request hash and cached response are persisted in
+  `integration_idempotency`, so a replay returns the original result without
+  sending a second webhook.
+- `POST /integrations/n8n/supplier-quotes` is called by n8n (no JWT). Every
+  request must carry `X-Yasmina-Timestamp`, `X-Yasmina-Signature:
+  sha256=HMAC_SHA256(secret, "<timestamp>." + raw_body)` and an
+  `Idempotency-Key`. Signatures outside `N8N_CALLBACK_MAX_AGE_SECONDS` are
+  rejected, and quote ingestion is transactional with the idempotency row.
+
+```powershell
+$body = '{"tender_id":"...","suppliers":[{"name":"Hygiene Gross GmbH","email":"sales@example.com"}]}'
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:8000/api/v1/integrations/rfq/dispatch `
+  -Headers @{ Authorization = "Bearer $token"; "Idempotency-Key" = "rfq-2026-0001" } `
+  -ContentType "application/json" -Body $body
+```
 
 ### 8. Run tests
 
@@ -235,11 +266,12 @@ endpoint serves `format=xrechnung|zugferd`.
 python -m pytest -q
 ```
 
-The current 206 tests cover normalizers, settings, strict schemas, ORM metadata,
+The current 228 tests cover normalizers, settings, strict schemas, ORM metadata,
 pgvector/HNSW configuration, GAEB parsing/validation, PDF table extraction,
 pricing, hybrid matching, LangGraph orchestration, Ed25519 approval, ClamAV
-scanning and audit chaining, MinIO object flows, FastAPI business routes, RBAC,
-tender persistence, e-invoicing and offline migration rendering.
+scanning and audit chaining, MinIO object flows, ERPNext retries/payload mapping,
+n8n HMAC callbacks and idempotency, FastAPI business routes, RBAC, tender
+persistence, e-invoicing and offline migration rendering.
 
 ### Parsing, pricing and matching
 
@@ -352,13 +384,13 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | Preflight | `PREFLIGHT_TIMEOUT_SECONDS` |
 | DeepSeek | `DEEPSEEK_API_KEY`, `DEEPSEEK_CHAT_MODEL`, `DEEPSEEK_REASONER_MODEL` |
 | Embeddings | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` (BGE-M3, 1024) |
-| n8n | `N8N_ENCRYPTION_KEY`, `N8N_WEBHOOK_BASE_URL`, `N8N_WEBHOOK_HMAC_SECRET` |
-| ERPNext | `ERPNEXT_BASE_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET` |
+| n8n | `N8N_WEBHOOK_BASE_URL`, `N8N_WEBHOOK_HMAC_SECRET`, `N8N_RFQ_WEBHOOK_PATH`, `N8N_CALLBACK_URL`, `N8N_CALLBACK_MAX_AGE_SECONDS` |
+| ERPNext | `ERPNEXT_BASE_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `ERPNEXT_ITEM_GROUP`, `ERPNEXT_SELLING_PRICE_LIST`, `ERPNEXT_QUOTATION_SERIES` |
 | HITL | `ED25519_APPROVAL_PUBLIC_KEY`, `APPROVAL_SIGNATURE_REQUIRED` |
 | Pricing | `DEFAULT_VAT_RATE`, `DEFAULT_MARGIN_RATE`, `OFFER_VALIDITY_DAYS` |
 
 Secrets use `SecretStr` and are masked in logs; production refuses to start with
-the default application, JWT or API-admin secrets.
+the default application, JWT, API-admin or n8n HMAC secrets.
 
 ---
 
@@ -407,9 +439,10 @@ the default application, JWT or API-admin secrets.
 - [x] P1 — pgvector catalogue retrieval, JWT/RBAC FastAPI business API and API integration tests
 - [x] P1 — PostgreSQL tender repository and ClamAV-scanned uploads
 - [x] P1 — MinIO upload/artifact storage, audit-chained scans and invoice download endpoints
+- [x] P1.4 — ERPNext quotation sync and HMAC-signed n8n RFQ/quote integration
 - [x] P2.1 — ZUGFeRD 2.2/Factur-X and XRechnung 3.0 generators with Leitweg-ID validation
 - [ ] P1 — unit conversion, refresh tokens and advanced RBAC
-- [ ] P2 — ERPNext/n8n integrations, Telegram notifier
+- [ ] P2 — Telegram notifier and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and
 `docs/ASSUMPTIONS.md` for fields inferred while Sections 5–8 are still being

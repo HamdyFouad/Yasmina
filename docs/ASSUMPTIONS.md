@@ -95,6 +95,34 @@ reconciled with the authoritative spec later.
   Approval and invoice generation are currently in-memory operations (no offer
   row is written yet); generation or storage failures return 422.
 
+## ERPNext / n8n assumptions (P1.4)
+
+- ERPNext uses Frappe's `/api/resource` REST API with token authentication.
+  Items are upserted by `item_code`, Suppliers by `supplier_name`; UOM names map
+  to the standard site fixtures (`Nos`, `Box`, `Carton`, `Pallet`, `Roll`, `Kg`,
+  `Litre`, `Meter`, `Square Meter`). A deployment that renamed or deleted those
+  UOM records must seed them first.
+- ERPNext 15 has no customer-reference field on `Quotation`. The deterministic
+  `title` (`Yasmina <offer-number> | <customer>`) is therefore the quotation
+  idempotency key. A quotation is never created unless the offer carries a
+  valid Ed25519 approval (verified when the public key is configured).
+- `Item` and `Supplier` sync is read-before-write and safe to retry. HTTP
+  429/5xx and transport failures are retried; 4xx validation errors are not.
+- n8n outbound and inbound requests use the same HMAC scheme:
+  `sha256=HMAC_SHA256(secret, "<unix-timestamp>." + raw_body)`. The secret is
+  shared by both directions. Callbacks outside
+  `N8N_CALLBACK_MAX_AGE_SECONDS` are rejected.
+- Idempotency keys are stored in `integration_idempotency` with the request
+  SHA-256 and cached response. A replay with the same key and body returns the
+  cached response; a different body or operation is rejected with 409.
+- A dispatch reservation is committed as `pending` before the webhook call.
+  A failed dispatch is marked `failed` and may be retried with the same key.
+  A process crash between reservation and completion leaves a `pending` row
+  that currently requires operational cleanup (no automatic TTL reclaim).
+- Inbound callbacks expect already-normalized canonical `SupplierQuote` JSON;
+  `n8n` is responsible for German-text normalization before signing the body.
+  Quote ingestion and the idempotency success marker share one transaction.
+
 ## E-invoicing assumptions (P2.1)
 
 - Invoice lines use the shared `UnitOfMeasure`; UBL/CII unit codes are mapped to

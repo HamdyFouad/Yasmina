@@ -96,12 +96,24 @@ class Settings(BaseSettings):
     # --- n8n ---------------------------------------------------------------
     n8n_webhook_base_url: str = "http://localhost:5678"
     n8n_webhook_hmac_secret: SecretStr | None = None
+    n8n_rfq_webhook_path: str = "/webhook/yasmina/rfq"
+    n8n_callback_url: str = "http://localhost:8000/api/v1/integrations/n8n/supplier-quotes"
+    n8n_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    n8n_max_retries: int = Field(default=2, ge=0, le=5)
+    n8n_retry_backoff_seconds: float = Field(default=0.5, ge=0, le=10)
+    n8n_callback_max_age_seconds: int = Field(default=300, ge=30, le=3600)
 
     # --- ERPNext -----------------------------------------------------------
     erpnext_base_url: str = "http://localhost:8080"
     erpnext_api_key: SecretStr | None = None
     erpnext_api_secret: SecretStr | None = None
     erpnext_company: str = "Yasmina"
+    erpnext_item_group: str = "Products"
+    erpnext_selling_price_list: str = "Standard Selling"
+    erpnext_quotation_series: str = "SAL-QTN-.YYYY.-"
+    erpnext_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    erpnext_max_retries: int = Field(default=2, ge=0, le=5)
+    erpnext_retry_backoff_seconds: float = Field(default=0.5, ge=0, le=10)
 
     # --- HITL approval -----------------------------------------------------
     ed25519_approval_public_key: str | None = None
@@ -181,6 +193,11 @@ class Settings(BaseSettings):
                 raise ValueError("JWT_SECRET_KEY must be changed in production")
             if self.api_admin_password.get_secret_value() == "change-me-admin-password":
                 raise ValueError("API_ADMIN_PASSWORD must be changed in production")
+            if self.n8n_webhook_hmac_secret is not None and self.n8n_webhook_hmac_secret.get_secret_value() in {
+                "",
+                "change-me-n8n-hmac",
+            }:
+                raise ValueError("N8N_WEBHOOK_HMAC_SECRET must be changed in production")
         return self
 
     # ------------------------------------------------------------------

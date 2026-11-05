@@ -18,6 +18,7 @@ EXPECTED_TABLES = {
     "customer_offer_lines",
     "catalog_articles",
     "audit_logs",
+    "integration_idempotency",
 }
 
 
@@ -91,3 +92,16 @@ def test_hitl_signature_column_is_wide_enough_for_ed25519() -> None:
     signature = Base.metadata.tables["customer_offers"].c.ed25519_approval_signature
 
     assert signature.type.length == 128  # 64-byte signature, lowercase hex
+
+
+def test_integration_idempotency_shape() -> None:
+    table = Base.metadata.tables["integration_idempotency"]
+    constraint_names = {constraint.name for constraint in table.constraints}
+
+    assert table.c.key.primary_key is True
+    assert table.c.request_hash.type.length == 64
+    assert table.c.response.nullable is True
+    assert {
+        "ck_integration_idempotency_status_valid",
+        "ck_integration_idempotency_request_hash_format",
+    } <= constraint_names

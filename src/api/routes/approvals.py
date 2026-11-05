@@ -7,18 +7,29 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.deps import get_app_settings, get_object_storage, require_roles
+from src.api.deps import (
+    get_app_settings,
+    get_audit_service,
+    get_erpnext_client,
+    get_object_storage,
+    get_session,
+    require_roles,
+)
 from src.api.invoices import InvoiceWiringError, generate_invoice_artifacts
 from src.api.schemas import ApprovalPayload, VerifyPayload, parse_customer_offer
 from src.api.security import Principal, Role
 from src.config import Settings
+from src.integrations.erpnext_client import ERPNextClient, ERPNextError
 from src.integrations.minio_client import (
     MinioObjectStorage,
     ObjectStorageError,
     object_name_for_invoice,
 )
+from src.models.enums import AuditEventType
 from src.services.approval_service import ApprovalError, ApprovalService
+from src.services.audit_service import AuditService, AuditServiceError
 
 __all__ = ["router"]
 
@@ -61,9 +72,12 @@ async def approve_offer_endpoint(
     payload: ApprovalPayload,
     settings: Settings = Depends(get_app_settings),
     storage: MinioObjectStorage = Depends(get_object_storage),
-    _: Principal = Depends(require_roles(Role.APPROVER, Role.ADMIN)),
+    erpnext: ERPNextClient = Depends(get_erpnext_client),
+    audit: AuditService = Depends(get_audit_service),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_roles(Role.APPROVER, Role.ADMIN)),
 ) -> dict[str, Any]:
-    """Verify an external signature, then generate and store e-invoice artifacts."""
+    """Verify an external signature, then create e-invoice/ERPNext artefacts."""
 
     try:
         offer = parse_customer_offer(payload.offer)
@@ -96,9 +110,51 @@ async def approve_offer_endpoint(
                 detail=f"offer approved but e-invoice generation failed: {exc}",
             ) from exc
 
+    if erpnext.configured:
+        try:
+            quotation = await erpnext.create_quotation(approved)
+        except ERPNextError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"offer approved but ERPNext quotation creation failed: {exc}",
+            ) from exc
+
+        approved = approved.model_copy(update={"erpnext_quotation_name": quotation.name})
+        erpnext_result: dict[str, Any] = {
+            "status": "created" if quotation.created else "existing",
+            **quotation.as_dict(),
+        }
+        try:
+            await audit.append(
+                event_type=AuditEventType.ERP_QUOTATION_CREATED,
+                actor=principal.sub,
+                entity_type="customer_offer",
+                entity_id=str(approved.id),
+                payload={
+                    "offer_number": approved.offer_number,
+                    "quotation_name": quotation.name,
+                    "created": quotation.created,
+                    "approved_by": approved.approved_by,
+                },
+                commit=False,
+            )
+            await session.commit()
+        except AuditServiceError as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"ERPNext quotation created but audit log is unavailable: {exc}",
+            ) from exc
+    else:
+        erpnext_result = {
+            "status": "skipped",
+            "reason": "ERPNext API credentials are not configured",
+        }
+
     return {
         "offer": approved.model_dump(mode="json"),
         "artifacts": artifacts,
+        "erpnext": erpnext_result,
     }
 
 

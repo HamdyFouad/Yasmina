@@ -69,6 +69,15 @@ def test_production_requires_changed_secrets() -> None:
             api_admin_password="change-me-admin-password",
         )
 
+    with pytest.raises(ValidationError, match="N8N_WEBHOOK_HMAC_SECRET"):
+        make_settings(
+            app_env="production",
+            app_secret_key="a-real-secret",
+            jwt_secret_key="a-real-jwt-secret-with-32-bytes",
+            api_admin_password="a-real-admin-password",
+            n8n_webhook_hmac_secret="change-me-n8n-hmac",
+        )
+
     settings = make_settings(
         app_env="production",
         app_secret_key="a-real-secret",
@@ -85,6 +94,15 @@ def test_pricing_defaults() -> None:
     assert settings.default_vat_rate == pytest.approx(0.19)
     assert settings.default_margin_rate == pytest.approx(0.15)
     assert settings.embedding_dimensions == 1024
+
+
+def test_integration_defaults() -> None:
+    settings = make_settings()
+
+    assert settings.erpnext_max_retries == 2
+    assert settings.erpnext_item_group == "Products"
+    assert settings.n8n_callback_max_age_seconds == 300
+    assert settings.n8n_rfq_webhook_path == "/webhook/yasmina/rfq"
 
 
 def test_ensure_env_file_copies_template_once(workspace_tmp, monkeypatch) -> None:  # type: ignore[no-untyped-def]
