@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     scraper_archive_prefix: str = "scrapers"
     scraper_user_agents: list[str] = Field(default_factory=list)
     scraper_schedule_cron: str = "0 2 * * *"
+    scraper_harvest_attachments: bool = True
+    scraper_max_attachments: int = Field(default=10, ge=0, le=100)
+    scraper_max_attachment_mb: int = Field(default=25, ge=1, le=500)
 
     # --- HITL approval -----------------------------------------------------
     ed25519_approval_public_key: str | None = None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,7 @@ def make_settings(**overrides: Any) -> Settings:
         "scraper_request_delay_seconds": 0,
         "scraper_retry_backoff_seconds": 0,
         "scraper_user_agents": [],
+        "scraper_harvest_attachments": False,
     }
     data.update(overrides)
     return Settings(**data)
@@ -154,6 +156,81 @@ async def test_federal_scraper_returns_nothing_without_hygiene_cpv() -> None:
     assert scraper.last_report is not None
     assert scraper.last_report.skipped_cpv == 1
     assert scraper.last_report.skipped_invalid == 0
+
+
+async def test_incremental_scrape_skips_old_publication_dates() -> None:
+    listing = (FIXTURES / "bayern_listing.html").read_text(encoding="utf-8")
+    detail = (FIXTURES / "bayern_detail.html").read_text(encoding="utf-8")
+    transport, _ = make_transport(
+        {
+            "2026-003": detail,
+            "auftragsbekanntmachungen": listing,
+        }
+    )
+    async with httpx.AsyncClient(transport=transport) as http:
+        scraper = BayernVergabeScraper(
+            make_settings(),
+            FakeStorage(),
+            client=http,
+            user_agents=["YasminaTest/1.0"],
+            start_url="https://portal.example/auftragsbekanntmachungen",
+        )
+        discovered = await scraper.discover(
+            max_pages=1,
+            since=datetime(2026, 1, 16, tzinfo=timezone.utc),
+        )
+
+    assert [item.portal_id for item in discovered] == ["2026-003"]
+    assert scraper.last_report is not None
+    assert scraper.last_report.skipped_stale == 1
+
+
+async def test_bayern_scraper_harvests_pdf_and_gaeb_attachments() -> None:
+    listing = (
+        "<html><body><article class='tender-card'>"
+        "<h2><a href='/detail/2026-att'>Reinigung von Verwaltungsgebäuden</a></h2>"
+        "<p class='client'>Auftraggeber: Stadt München</p>"
+        "<p class='deadline'>Abgabefrist: 31.03.2026 12:00 Uhr</p>"
+        "<p class='cpv'>CPV: 33760000-5</p>"
+        "</article></body></html>"
+    )
+    detail = (FIXTURES / "bayern_detail_with_attachments.html").read_text(encoding="utf-8")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        path = request.url.path
+        if path.endswith("/robots.txt"):
+            return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+        if path.endswith(".pdf"):
+            return httpx.Response(200, content=b"%PDF-1.7 attachment", headers={"Content-Type": "application/pdf"})
+        if path.endswith(".x83"):
+            return httpx.Response(200, content=b"<GAEB>attachment</GAEB>", headers={"Content-Type": "application/xml"})
+        if path.endswith("/2026-att"):
+            return httpx.Response(200, text=detail, headers={"Content-Type": "text/html"})
+        return httpx.Response(200, text=listing, headers={"Content-Type": "text/html"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        scraper = BayernVergabeScraper(
+            make_settings(scraper_harvest_attachments=True),
+            FakeStorage(),
+            client=http,
+            user_agents=["YasminaTest/1.0"],
+            start_url="https://portal.example/bayern-list",
+        )
+        discovered = await scraper.discover(max_pages=1)
+
+    assert len(discovered) == 1
+    attachments = discovered[0].attachments
+    assert [attachment.kind for attachment in attachments] == ["pdf", "gaeb"]
+    assert attachments[0].filename == "leistungsverzeichnis.pdf"
+    assert attachments[1].filename == "leistungsverzeichnis.x83"
+    assert all(attachment.object_name.startswith("scrapers/vergabe.bayern/attachments/") for attachment in attachments)
+    tender = discovered[0].to_tender()
+    assert tender.metadata["attachment_objects"] == [
+        attachment.object_name for attachment in attachments
+    ]
+    assert sum(1 for request in requests if request.url.path.endswith((".pdf", ".x83"))) == 2
 
 
 async def test_bayern_scraper_follows_publication_iframe() -> None:

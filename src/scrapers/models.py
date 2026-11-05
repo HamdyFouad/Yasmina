@@ -19,6 +19,7 @@ from src.models.schemas import Tender
 __all__ = [
     "HYGIENE_CPV_CODES",
     "DiscoveredTender",
+    "PortalAttachment",
     "cpv_base",
     "extract_cpv_codes",
     "filter_hygiene_cpv",
@@ -275,6 +276,26 @@ def _jsonable(value: Any) -> Any:
 
 
 @dataclass(frozen=True, slots=True)
+class PortalAttachment:
+    """A downloaded and archived portal attachment."""
+
+    url: str
+    filename: str
+    object_name: str
+    content_type: str
+    kind: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "url": self.url,
+            "filename": self.filename,
+            "object_name": self.object_name,
+            "content_type": self.content_type,
+            "kind": self.kind,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class DiscoveredTender:
     """Normalized tender metadata discovered on a procurement portal."""
 
@@ -291,6 +312,7 @@ class DiscoveredTender:
     description: str | None = None
     raw_object: str | None = None
     raw_objects: tuple[str, ...] = ()
+    attachments: tuple[PortalAttachment, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -316,6 +338,8 @@ class DiscoveredTender:
             "detail_url": self.detail_url,
             "raw_object": self.raw_object,
             "raw_objects": list(self.raw_objects),
+            "attachments": [attachment.as_dict() for attachment in self.attachments],
+            "attachment_objects": [attachment.object_name for attachment in self.attachments],
         }
         return Tender(
             tender_number=_safe_number(self.portal_code, self.portal_id, self.detail_url),

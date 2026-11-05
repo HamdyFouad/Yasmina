@@ -9,9 +9,10 @@ waste bags across all thicknesses, volumes and colour standards.
 > **Status:** P0 foundation, P1 core, durable PostgreSQL tender/offer
 > persistence, MinIO object storage, ClamAV-scanned/audited uploads, Ed25519
 > approval with automatic XRechnung/ZUGFeRD generation, ERPNext quotation
-> sync, HMAC-authenticated n8n RFQ/quote flows, compliant portal scrapers, live
-> DeepSeek/Docling paths, deterministic unit conversion, PostgreSQL LangGraph
-> checkpoints and the daily scrape worker are complete.
+> sync, HMAC-authenticated n8n RFQ/quote flows, compliant portal scrapers with
+> attachment harvesting and durable ingestion outbox, live DeepSeek/Docling
+> paths, deterministic unit conversion, PostgreSQL LangGraph checkpoints and
+> the daily scrape/ingestion worker are complete.
 
 ---
 
@@ -74,6 +75,7 @@ src/
   repositories/
     tender_repository.py # PostgreSQL tender/position persistence
     offer_repository.py  # offer lines, artifacts and ERPNext names
+    ingestion_repository.py # outbox jobs + scraper watermarks
     integration_repository.py # durable idempotency-key ledger
     supplier_quote_repository.py # inbound n8n quote persistence
   models/
@@ -88,6 +90,7 @@ src/
   services/
     pricing_service.py   # pure-Decimal tiers, MOQ, margin, VAT
     unit_converter.py    # auditable CARTON/PACK/PIECE/ROLL conversions
+    ingestion_processor.py # PDF/GAEB parsing + triage worker
     matching_service.py  # pgvector retrieval + lexical/embedding ranking
     approval_service.py  # canonical payload, Ed25519 sign/verify/apply
   scheduler.py           # dependency-free five-field cron scheduler
@@ -111,7 +114,7 @@ src/
     leitweg.py           # Leitweg-ID format + MOD-97-10 validation
     zugferd_generator.py # Factur-X/ZUGFeRD 2.2 CII + PDF embedding
     xrechnung_generator.py # XRechnung 3.0 UBL XML
-alembic/                 # async migrations (0001 schema, 0002 audit guard, 0003 idempotency, 0004 offers/checkpoints)
+alembic/                 # async migrations (0001 schema, 0002 audit guard, 0003 idempotency, 0004 offers/checkpoints, 0005 ingestion outbox)
 docker/                  # PostgreSQL bootstrap (pgvector, n8n database)
 docs/
   DETAILED_SPEC.md       # authoritative engineering specification
@@ -306,8 +309,16 @@ Invoke-RestMethod -Method Post `
 - Listings are filtered strictly against `33760000-5`, `19520000-7`,
   `33141420-0` and `39830000-9`. Cards missing a CPV/deadline are enriched from
   the detail page before the filter is applied.
+- Detail pages are harvested for GAEB/PDF/ZIP attachments
+  (`SCRAPER_HARVEST_ATTACHMENTS`, on by default). Each file is downloaded with
+  the same robots/rate-limit/User-Agent guardrails, capped at
+  `SCRAPER_MAX_ATTACHMENTS` files of `SCRAPER_MAX_ATTACHMENT_MB` MiB, and
+  archived to MinIO under
+  `scrapers/<portal>/attachments/<sha256>.<ext>`.
 - `PortalIngestionBridge` persists mapped metadata through `TenderRepository`
-  (idempotent by tender number) and calls an injected ingestion pipeline hook.
+  (idempotent by tender number). With the outbox enabled it commits the tender
+  and one `TenderIngestionJob` in a single transaction instead of calling the
+  pipeline inline.
 
 ```python
 from src.scrapers import BayernVergabeScraper, PortalIngestionBridge
@@ -322,10 +333,34 @@ The Bayern scraper follows the publication iframe used by
 through `start_url` (the production UI is JavaScript-driven). Incomplete
 metadata is skipped rather than guessed.
 
+#### Durable ingestion outbox
+
+Attachment metadata, MinIO object keys and the tender row are written
+transactionally; the worker owns the expensive DeepSeek triage and Docling
+parsing that follows:
+
+- `tender_ingestion_jobs` has one row per `tender_id` (`unique`), with an
+  attempt counter, `available_at` backoff, `locked_at`/`locked_by` leases and a
+  `last_error` column. Statuses are `pending`, `processing`, `completed`,
+  `skipped` and `failed`.
+- `TenderIngestionJobRepository.claim_pending()` uses
+  `SELECT ... FOR UPDATE SKIP LOCKED`, so several workers can drain the queue
+  without double-processing. A `processing` row whose lease is older than 900
+  seconds is reclaimed after a crash.
+- `TenderIngestionProcessor` downloads the archived PDF/GAEB bytes, runs the
+  default PDF parser (`Docling`) or GAEB parser, deduplicates positions, runs
+  DeepSeek triage plus spec enrichment and replaces the tender's line items.
+  Transient failures retry with exponential backoff up to `max_attempts`;
+  documents with no extractable positions finish as `skipped`.
+- `scraper_states` stores a per-portal watermark: `last_scraped_at` is written
+  when a run starts and `last_success_at` when it completes. The next run passes
+  that timestamp as `since`, so listings are only re-fetched from the watermark
+  onward while rate limits still apply.
+
 #### Daily scrape worker
 
 `yasmina-worker` (or `python -m src.worker`) runs `ingest_scraper()` once or on a
-five-field cron schedule in `APP_TIMEZONE`:
+five-field cron schedule in `APP_TIMEZONE`, then drains the ingestion outbox:
 
 ```powershell
 # one immediate run, optionally only one portal
@@ -333,11 +368,15 @@ python -m src.worker scrape --portal bayern --max-pages 2
 
 # long-running daily scheduler (default SCRAPER_SCHEDULE_CRON=0 2 * * *)
 python -m src.worker schedule --portal all
+
+# drain queued ingestion jobs once or continuously
+python -m src.worker process --limit 20
+python -m src.worker process --interval 30
 ```
 
-The scheduler is dependency-free and logs job failures without terminating. An
-injected pipeline hook is still the place to connect document parsing/queueing
-after the metadata row is committed.
+The scheduler is dependency-free and logs job failures without terminating.
+Each scheduled scrape is followed by one `process_jobs_once()` pass, so a single
+cron entry keeps both discovery and parsing moving.
 
 ### 8. Run tests
 
@@ -345,21 +384,23 @@ after the metadata row is committed.
 python -m pytest -q
 ```
 
-The current 273 tests pass (plus two optional PostgreSQL-only tests that are
+The current 281 tests pass (plus four optional PostgreSQL-only tests that are
 skipped unless `YASMINA_TEST_DATABASE_URL` is set) and cover normalizers,
 settings, strict schemas, ORM metadata, pgvector/HNSW configuration, GAEB
 parsing/validation, PDF table extraction, pricing, unit conversion, hybrid
 matching, LangGraph triage/enrichment and checkpointing, Ed25519 approval,
-offer persistence/idempotency, ClamAV scanning and audit chaining, MinIO object
-flows, ERPNext retries/payload mapping, n8n HMAC callbacks and idempotency,
-portal robots/rate/UA/artifact handling, CPV-filtered HTML extraction, cron
-scheduling, FastAPI business routes, RBAC, tender persistence, e-invoicing and
-offline migration rendering.
+offer persistence/idempotency, durable ingestion outbox claiming/retry,
+attachment harvesting and watermarking, ClamAV scanning and audit chaining,
+MinIO object flows, ERPNext retries/payload mapping, n8n HMAC callbacks and
+idempotency, portal robots/rate/UA/artifact handling, CPV-filtered HTML
+extraction, cron scheduling, FastAPI business routes, RBAC, tender persistence,
+e-invoicing and offline migration rendering.
 
 ```powershell
-# optional live PostgreSQL offer/checkpoint tests (after alembic upgrade head)
+# optional live PostgreSQL offer/checkpoint and ingestion-outbox tests
+# (after alembic upgrade head)
 $env:YASMINA_TEST_DATABASE_URL = "postgresql+asyncpg://yasmina:yasmina@localhost:5432/yasmina"
-python -m pytest -q tests/integration/test_offer_workflow_db.py
+python -m pytest -q tests/integration/test_offer_workflow_db.py tests/integration/test_ingestion_outbox_db.py
 ```
 
 ### Parsing, pricing and matching
@@ -502,7 +543,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | Embeddings | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` (BGE-M3, 1024) |
 | n8n | `N8N_WEBHOOK_BASE_URL`, `N8N_WEBHOOK_HMAC_SECRET`, `N8N_RFQ_WEBHOOK_PATH`, `N8N_CALLBACK_URL`, `N8N_CALLBACK_MAX_AGE_SECONDS` |
 | ERPNext | `ERPNEXT_BASE_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `ERPNEXT_ITEM_GROUP`, `ERPNEXT_SELLING_PRICE_LIST`, `ERPNEXT_QUOTATION_SERIES` |
-| Portal scrapers | `SCRAPER_REQUEST_DELAY_SECONDS`, `SCRAPER_ROBOTS_CACHE_SECONDS`, `SCRAPER_MAX_PAGES`, `SCRAPER_ARCHIVE_RAW`, `SCRAPER_ARCHIVE_PREFIX`, `SCRAPER_USER_AGENTS`, `SCRAPER_SCHEDULE_CRON` |
+| Portal scrapers | `SCRAPER_REQUEST_DELAY_SECONDS`, `SCRAPER_ROBOTS_CACHE_SECONDS`, `SCRAPER_MAX_PAGES`, `SCRAPER_ARCHIVE_RAW`, `SCRAPER_ARCHIVE_PREFIX`, `SCRAPER_USER_AGENTS`, `SCRAPER_HARVEST_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENT_MB`, `SCRAPER_SCHEDULE_CRON` |
 | HITL | `ED25519_APPROVAL_PUBLIC_KEY`, `APPROVAL_SIGNATURE_REQUIRED` |
 | Pricing | `DEFAULT_VAT_RATE`, `DEFAULT_MARGIN_RATE`, `OFFER_VALIDITY_DAYS` |
 
@@ -564,6 +605,7 @@ the default application, JWT, API-admin or n8n HMAC secrets.
 - [x] P2.2 — robots-compliant Bayern/Bund portal scrapers, raw artifacts, CPV filter and ingestion bridge
 - [x] P3 — live DeepSeek triage/spec extraction, real Docling PDF path, unit conversion and daily scrape worker
 - [x] P4.1 — durable offer persistence, idempotent approvals, owner-aware offer API and PostgreSQL LangGraph checkpoints
+- [x] P4.2 — portal attachment download to MinIO, durable ingestion outbox, watermark-based incremental scraping and queued DeepSeek/Docling processing
 - [ ] P1 — refresh tokens and advanced RBAC
 - [ ] P2 — Telegram notifier and production ERPNext/n8n workflow templates
 

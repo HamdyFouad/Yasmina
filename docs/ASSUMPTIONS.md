@@ -202,6 +202,35 @@ reconciled with the authoritative spec later.
   `YASMINA_TEST_DATABASE_URL` is set; CI without a provisioned database still
   runs the mocked offer/checkpoint behaviour tests.
 
+## Portal attachment & ingestion-outbox assumptions (P4.2)
+
+- Attachment harvesting is on by default (`SCRAPER_HARVEST_ATTACHMENTS`) because
+  most portals only expose GAEB/PDF files on the detail page. Only links whose
+  path/extension looks like PDF, GAEB/XML or ZIP are fetched; at most
+  `SCRAPER_MAX_ATTACHMENTS` (10) files of `SCRAPER_MAX_ATTACHMENT_MB` (25) MiB
+  are archived per tender. Downloads reuse the robots/rate-limit/User-Agent
+  guardrails and are stored under
+  `scrapers/<portal>/attachments/<sha256>.<ext>`.
+- Attachment metadata (`url`, `filename`, `object_name`, `content_type`, `kind`)
+  is copied into tender metadata and into `tender_ingestion_jobs.attachments`,
+  so the worker can parse without fetching the portal again.
+- The tender row and its one `TenderIngestionJob` are committed in a single
+  transaction. `tender_id` is unique, making re-discovery idempotent; when an
+  outbox repository is supplied the ingestion bridge does not run the pipeline
+  inline.
+- Job statuses are `pending`, `processing`, `completed`, `skipped` and `failed`.
+  Claims use `FOR UPDATE SKIP LOCKED`; a `processing` lease older than 900
+  seconds is treated as a crashed worker and reclaimed. Transient parse/AI
+  failures retry with exponential backoff up to `max_attempts` (5) before the
+  row becomes `failed`. Missing tenders, unsupported attachments, no extracted
+  positions and non-relevant DeepSeek triage results finish as `skipped`.
+- `ScraperState.last_scraped_at` records the start of a run for observability;
+  the incremental watermark is `last_success_at`, passed as `since` on the next
+  run. `last_error` is retained on failure without moving the watermark.
+- The two live PostgreSQL outbox tests are skipped unless
+  `YASMINA_TEST_DATABASE_URL` is set; the mocked repository/processor tests cover
+  enqueue, claim, retry and completion semantics.
+
 ## E-invoicing assumptions (P2.1)
 
 - Invoice lines use the shared `UnitOfMeasure`; UBL/CII unit codes are mapped to

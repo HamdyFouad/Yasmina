@@ -22,6 +22,8 @@ EXPECTED_TABLES = {
     "workflow_checkpoints",
     "workflow_checkpoint_blobs",
     "workflow_checkpoint_writes",
+    "tender_ingestion_jobs",
+    "scraper_states",
 }
 
 
@@ -36,7 +38,8 @@ def test_all_tables_and_indexes_compile_for_postgresql() -> None:
         ddl = str(CreateTable(table).compile(dialect=dialect))
         assert "CREATE TABLE" in ddl
         for index in table.indexes:
-            assert "CREATE INDEX" in str(CreateIndex(index).compile(dialect=dialect))
+            index_ddl = str(CreateIndex(index).compile(dialect=dialect))
+            assert "CREATE INDEX" in index_ddl or "CREATE UNIQUE INDEX" in index_ddl
 
 
 def test_identifiers_fit_postgresql_limit() -> None:
@@ -129,3 +132,18 @@ def test_offer_persistence_and_workflow_checkpoint_columns() -> None:
     assert {"thread_id", "checkpoint_ns", "checkpoint_id", "task_id", "idx"} == {
         column.name for column in writes.primary_key.columns
     }
+
+
+def test_ingestion_outbox_and_watermark_shape() -> None:
+    jobs = Base.metadata.tables["tender_ingestion_jobs"]
+    states = Base.metadata.tables["scraper_states"]
+
+    assert jobs.c.tender_id.unique is True
+    assert jobs.c.attachments.nullable is False
+    assert {
+        "ck_tender_ingestion_jobs_status_valid",
+        "ck_tender_ingestion_jobs_attempts_non_negative",
+    } <= {constraint.name for constraint in jobs.constraints}
+    assert "ix_tender_ingestion_jobs_status_available" in {index.name for index in jobs.indexes}
+    assert states.c.portal_name.primary_key is True
+    assert states.c.last_success_at.nullable is True

@@ -75,7 +75,9 @@ __all__ = [
     "SupplierQuoteLine",
     "SupplierQuoteTier",
     "Tender",
+    "TenderIngestionJob",
     "TenderItem",
+    "ScraperState",
     "WorkflowCheckpoint",
     "WorkflowCheckpointBlob",
     "WorkflowCheckpointWrite",
@@ -634,6 +636,62 @@ class IntegrationIdempotency(Base, TimestampMixin):
         Index("ix_integration_idempotency_status", "status"),
         Index("ix_integration_idempotency_operation", "operation"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Portal ingestion outbox and scraper watermarks
+# ---------------------------------------------------------------------------
+
+
+class TenderIngestionJob(Base, TimestampMixin):
+    """Durable outbox row for portal metadata/document processing."""
+
+    __tablename__ = "tender_ingestion_jobs"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    tender_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("tenders.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    portal_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", server_default=text("'pending'"))
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default=text("5"))
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    locked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    attachments: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    raw_object: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'completed', 'failed', 'skipped')",
+            name="status_valid",
+        ),
+        CheckConstraint("attempts >= 0", name="attempts_non_negative"),
+        Index("ix_tender_ingestion_jobs_status_available", "status", "available_at"),
+    )
+
+
+class ScraperState(Base, TimestampMixin):
+    """Per-portal watermark used to avoid re-fetching old listing pages."""
+
+    __tablename__ = "scraper_states"
+
+    portal_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_scraped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # ---------------------------------------------------------------------------

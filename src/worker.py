@@ -6,13 +6,20 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import socket
 import sys
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from src.api.context import build_agent_context
 from src.config import Settings, get_settings
 from src.db import dispose_engine, get_session_factory
 from src.integrations.minio_client import MinioObjectStorage
+from src.repositories.ingestion_repository import (
+    ScraperStateRepository,
+    TenderIngestionJobRepository,
+)
 from src.repositories.tender_repository import TenderRepository
 from src.scrapers.base_scraper import BaseScraper, ObjectWriter
 from src.scrapers.bayern_vergabe import BayernVergabeScraper
@@ -20,11 +27,13 @@ from src.scrapers.ingestion import IngestionPipeline, PortalIngestionBridge, Por
 from src.scrapers.oeffentlichevergabe import OeffentlicheVergabeScraper
 from src.scheduler import CronExpression, CronScheduleError, run_scheduler
 from src.services.audit_service import AuditService
+from src.services.ingestion_processor import TenderIngestionProcessor
 
 __all__ = [
     "PORTALS",
     "build_scraper",
     "main",
+    "process_jobs_once",
     "run_scheduled",
     "run_scrape_once",
 ]
@@ -62,6 +71,7 @@ def _result_dict(result: PortalIngestionResult) -> dict[str, Any]:
         "created": result.created,
         "pipeline_triggered": result.pipeline_triggered,
         "raw_object": result.raw_object,
+        "job_id": str(result.job_id) if result.job_id is not None else None,
     }
 
 
@@ -73,6 +83,8 @@ async def run_scrape_once(
     pipeline: IngestionPipeline | None = None,
     audit: AuditService | None = None,
     storage: ObjectWriter | None = None,
+    jobs: TenderIngestionJobRepository | None = None,
+    states: ScraperStateRepository | None = None,
     max_pages: int | None = None,
     scraper_factory: ScraperFactory | None = None,
 ) -> list[dict[str, Any]]:
@@ -83,8 +95,28 @@ async def run_scrape_once(
     summaries: list[dict[str, Any]] = []
     for name in _portal_names(portal):
         scraper = factory(name, settings, active_storage)
-        bridge = PortalIngestionBridge(repository, pipeline=pipeline, audit=audit)
-        report, results = await bridge.ingest_scraper(scraper, max_pages=max_pages)
+        bridge = PortalIngestionBridge(
+            repository,
+            pipeline=pipeline,
+            audit=audit,
+            jobs=jobs,
+        )
+        state = await states.get(name) if states is not None else None
+        since = state.last_success_at if state is not None else None
+        if states is not None:
+            await states.mark_started(name)
+        try:
+            report, results = await bridge.ingest_scraper(
+                scraper,
+                max_pages=max_pages,
+                since=since,
+            )
+        except Exception as exc:
+            if states is not None:
+                await states.mark_failure(name, str(exc))
+            raise
+        if states is not None:
+            await states.mark_success(name)
         summaries.append(
             {
                 "portal": name,
@@ -92,8 +124,10 @@ async def run_scrape_once(
                 "discovered": len(report.discovered),
                 "skipped_cpv": report.skipped_cpv,
                 "skipped_invalid": report.skipped_invalid,
+                "skipped_stale": report.skipped_stale,
                 "errors": list(report.errors),
                 "results": [_result_dict(result) for result in results],
+                "since": since.isoformat() if since is not None else None,
             }
         )
     return summaries
@@ -118,11 +152,64 @@ async def _run_once_with_db(
                 pipeline=pipeline,
                 audit=AuditService(session),
                 storage=storage,
+                jobs=TenderIngestionJobRepository(session),
+                states=ScraperStateRepository(session),
                 max_pages=max_pages,
                 scraper_factory=scraper_factory,
             )
     finally:
         await dispose_engine()
+
+
+async def process_jobs_once(
+    *,
+    settings: Settings,
+    limit: int = 10,
+    worker_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Claim and process queued TenderIngestionJob rows."""
+
+    active_worker = worker_id or f"{socket.gethostname()}:{os.getpid()}"
+    storage = MinioObjectStorage(settings)
+    factory = get_session_factory(settings)
+    summaries: list[dict[str, Any]] = []
+    try:
+        async with factory() as session:
+            jobs = TenderIngestionJobRepository(session)
+            claimed = await jobs.claim_pending(limit=limit, worker_id=active_worker)
+            if not claimed:
+                return []
+            processor = TenderIngestionProcessor(
+                TenderRepository(session),
+                jobs,
+                storage,
+                settings,
+                llm=build_agent_context(settings).llm,
+            )
+            for job in claimed:
+                try:
+                    status = await processor.process(job)
+                except Exception as exc:
+                    await jobs.fail(job.id, str(exc))
+                    summaries.append(
+                        {
+                            "job_id": str(job.id),
+                            "tender_id": str(job.tender_id),
+                            "status": "failed",
+                            "error": str(exc),
+                        }
+                    )
+                else:
+                    summaries.append(
+                        {
+                            "job_id": str(job.id),
+                            "tender_id": str(job.tender_id),
+                            "status": status,
+                        }
+                    )
+    finally:
+        await dispose_engine()
+    return summaries
 
 
 async def run_scheduled(
@@ -135,6 +222,7 @@ async def run_scheduled(
     max_runs: int | None = None,
     stop_event: asyncio.Event | None = None,
     scraper_factory: ScraperFactory | None = None,
+    process_pending: bool = True,
 ) -> int:
     """Run the scraper job forever on the configured cron schedule."""
 
@@ -166,6 +254,15 @@ async def run_scheduled(
                 sum(1 for item in summary["results"] if item["created"]),
                 summary["skipped_cpv"],
             )
+        if process_pending:
+            processed = await process_jobs_once(settings=settings)
+            for item in processed:
+                logger.info(
+                    "ingestion job=%s tender=%s status=%s",
+                    item["job_id"],
+                    item["tender_id"],
+                    item["status"],
+                )
 
     return await run_scheduler(
         job,
@@ -173,6 +270,21 @@ async def run_scheduled(
         stop_event=stop_event,
         max_runs=max_runs,
     )
+
+
+async def _process_loop(settings: Settings, limit: int, interval: float) -> None:
+    if interval <= 0:
+        raise ValueError("process interval must be positive")
+    while True:
+        summaries = await process_jobs_once(settings=settings, limit=limit)
+        for summary in summaries:
+            logger.info(
+                "ingestion job=%s tender=%s status=%s",
+                summary["job_id"],
+                summary["tender_id"],
+                summary["status"],
+            )
+        await asyncio.sleep(interval)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -186,6 +298,16 @@ def build_parser() -> argparse.ArgumentParser:
     scrape.add_argument("--portal", choices=("all", *PORTALS), default="all")
     scrape.add_argument("--max-pages", type=int, default=None)
     scrape.add_argument("--json", action="store_true", dest="as_json")
+
+    process = subparsers.add_parser("process", help="process queued ingestion jobs")
+    process.add_argument("--limit", type=int, default=10)
+    process.add_argument(
+        "--interval",
+        type=float,
+        default=None,
+        help="poll continuously with this many seconds between empty/complete polls",
+    )
+    process.add_argument("--json", action="store_true", dest="as_json")
 
     schedule = subparsers.add_parser("schedule", help="run the daily cron scheduler")
     schedule.add_argument("--portal", choices=("all", *PORTALS), default="all")
@@ -224,6 +346,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"{sum(1 for item in summary['results'] if item['created'])} new, "
                         f"{summary['skipped_cpv']} CPV-filtered"
                     )
+            return 0
+
+        if args.command == "process":
+            if args.interval is not None:
+                asyncio.run(_process_loop(settings, args.limit, args.interval))
+                return 0
+            summaries = asyncio.run(process_jobs_once(settings=settings, limit=args.limit))
+            if args.as_json:
+                print(json.dumps(summaries, indent=2, ensure_ascii=False))
+            else:
+                for summary in summaries:
+                    print(f"{summary['job_id']}: {summary['status']}")
             return 0
 
         runs = asyncio.run(

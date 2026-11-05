@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -156,6 +157,7 @@ class TenderRepository:
         source_path: str | Path | None = None,
         source_object: str | None = None,
         document: Any = None,
+        commit: bool = True,
     ) -> StoredTender:
         metadata = dict(tender.metadata)
         if source_filename:
@@ -168,7 +170,10 @@ class TenderRepository:
         orm = tender_to_orm(stored_tender)
         self.session.add(orm)
         try:
-            await self.session.commit()
+            if commit:
+                await self.session.commit()
+            else:
+                await self.session.flush()
         except IntegrityError as exc:
             await self.session.rollback()
             raise TenderRepositoryError(f"tender could not be stored: {exc}") from exc
@@ -223,6 +228,43 @@ class TenderRepository:
             source_path=path,
             source_object=source_object,
         )
+
+    async def replace_items(
+        self,
+        tender_id: UUID,
+        items: list[TenderItem],
+        *,
+        metadata_updates: dict[str, Any] | None = None,
+        commit: bool = True,
+    ) -> StoredTender:
+        """Replace a tender's parsed positions after attachment processing."""
+
+        statement = (
+            select(TenderORM)
+            .where(TenderORM.id == tender_id)
+            .options(selectinload(TenderORM.items))
+        )
+        orm = (await self.session.execute(statement)).scalars().first()
+        if orm is None:
+            raise TenderRepositoryError(f"tender {tender_id} does not exist")
+
+        orm.items.clear()
+        await self.session.flush()
+        orm.items.extend(_item_to_orm(item.model_copy(update={"tender_id": tender_id}), tender_id) for item in items)
+        if metadata_updates:
+            metadata = dict(orm.metadata_json or {})
+            metadata.update(metadata_updates)
+            orm.metadata_json = metadata
+        orm.updated_at = datetime.now(timezone.utc)
+        try:
+            if commit:
+                await self.session.commit()
+            else:
+                await self.session.flush()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            raise TenderRepositoryError(f"tender positions could not be replaced: {exc}") from exc
+        return self._stored(orm)
 
     async def delete(self, tender_id: UUID) -> bool:
         orm = await self.session.get(TenderORM, tender_id)

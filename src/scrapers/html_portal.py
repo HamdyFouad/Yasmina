@@ -6,15 +6,17 @@ import hashlib
 import re
 from dataclasses import dataclass, replace
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import parse_qs, urljoin, urlsplit
 
 from bs4 import BeautifulSoup, Tag
 
 from src.models.enums import ProcurementProcedure
-from src.scrapers.base_scraper import BaseScraper, ScrapedPage, ScrapeReport
+from src.scrapers.base_scraper import BaseScraper, ScrapedArtifact, ScrapedPage, ScrapeReport
 from src.scrapers.models import (
     DiscoveredTender,
+    PortalAttachment,
     extract_cpv_codes,
     filter_hygiene_cpv,
     parse_portal_date,
@@ -81,6 +83,14 @@ _DETAIL_HINTS = (
     "/vergabe",
 )
 _DETAIL_REJECTS = ("publisher", "apply", "mailto:", "javascript:", "#")
+_ATTACHMENT_SUFFIXES = (".pdf", ".x83", ".d83", ".x84", ".zip", ".xml")
+_ATTACHMENT_REJECTS = ("mailto:", "javascript:", "#", "apply")
+
+
+@dataclass(frozen=True, slots=True)
+class _AttachmentLink:
+    url: str
+    filename: str
 
 
 def _clean(value: str | None) -> str:
@@ -402,6 +412,70 @@ class HTMLPortalScraper(BaseScraper):
 
         return self.parse_cards(html, str(page_url), raw_object=raw_object)
 
+    @staticmethod
+    def parse_attachment_links(html: str, page_url: str) -> list[_AttachmentLink]:
+        """Find PDF/GAEB/ZIP links on a listing or detail page."""
+
+        soup = BeautifulSoup(html, "html.parser")
+        page_url = str(page_url)
+        found: dict[str, _AttachmentLink] = {}
+        for anchor in soup.select("a[href]"):
+            href = str(anchor.get("href", "")).strip()
+            lowered = href.casefold()
+            if not href or any(reject in lowered for reject in _ATTACHMENT_REJECTS):
+                continue
+            path = urlsplit(href).path.casefold()
+            if not path.endswith(_ATTACHMENT_SUFFIXES):
+                # Some portals put the filename in the visible link text.
+                text_suffix = Path(_clean(anchor.get_text(" ", strip=True))).suffix.casefold()
+                if text_suffix not in _ATTACHMENT_SUFFIXES:
+                    continue
+            absolute = urljoin(page_url, href)
+            filename = Path(urlsplit(absolute).path).name or "attachment"
+            if not Path(filename).suffix:
+                text_name = _clean(anchor.get_text(" ", strip=True))
+                filename = Path(text_name).name or "attachment"
+            if absolute not in found:
+                found[absolute] = _AttachmentLink(url=absolute, filename=filename)
+        return list(found.values())
+
+    def _attachment_kind(self, artifact: ScrapedArtifact) -> str:
+        suffix = Path(artifact.filename).suffix.casefold()
+        if suffix in {".x83", ".d83", ".x84"}:
+            return "gaeb"
+        if suffix == ".pdf":
+            return "pdf"
+        if suffix == ".zip":
+            return "archive"
+        return "other"
+
+    async def _harvest_attachments(
+        self,
+        page: ScrapedPage,
+        *,
+        limit: int,
+    ) -> tuple[list[PortalAttachment], list[str], list[str]]:
+        attachments: list[PortalAttachment] = []
+        errors: list[str] = []
+        object_names: list[str] = []
+        for link in self.parse_attachment_links(page.text, page.final_url)[:limit]:
+            try:
+                artifact = await self.download_attachment(link.url, filename=link.filename)
+            except Exception as exc:
+                errors.append(f"{link.url}: attachment download failed: {exc}")
+                continue
+            attachments.append(
+                PortalAttachment(
+                    url=artifact.url,
+                    filename=artifact.filename,
+                    object_name=artifact.object_name,
+                    content_type=artifact.content_type,
+                    kind=self._attachment_kind(artifact),
+                )
+            )
+            object_names.append(artifact.object_name)
+        return attachments, errors, object_names
+
     def parse_detail(self, html: str, url: str, *, raw_object: str | None = None) -> _ParsedCard:
         url = str(url)
         soup = BeautifulSoup(html, "html.parser")
@@ -448,7 +522,13 @@ class HTMLPortalScraper(BaseScraper):
             or card.title == "Unbenannte Ausschreibung"
         )
 
-    def _to_discovered(self, card: _ParsedCard) -> DiscoveredTender | None:
+    def _to_discovered(
+        self,
+        card: _ParsedCard,
+        *,
+        attachments: tuple[PortalAttachment, ...] = (),
+        raw_objects: tuple[str, ...] = (),
+    ) -> DiscoveredTender | None:
         matched = filter_hygiene_cpv(card.cpv_codes)
         if not matched or card.deadline is None:
             return None
@@ -464,13 +544,20 @@ class HTMLPortalScraper(BaseScraper):
             publication_date=card.publication_date,
             procedure=card.procedure,
             raw_object=card.raw_object,
+            raw_objects=raw_objects,
+            attachments=attachments,
             metadata={
                 "listing": "portal-html",
                 "portal_id": card.portal_id,
             },
         )
 
-    async def discover(self, *, max_pages: int | None = None) -> list[DiscoveredTender]:
+    async def discover(
+        self,
+        *,
+        max_pages: int | None = None,
+        since: datetime | None = None,
+    ) -> list[DiscoveredTender]:
         limit = max_pages or self.settings.scraper_max_pages
         page: ScrapedPage | None = await self._first_listing_page(self.start_url)
         visited: set[str] = set()
@@ -479,7 +566,9 @@ class HTMLPortalScraper(BaseScraper):
         errors: list[str] = []
         skipped_cpv = 0
         skipped_invalid = 0
+        skipped_stale = 0
         pages_fetched = 0
+        since_date = since.date() if since is not None else None
 
         while page is not None and pages_fetched < limit:
             if page.final_url in visited:
@@ -488,11 +577,26 @@ class HTMLPortalScraper(BaseScraper):
             pages_fetched += 1
             soup = BeautifulSoup(page.text, "html.parser")
             cards = self.parse_cards(page.text, page.final_url, raw_object=page.archived_object)
+            page_has_recent = False
             for card in cards:
                 if card.url in seen_tenders:
                     continue
-                candidate = card
-                if self.fetch_details and self._needs_detail(card):
+                if since_date is not None and card.publication_date is not None:
+                    if card.publication_date < since_date:
+                        skipped_stale += 1
+                        continue
+                    page_has_recent = True
+                elif since_date is not None:
+                    # Without a publication date we cannot prove the card is
+                    # stale; keep paginating and rely on tender-number dedupe.
+                    page_has_recent = True
+
+                detail_page: ScrapedPage | None = None
+                attachments: tuple[PortalAttachment, ...] = ()
+                attachment_objects: list[str] = []
+                needs_detail = self.fetch_details and self._needs_detail(card)
+                should_fetch_detail = needs_detail or self.settings.scraper_harvest_attachments
+                if should_fetch_detail:
                     try:
                         detail_page = await self.fetch(card.url)
                         detail = self.parse_detail(
@@ -500,17 +604,39 @@ class HTMLPortalScraper(BaseScraper):
                             detail_page.final_url,
                             raw_object=detail_page.archived_object,
                         )
-                        candidate = self._merge_detail(card, detail)
+                        if needs_detail:
+                            card = self._merge_detail(card, detail)
+                        if self.settings.scraper_harvest_attachments:
+                            harvested, attachment_errors, attachment_objects = await self._harvest_attachments(
+                                detail_page,
+                                limit=self.settings.scraper_max_attachments,
+                            )
+                            attachments = tuple(harvested)
+                            errors.extend(attachment_errors)
                     except Exception as exc:
                         errors.append(f"{card.url}: detail fetch failed: {exc}")
-                        skipped_invalid += 1
-                        continue
+                        if needs_detail:
+                            skipped_invalid += 1
+                            continue
 
-                if not filter_hygiene_cpv(candidate.cpv_codes):
+                if not filter_hygiene_cpv(card.cpv_codes):
                     skipped_cpv += 1
                     continue
+                raw_objects = tuple(
+                    name
+                    for name in (
+                        page.archived_object,
+                        detail_page.archived_object if detail_page is not None else None,
+                        *attachment_objects,
+                    )
+                    if name
+                )
                 try:
-                    tender = self._to_discovered(candidate)
+                    tender = self._to_discovered(
+                        card,
+                        attachments=attachments,
+                        raw_objects=raw_objects,
+                    )
                 except Exception as exc:
                     errors.append(f"{card.url}: invalid metadata: {exc}")
                     skipped_invalid += 1
@@ -521,6 +647,8 @@ class HTMLPortalScraper(BaseScraper):
                 seen_tenders.add(card.url)
                 discovered.append(tender)
 
+            if since_date is not None and cards and not page_has_recent:
+                break
             next_url = _next_page(soup, page.final_url)
             if next_url is None or next_url in visited:
                 break
@@ -537,5 +665,6 @@ class HTMLPortalScraper(BaseScraper):
             skipped_cpv=skipped_cpv,
             skipped_invalid=skipped_invalid,
             errors=tuple(errors),
+            skipped_stale=skipped_stale,
         )
         return discovered

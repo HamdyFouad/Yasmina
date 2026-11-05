@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from src.repositories.ingestion_repository import (
+    IngestionJobView,
+    ScraperStateRepository,
+    TenderIngestionJobRepository,
+)
 from src.repositories.offer_repository import (
     OfferRepository,
     OfferRepositoryConflict,
@@ -19,11 +24,14 @@ from src.repositories.tender_repository import (
 )
 
 __all__ = [
+    "IngestionJobView",
     "OfferRepository",
     "OfferRepositoryConflict",
     "OfferRepositoryError",
+    "ScraperStateRepository",
     "StoredOffer",
     "StoredTender",
+    "TenderIngestionJobRepository",
     "TenderRepository",
     "TenderRepositoryError",
     "offer_to_orm",

@@ -34,6 +34,7 @@ class FakeRepository:
         source_path: object | None = None,
         source_object: str | None = None,
         document: object | None = None,
+        commit: bool = True,
     ) -> StoredTender:
         stored = StoredTender(
             tender=tender,
@@ -62,7 +63,7 @@ class FakeScraper:
         self.discovered = discovered
         self.max_pages: int | None = None
 
-    async def scrape(self, *, max_pages: int | None = None) -> ScrapeReport:
+    async def scrape(self, *, max_pages: int | None = None, since: object | None = None) -> ScrapeReport:
         self.max_pages = max_pages
         return ScrapeReport(
             portal="vergabe.bayern",

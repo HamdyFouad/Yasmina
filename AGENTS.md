@@ -22,14 +22,14 @@ Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 
 - `src/config.py` (pydantic-settings)
 - `src/db.py` (async SQLAlchemy session factory)
 - `src/api/` (`security.py`, `deps.py`, `schemas.py`, `routes/tenders.py`, `routes/approvals.py`, `routes/offers.py`, `routes/auth.py`)
-- `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`)
+- `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `ingestion_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`)
 - `src/models/` (`enums.py`, `schemas.py`, `orm.py`)
 - `src/parsers/` (`normalizers.py`, `pdf_parser.py`, `gaeb_parser.py`, `gaeb_validator.py`)
-- `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`)
+- `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `ingestion_processor.py`)
 - `src/agents/` (`graph.py`, `checkpoint.py`, `nodes.py`, `state.py`, `deepseek.py`)
 - `src/integrations/` (`clamav_client.py`, `minio_client.py`, `erpnext_client.py`, `n8n_client.py`; Telegram planned)
 - `src/scrapers/` (`base_scraper.py`, `bayern_vergabe.py`, `oeffentlichevergabe.py`, `ingestion.py`)
-- `src/scheduler.py` and `src/worker.py` (cron scheduler and scrape CLI)
+- `src/scheduler.py` and `src/worker.py` (cron scheduler, scrape/ingestion CLI)
 - `src/generators/` (`invoice_models.py`, `leitweg.py`, `zugferd_generator.py`, `xrechnung_generator.py`)
 - `tests/` (unit, integration, evals with German golden fixtures)
 
@@ -48,5 +48,6 @@ When given an implementation task:
 - Preflight: `python -m src.preflight` (or `python -m src.preflight --json`).
 - Approval: `yasmina-approval sign|verify` (see `src/services/approval_service.py`).
 - Scrape worker: `python -m src.worker scrape|schedule` (daily cron via `SCRAPER_SCHEDULE_CRON`).
+- Ingestion worker: `python -m src.worker process [--limit N] [--interval SECONDS]` drains `tender_ingestion_jobs` with `DeepSeek` triage and Docling/GAEB parsing.
 - Migrations: `python -m alembic upgrade head`; offline SQL preview: `python -m alembic upgrade head --sql`.
 - Spec gaps and inferred schema fields are tracked in `docs/ASSUMPTIONS.md`.

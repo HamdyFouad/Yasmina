@@ -7,6 +7,7 @@ import hashlib
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Awaitable, Callable, ClassVar, Protocol, Sequence
 from urllib.parse import urljoin, urlsplit
 from urllib.robotparser import RobotFileParser
@@ -21,6 +22,7 @@ __all__ = [
     "DEFAULT_USER_AGENTS",
     "ObjectWriter",
     "RobotsDeniedError",
+    "ScrapedArtifact",
     "ScrapedPage",
     "ScrapeReport",
     "ScraperArchiveError",
@@ -69,6 +71,16 @@ class ObjectWriter(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class ScrapedArtifact:
+    url: str
+    filename: str
+    content_type: str
+    content: bytes
+    object_name: str
+    fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass(frozen=True, slots=True)
 class ScrapedPage:
     url: str
     final_url: str
@@ -89,6 +101,7 @@ class ScrapeReport:
     skipped_cpv: int
     skipped_invalid: int
     errors: tuple[str, ...]
+    skipped_stale: int = 0
 
     @property
     def count(self) -> int:
@@ -118,6 +131,12 @@ def _content_suffix(content_type: str) -> str:
     content_type = content_type.lower()
     if "json" in content_type:
         return ".json"
+    if "pdf" in content_type:
+        return ".pdf"
+    if "xml" in content_type or "xhtml" in content_type:
+        return ".xml"
+    if "zip" in content_type:
+        return ".zip"
     if any(value in content_type for value in _HTML_CONTENT_TYPES):
         return ".html"
     return ".bin"
@@ -320,13 +339,75 @@ class BaseScraper:
             )
         return page
 
-    async def discover(self, *, max_pages: int | None = None) -> list[DiscoveredTender]:
+    async def download_attachment(self, url: str, *, filename: str | None = None) -> ScrapedArtifact:
+        """Download and archive a PDF/GAEB attachment with the same safeguards."""
+
+        user_agent = self.next_user_agent()
+        robots = await self._robots_for(url, user_agent)
+        if not robots.parser.can_fetch(user_agent, url):
+            raise RobotsDeniedError(f"robots.txt disallows {url}")
+
+        response = await self._get_response(url, user_agent, robots.crawl_delay)
+        if not 200 <= response.status_code < 300:
+            raise ScraperHTTPError(
+                f"portal returned {response.status_code} for attachment {url}",
+                status_code=response.status_code,
+            )
+        content = response.content
+        if not content:
+            raise ScraperError(f"empty attachment response for {url}")
+        if len(content) > self.settings.scraper_max_attachment_mb * 1024 * 1024:
+            raise ScraperError(
+                f"attachment {url} exceeds {self.settings.scraper_max_attachment_mb} MB"
+            )
+
+        requested_name = Path(filename or urlsplit(url).path).name or "attachment"
+        safe_name = "".join(char if char.isalnum() or char in "._-" else "_" for char in requested_name)
+        safe_name = safe_name[:180] or "attachment"
+        content_type = response.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0].strip()
+        suffix = Path(safe_name).suffix.lower()
+        if not suffix:
+            suffix = _content_suffix(content_type)
+            safe_name = f"{safe_name}{suffix}"
+        digest = hashlib.sha256(content).hexdigest()
+        prefix = self.settings.scraper_archive_prefix.strip("/") or "scrapers"
+        object_name = (
+            f"{prefix}/{_safe_component(self.portal_name)}/attachments/"
+            f"{digest}{Path(safe_name).suffix.lower()}"
+        )
+        try:
+            await self.storage.put_bytes(
+                object_name,
+                content,
+                content_type or "application/octet-stream",
+            )
+        except Exception as exc:
+            raise ScraperArchiveError(f"cannot archive attachment {url}: {exc}") from exc
+        return ScrapedArtifact(
+            url=url,
+            filename=safe_name,
+            content_type=content_type or "application/octet-stream",
+            content=content,
+            object_name=object_name,
+        )
+
+    async def discover(
+        self,
+        *,
+        max_pages: int | None = None,
+        since: datetime | None = None,
+    ) -> list[DiscoveredTender]:
         raise NotImplementedError
 
-    async def scrape(self, *, max_pages: int | None = None) -> ScrapeReport:
+    async def scrape(
+        self,
+        *,
+        max_pages: int | None = None,
+        since: datetime | None = None,
+    ) -> ScrapeReport:
         """Discover tenders and return a report with request/skip counters."""
 
-        discovered = await self.discover(max_pages=max_pages)
+        discovered = await self.discover(max_pages=max_pages, since=since)
         if self.last_report is not None:
             return self.last_report
         report = ScrapeReport(

@@ -5,26 +5,40 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 
 from src.config import Settings
 from src.models.enums import AuditEventType, ProcurementProcedure
 from src.models.schemas import Tender
+from src.repositories.ingestion_repository import IngestionJobView
 from src.repositories.tender_repository import StoredTender
 from src.scrapers.bayern_vergabe import BayernVergabeScraper
 from src.scrapers.base_scraper import ScrapeReport
 from src.scrapers.ingestion import PortalIngestionBridge
-from src.scrapers.models import DiscoveredTender
+from src.scrapers.models import DiscoveredTender, PortalAttachment
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "portals"
+
+
+class FakeSession:
+    def __init__(self) -> None:
+        self.commits = 0
+        self.rollbacks = 0
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
 
 
 class FakeRepository:
     def __init__(self) -> None:
         self.by_number: dict[str, StoredTender] = {}
         self.save_calls: list[dict[str, Any]] = []
+        self.session = FakeSession()
 
     async def get_by_number(self, tender_number: str) -> StoredTender | None:
         return self.by_number.get(tender_number)
@@ -37,12 +51,14 @@ class FakeRepository:
         source_path: object | None = None,
         source_object: str | None = None,
         document: object | None = None,
+        commit: bool = True,
     ) -> StoredTender:
         self.save_calls.append(
             {
                 "tender": tender,
                 "source_filename": source_filename,
                 "source_object": source_object,
+                "commit": commit,
             }
         )
         stored = StoredTender(
@@ -72,6 +88,27 @@ class FakeAudit:
         self.entries.append(kwargs)
 
 
+class FakeJobRepository:
+    def __init__(self) -> None:
+        self.jobs: list[IngestionJobView] = []
+        self.attachments: list[dict[str, Any]] = []
+
+    async def enqueue(self, tender_id, *, portal_name, attachments=(), raw_object=None, commit=True):  # type: ignore[no-untyped-def]
+        self.attachments = list(attachments)
+        job = IngestionJobView(
+            id=uuid4(),
+            tender_id=tender_id,
+            portal_name=portal_name,
+            status="pending",
+            attempts=0,
+            max_attempts=5,
+            attachments=tuple(attachments),
+            raw_object=raw_object,
+        )
+        self.jobs.append(job)
+        return job, True
+
+
 def make_discovered(portal_id: str = "2026-001") -> DiscoveredTender:
     return DiscoveredTender(
         portal="vergabe.bayern",
@@ -85,6 +122,15 @@ def make_discovered(portal_id: str = "2026-001") -> DiscoveredTender:
         procedure=ProcurementProcedure.OPEN_PROCEDURE,
         cpv_codes=("33760000-5", "39830000-9"),
         raw_object="scrapers/vergabe.bayern/2026-01-15/abc.html",
+        attachments=(
+            PortalAttachment(
+                url="https://www.vergabe.bayern.de/download/lv.pdf",
+                filename="lv.pdf",
+                object_name="scrapers/vergabe.bayern/attachments/hash.pdf",
+                content_type="application/pdf",
+                kind="pdf",
+            ),
+        ),
         metadata={"fixture": "integration"},
     )
 
@@ -119,6 +165,28 @@ async def test_bridge_persists_and_triggers_pipeline_once() -> None:
     assert audit.entries[0]["entity_id"] == str(first.tender_id)
 
 
+async def test_bridge_queues_outbox_instead_of_inline_pipeline() -> None:
+    repository = FakeRepository()
+    jobs = FakeJobRepository()
+    pipeline = FakePipeline()
+    audit = FakeAudit()
+    bridge = PortalIngestionBridge(repository, pipeline=pipeline, audit=audit, jobs=jobs)
+    discovered = make_discovered()
+
+    result = await bridge.ingest(discovered)
+
+    assert result.created is True
+    assert result.pipeline_triggered is False
+    assert result.job_id == jobs.jobs[0].id
+    assert pipeline.triggered == []
+    assert repository.save_calls[0]["commit"] is False
+    assert repository.session.commits == 1
+    assert jobs.attachments == [discovered.attachments[0].as_dict()]
+    assert jobs.jobs[0].status == "pending"
+    assert jobs.jobs[0].raw_object == discovered.raw_object
+    assert audit.entries[0]["payload"]["job_id"] == str(jobs.jobs[0].id)
+
+
 async def test_bridge_ingests_batch_and_keeps_sequences() -> None:
     repository = FakeRepository()
     pipeline = FakePipeline()
@@ -135,7 +203,7 @@ class FakeScraper:
     def __init__(self, discovered: list[DiscoveredTender]) -> None:
         self.discovered = discovered
 
-    async def scrape(self, *, max_pages: int | None = None) -> ScrapeReport:
+    async def scrape(self, *, max_pages: int | None = None, since: object | None = None) -> ScrapeReport:
         return ScrapeReport(
             portal="vergabe.bayern",
             discovered=tuple(self.discovered),
@@ -177,6 +245,7 @@ def make_settings() -> Settings:
         scraper_request_delay_seconds=0,
         scraper_retry_backoff_seconds=0,
         scraper_user_agents=[],
+        scraper_harvest_attachments=False,
     )
 
 
