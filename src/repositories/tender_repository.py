@@ -30,6 +30,7 @@ class StoredTender:
     document: Any = None
     source_filename: str | None = None
     source_path: Path | None = None
+    source_object: str | None = None
 
 
 def _item_to_orm(item: TenderItem, tender_id: UUID) -> TenderItemORM:
@@ -153,6 +154,7 @@ class TenderRepository:
         *,
         source_filename: str | None = None,
         source_path: str | Path | None = None,
+        source_object: str | None = None,
         document: Any = None,
     ) -> StoredTender:
         metadata = dict(tender.metadata)
@@ -160,6 +162,8 @@ class TenderRepository:
             metadata["_source_filename"] = source_filename
         if source_path:
             metadata["_source_path"] = str(source_path)
+        if source_object:
+            metadata["_source_object"] = source_object
         stored_tender = tender.model_copy(update={"metadata": metadata})
         orm = tender_to_orm(stored_tender)
         self.session.add(orm)
@@ -174,6 +178,7 @@ class TenderRepository:
             document=document,
             source_filename=source_filename,
             source_path=Path(source_path) if source_path else None,
+            source_object=source_object,
         )
 
     async def get(self, tender_id: UUID) -> StoredTender | None:
@@ -190,6 +195,7 @@ class TenderRepository:
         metadata = dict(tender.metadata or {})
         source_path = metadata.get("_source_path")
         source_filename = metadata.get("_source_filename")
+        source_object = metadata.get("_source_object")
         public_metadata = {key: value for key, value in metadata.items() if not key.startswith("_")}
         public_tender = tender.model_copy(update={"metadata": public_metadata})
         document = None
@@ -204,6 +210,7 @@ class TenderRepository:
             document=document,
             source_filename=source_filename,
             source_path=path,
+            source_object=source_object,
         )
 
     async def delete(self, tender_id: UUID) -> bool:

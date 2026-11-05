@@ -18,7 +18,13 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
-from src.api.deps import get_clamav_scanner, get_session, get_tender_repository
+from src.api.deps import (
+    get_audit_service,
+    get_clamav_scanner,
+    get_object_storage,
+    get_session,
+    get_tender_repository,
+)
 from src.api.security import Role, create_access_token
 from src.config import Settings
 from src.integrations.clamav_client import ClamAVResult
@@ -70,6 +76,12 @@ def make_settings() -> Settings:
         jwt_secret_key=TEST_JWT_SECRET,
         api_admin_password="test-admin-password",
         ed25519_approval_public_key=PUBLIC_KEY_HEX,
+        company_name="Yasmina GmbH",
+        company_street="Hauptstr. 1",
+        company_city="Berlin",
+        company_postal_code="10115",
+        company_vat_id="DE123456789",
+        company_iban="DE89370400440532013000",
     )
 
 
@@ -147,12 +159,13 @@ class FakeTenderRepository:
     def __init__(self) -> None:
         self.items: dict[Any, StoredTender] = {}
 
-    async def save(self, tender, *, source_filename=None, source_path=None, document=None):  # type: ignore[no-untyped-def]
+    async def save(self, tender, *, source_filename=None, source_path=None, source_object=None, document=None):  # type: ignore[no-untyped-def]
         stored = StoredTender(
             tender=tender,
             document=document,
             source_filename=source_filename,
             source_path=source_path,
+            source_object=source_object,
         )
         self.items[tender.id] = stored
         return stored
@@ -171,11 +184,39 @@ class InfectedScanner:
         return ClamAVResult(clean=False, signature="Eicar-Test-Signature", raw="stream: Eicar FOUND")
 
 
+class FakeStorage:
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    async def put_bytes(self, object_name: str, data: bytes, content_type: str) -> str:
+        self.objects[object_name] = data
+        return object_name
+
+    async def get_bytes(self, object_name: str) -> bytes:
+        return self.objects[object_name]
+
+    async def delete(self, object_name: str) -> None:
+        self.objects.pop(object_name, None)
+
+    async def exists(self, object_name: str) -> bool:
+        return object_name in self.objects
+
+
+class FakeAudit:
+    def __init__(self) -> None:
+        self.entries: list[dict[str, Any]] = []
+
+    async def record_clamav(self, **kwargs: Any) -> None:
+        self.entries.append(kwargs)
+
+
 @pytest.fixture()
 def api(workspace_tmp):  # type: ignore[no-untyped-def]
     app = create_app(make_settings(), run_startup_checks=False)
     fake_session = FakeSession(make_candidate_rows())
     repository = FakeTenderRepository()
+    storage = FakeStorage()
+    audit = FakeAudit()
 
     async def fake_get_session():
         yield fake_session
@@ -183,6 +224,9 @@ def api(workspace_tmp):  # type: ignore[no-untyped-def]
     app.dependency_overrides[get_session] = fake_get_session
     app.dependency_overrides[get_tender_repository] = lambda: repository
     app.dependency_overrides[get_clamav_scanner] = lambda: CleanScanner()
+    app.dependency_overrides[get_object_storage] = lambda: storage
+    app.dependency_overrides[get_audit_service] = lambda: audit
+    app.state.test_audit = audit
     with TestClient(app) as client:
         yield client, app, fake_session
 
@@ -210,10 +254,11 @@ def test_auth_token_issue(api) -> None:  # type: ignore[no-untyped-def]
 
 
 def test_end_to_end_langgraph_transition(api, workspace_tmp) -> None:  # type: ignore[no-untyped-def]
-    client, _, _ = api
+    client, app, _ = api
     uploaded = upload_gaeb(client, workspace_tmp)
     tender_id = uploaded["tender_id"]
     item_id = uploaded["tender"]["items"][0]["id"]
+    assert app.state.test_audit.entries[0]["clean"] is True
 
     body = {
         "supplier_quotes": [quote_payload(item_id)],
@@ -321,10 +366,21 @@ def test_approval_rbac_and_verification(api, workspace_tmp) -> None:  # type: ig
             "signature": signed.ed25519_approval_signature,
             "approver": "C. Mueller",
             "approved_at": "2026-01-15T09:00:00Z",
+            "invoice": {
+                "buyer": {
+                    "street": "Rathausstr. 2",
+                    "city": "Musterstadt",
+                    "postal_code": "12345",
+                },
+                "buyer_reference": "991-03730-19",
+                "due_date": "2026-02-14",
+                "iban": "DE89370400440532013000",
+            },
         },
         headers=auth(APPROVER_TOKEN),
     )
     assert approved.status_code == 200, approved.text
+    assert approved.json()["artifacts"]["xrechnung"]["object_name"].endswith("invoice.xml")
 
     verify = client.post(
         "/api/v1/approvals/verify",
@@ -333,6 +389,21 @@ def test_approval_rbac_and_verification(api, workspace_tmp) -> None:  # type: ig
     )
     assert verify.status_code == 200
     assert verify.json()["valid"] is True
+
+    xml = client.get(
+        f"/api/v1/approvals/{offer.offer_number}/documents/xrechnung",
+        headers=auth(APPROVER_TOKEN),
+    )
+    assert xml.status_code == 200
+    assert b"CrossIndustryInvoice" not in xml.content  # XRechnung is UBL
+    assert b"<Invoice" in xml.content
+
+    pdf = client.get(
+        f"/api/v1/approvals/{offer.offer_number}/documents/zugferd",
+        headers=auth(APPROVER_TOKEN),
+    )
+    assert pdf.status_code == 200
+    assert pdf.content.startswith(b"%PDF-")
 
 
 def test_infected_upload_is_rejected(api, workspace_tmp) -> None:  # type: ignore[no-untyped-def]
@@ -348,6 +419,8 @@ def test_infected_upload_is_rejected(api, workspace_tmp) -> None:  # type: ignor
 
     assert response.status_code == 422
     assert "malware detected" in response.text
+    assert app.state.test_audit.entries[-1]["clean"] is False
+    assert app.state.test_audit.entries[-1]["signature"] == "Eicar-Test-Signature"
 
 
 def test_missing_bearer_is_401(api) -> None:  # type: ignore[no-untyped-def]

@@ -51,6 +51,16 @@ class Settings(BaseSettings):
     api_admin_password: SecretStr = SecretStr("change-me-admin-password")
     max_upload_size_mb: int = Field(default=25, ge=1, le=200)
 
+    # --- Company / invoice seller -----------------------------------------
+    company_name: str = "Yasmina GmbH"
+    company_street: str | None = None
+    company_city: str | None = None
+    company_postal_code: str | None = None
+    company_country_code: str = "DE"
+    company_vat_id: str | None = None
+    company_iban: str | None = None
+    company_email: str | None = None
+
     # --- Database ----------------------------------------------------------
     postgres_user: str = "yasmina"
     postgres_password: SecretStr = SecretStr("yasmina")

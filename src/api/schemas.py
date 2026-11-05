@@ -14,6 +14,8 @@ from src.models.schemas import CustomerOffer, SupplierQuote
 
 __all__ = [
     "ApprovalPayload",
+    "InvoiceBuyerPayload",
+    "InvoiceRequestPayload",
     "MatchPayload",
     "OfferRequestPayload",
     "PricePayload",
@@ -64,11 +66,29 @@ class WorkflowPayload(PricePayload):
     export_path: str | None = None
 
 
+class InvoiceBuyerPayload(BaseModel):
+    street: str = Field(min_length=1, max_length=256)
+    city: str = Field(min_length=1, max_length=128)
+    postal_code: str = Field(min_length=1, max_length=32)
+    country_code: str = Field(default="DE", min_length=2, max_length=2)
+    vat_id: str | None = Field(default=None, max_length=32)
+
+
+class InvoiceRequestPayload(BaseModel):
+    buyer: InvoiceBuyerPayload
+    buyer_reference: str = Field(min_length=5, max_length=46)
+    due_date: date
+    delivery_date: date | None = None
+    iban: str | None = Field(default=None, max_length=34)
+    payment_terms: str | None = Field(default=None, max_length=512)
+
+
 class ApprovalPayload(BaseModel):
     offer: dict[str, Any]
     signature: str = Field(min_length=128, max_length=128)
     approver: str = Field(min_length=1, max_length=256)
     approved_at: datetime | None = None
+    invoice: InvoiceRequestPayload | None = None
 
 
 class VerifyPayload(BaseModel):

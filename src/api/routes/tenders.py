@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,9 @@ from src.agents.state import initial_state
 from src.api.context import build_agent_context
 from src.api.deps import (
     get_app_settings,
+    get_audit_service,
     get_clamav_scanner,
+    get_object_storage,
     get_session,
     get_tender_repository,
     require_roles,
@@ -34,6 +37,11 @@ from src.api.schemas import (
 from src.api.security import Principal, Role
 from src.config import Settings
 from src.integrations.clamav_client import ClamAVError, ClamAVScanner
+from src.integrations.minio_client import (
+    MinioObjectStorage,
+    ObjectStorageError,
+    object_name_for_tender,
+)
 from src.models.enums import ProcurementProcedure, TenderSourceFormat
 from src.models.schemas import CustomerOffer, Tender
 from src.parsers.gaeb_parser import GaebParseError, parse_gaeb
@@ -43,13 +51,14 @@ from src.repositories.tender_repository import (
     TenderRepository,
     TenderRepositoryError,
 )
+from src.services.audit_service import AuditService, AuditServiceError
 from src.services.matching_service import HybridMatchingService, MatchResult, MatchingError
 
 __all__ = ["router"]
 
 router = APIRouter(prefix="/tenders", tags=["tenders"])
 
-_UPLOAD_DIR = Path("var/uploads")
+_GAEB_SUFFIXES = {".x83", ".d83"}
 
 
 def _match_payload(result: MatchResult) -> dict[str, Any]:
@@ -62,6 +71,44 @@ def _match_payload(result: MatchResult) -> dict[str, Any]:
         "matched_attributes": list(result.matched_attributes),
         "reasons": list(result.reasons),
     }
+
+
+async def _stored_with_document(
+    stored: StoredTender,
+    storage: MinioObjectStorage,
+) -> StoredTender:
+    if stored.document is not None or not stored.source_object:
+        return stored
+    suffix = Path(stored.source_filename or stored.source_object).suffix.lower()
+    if suffix not in _GAEB_SUFFIXES:
+        return stored
+
+    try:
+        data = await storage.get_bytes(stored.source_object)
+    except ObjectStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    tmp = Path(tempfile.gettempdir()) / f"{uuid4().hex}{suffix}"
+    tmp.write_bytes(data)
+    try:
+        parsed = await run_in_threadpool(parse_gaeb, tmp)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"cannot rehydrate GAEB source: {exc}",
+        ) from exc
+    finally:
+        tmp.unlink(missing_ok=True)
+    return StoredTender(
+        tender=stored.tender,
+        document=parsed.document,
+        source_filename=stored.source_filename,
+        source_path=stored.source_path,
+        source_object=stored.source_object,
+    )
 
 
 def _tender_or_404(tender_id: UUID, stored: StoredTender | None) -> StoredTender:
@@ -106,9 +153,11 @@ async def upload_tender(
     settings: Settings = Depends(get_app_settings),
     repository: TenderRepository = Depends(get_tender_repository),
     scanner: ClamAVScanner = Depends(get_clamav_scanner),
-    _: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
+    storage: MinioObjectStorage = Depends(get_object_storage),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
 ) -> dict[str, Any]:
-    """Parse a GAEB X83/D83 or PDF LV and keep it for later workflow steps."""
+    """Scan, store in MinIO, parse and persist a GAEB/PDF tender."""
 
     filename = file.filename or "upload"
     suffix = Path(filename).suffix.lower()
@@ -127,6 +176,9 @@ async def upload_tender(
             detail=f"upload exceeds {settings.max_upload_size_mb} MB",
         )
 
+    upload_id = uuid4()
+    object_name = object_name_for_tender(upload_id, filename)
+
     try:
         scan = await scanner.scan_bytes(data)
     except ClamAVError as exc:
@@ -134,25 +186,39 @@ async def upload_tender(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"malware scanner unavailable: {exc}",
         ) from exc
+
+    try:
+        await audit.record_clamav(
+            actor=principal.sub,
+            upload_id=str(upload_id),
+            filename=filename,
+            clean=scan.clean,
+            signature=scan.signature,
+            object_name=object_name,
+        )
+    except AuditServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"audit log unavailable: {exc}",
+        ) from exc
+
     if not scan.clean:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"malware detected: {scan.signature or 'unknown signature'}",
         )
 
-    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    path = _UPLOAD_DIR / f"{uuid4().hex}{suffix}"
-    path.write_bytes(data)
-
+    tmp = Path(tempfile.gettempdir()) / f"{uuid4().hex}{suffix}"
+    tmp.write_bytes(data)
     warnings: list[str] = []
     document: Any = None
     try:
         if suffix == ".pdf":
-            parsed_pdf = await run_in_threadpool(parse_pdf, path)
+            parsed_pdf = await run_in_threadpool(parse_pdf, tmp)
             tender = _pdf_tender(filename, list(parsed_pdf.items), list(parsed_pdf.warnings))
             warnings = list(parsed_pdf.warnings)
         else:
-            parsed_gaeb = await run_in_threadpool(parse_gaeb, path)
+            parsed_gaeb = await run_in_threadpool(parse_gaeb, tmp)
             tender = parsed_gaeb.tender
             document = parsed_gaeb.document
             warnings = list(parsed_gaeb.warnings)
@@ -160,15 +226,31 @@ async def upload_tender(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except (GaebParseError, PdfParseError, ValidationError) as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    tender = tender.model_copy(update={"source_reference": object_name})
+    content_type = "application/pdf" if suffix == ".pdf" else "application/xml"
+    try:
+        await storage.put_bytes(object_name, data, content_type)
+    except ObjectStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"object storage unavailable: {exc}",
+        ) from exc
 
     try:
         stored = await repository.save(
             tender,
             source_filename=filename,
-            source_path=path,
+            source_object=object_name,
             document=document,
         )
     except TenderRepositoryError as exc:
+        try:
+            await storage.delete(object_name)
+        except ObjectStorageError:
+            pass
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
@@ -176,6 +258,7 @@ async def upload_tender(
     return {
         "tender_id": str(stored.tender.id),
         "tender": stored.tender.model_dump(mode="json"),
+        "object_name": object_name,
         "warnings": warnings,
     }
 
@@ -226,12 +309,14 @@ async def price_tender(
     tender_id: UUID,
     payload: PricePayload,
     repository: TenderRepository = Depends(get_tender_repository),
+    storage: MinioObjectStorage = Depends(get_object_storage),
     settings: Settings = Depends(get_app_settings),
     _: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
 ) -> dict[str, Any]:
     """Price stored tender positions against supplied supplier quotes."""
 
     stored = _tender_or_404(tender_id, await repository.get(tender_id))
+    stored = await _stored_with_document(stored, storage)
     try:
         quotes = parse_supplier_quotes(payload.supplier_quotes)
     except ValidationError as exc:
@@ -262,12 +347,14 @@ async def run_tender_workflow(
     tender_id: UUID,
     payload: WorkflowPayload,
     repository: TenderRepository = Depends(get_tender_repository),
+    storage: MinioObjectStorage = Depends(get_object_storage),
     settings: Settings = Depends(get_app_settings),
     _: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
 ) -> dict[str, Any]:
     """Run the LangGraph workflow; pending/approved status is returned as data."""
 
     stored = _tender_or_404(tender_id, await repository.get(tender_id))
+    stored = await _stored_with_document(stored, storage)
     try:
         quotes = parse_supplier_quotes(payload.supplier_quotes)
         offer = parse_customer_offer(payload.offer) if payload.offer is not None else None

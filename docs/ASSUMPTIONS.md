@@ -74,15 +74,26 @@ reconciled with the authoritative spec later.
   `/auth/token`; sales/approver tokens must be minted by an external identity
   layer for now.
 - Uploaded tenders and positions are persisted in PostgreSQL via
-  `TenderRepository`; the source file path is retained in tender metadata so a
-  GAEB document can be rehydrated for later X84 export. Multi-worker deployments
-  still need shared object storage for the uploaded bytes.
+  `TenderRepository`; the original bytes are stored in the MinIO bucket
+  (`MINIO_BUCKET`) under `tenders/{upload_id}/{filename}` and the object key plus
+  source filename are retained in tender metadata so a GAEB document can be
+  rehydrated for later X84 export. Uploads are therefore portable across API
+  workers as long as they share the same object store.
 - Uploads are limited by `MAX_UPLOAD_SIZE_MB` and pass a ClamAV INSTREAM scan
   before parsing. Scanning fails closed: if clamd is unavailable the upload is
-  rejected with 503.
+  rejected with 503. Every completed scan outcome (`clean` or `infected`,
+  including signature/engine data) is appended to `audit_logs` before parsing,
+  so rejected uploads remain auditable.
 - `POST /tenders/{id}/workflow` returns `pending_approval` for an unsigned offer
   and `approved` once a correctly signed offer is supplied. `export_path` is
   restricted to `GAEB_EXPORT_DIR`.
+- `POST /approvals/{offer_number}/approve` verifies the signature via
+  `ApprovalService`; when the payload carries an `invoice` block it renders
+  XRechnung UBL and ZUGFeRD/Factur-X CII bytes, stores them in MinIO under
+  `offers/{offer_number}/`, and returns their object keys and download URLs.
+  `GET /approvals/{offer_number}/documents/{format}` streams the artefacts back.
+  Approval and invoice generation are currently in-memory operations (no offer
+  row is written yet); generation or storage failures return 422.
 
 ## E-invoicing assumptions (P2.1)
 
@@ -110,7 +121,9 @@ reconciled with the authoritative spec later.
 ## Hash-chained audit log
 
 `audit_logs` is append-only (UPDATE/DELETE/TRUNCATE blocked by triggers) and
-chained with SHA-256 over canonical JSON including `id`, `occurred_at`,
-`event_type`, `actor`, `entity_type`, `entity_id`, `payload` and `prev_hash`.
-The audit writer service (not yet implemented) must serialize entries and verify
-the chain.
+chained with SHA-256 over canonical JSON including `occurred_at`, `event_type`,
+`actor`, `entity_type`, `entity_id`, `payload` and `prev_hash` (the database
+`id` is deliberately excluded so the hash is stable before insert). Appends are
+serialized with a PostgreSQL advisory lock inside the same transaction, so the
+chain remains linear across concurrent writers. `audit_entry_hash` is exposed
+for deterministic fixture and chain-verification tests.

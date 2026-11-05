@@ -6,11 +6,12 @@
 cleaning & hygiene supplies sector** — paper towels, nitrile/latex gloves, and
 waste bags across all thicknesses, volumes and colour standards.
 
-> **Status:** P0 foundation, P1 core, durable tender persistence, ClamAV-scanned
-> uploads and the P2.1 e-invoicing generators are complete: GAEB/PDF ingestion,
-> XSD/penny validation, deterministic pricing, pgvector matching, LangGraph,
-> DeepSeek extraction, Ed25519 approval, JWT business API, ZUGFeRD 2.2 and
-> XRechnung 3.0. ERPNext/n8n integrations remain.
+> **Status:** P0 foundation, P1 core, durable PostgreSQL tender persistence,
+> MinIO object storage, ClamAV-scanned/audited uploads, Ed25519 approval with
+> automatic XRechnung/ZUGFeRD generation, and the P2.1 e-invoicing generators are
+> complete. GAEB/PDF ingestion, XSD/penny validation, deterministic pricing,
+> pgvector matching, LangGraph and DeepSeek extraction are in place.
+> ERPNext/n8n integrations remain.
 
 ---
 
@@ -88,7 +89,7 @@ src/
     nodes.py             # enrich, match, price, approval gate, export
     state.py             # typed state, dependencies and offer request
     deepseek.py          # DeepSeek structured extraction client
-  integrations/          # ClamAV scanner; ERPNext/n8n/Telegram planned
+  integrations/          # ClamAV + MinIO clients; ERPNext/n8n/Telegram planned
   generators/
     invoice_models.py    # shared invoice/party/line models
     leitweg.py           # Leitweg-ID format + MOD-97-10 validation
@@ -204,6 +205,7 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | POST | `/tenders/{id}/workflow` | sales/admin |
 | POST | `/approvals/verify` | viewer/approver/admin |
 | POST | `/approvals/approve` | approver/admin |
+| GET | `/approvals/{offer_number}/documents/{format}` | viewer/approver/admin |
 
 ```powershell
 $token = (Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/auth/token `
@@ -219,9 +221,13 @@ The matching route retrieves candidates directly from `catalog_articles` using
 pgvector cosine distance. The workflow route runs the LangGraph state machine;
 it returns `pending_approval` until a signed offer is supplied, then
 `approved`. Uploads are ClamAV-scanned (INSTREAM) before parsing and fail closed
-if the scanner is unavailable. Tenders and positions are persisted in PostgreSQL
-through `TenderRepository`; the uploaded source path is retained for X84
-re-export.
+if the scanner is unavailable; every scan outcome is written to the hash-chained
+audit log. Raw uploads are stored in MinIO, while tenders and positions are
+persisted in PostgreSQL through `TenderRepository`.
+
+Approving an offer with an `invoice` block generates both XRechnung XML and
+ZUGFeRD PDF and stores them under `offers/{offer_number}/` in MinIO. The download
+endpoint serves `format=xrechnung|zugferd`.
 
 ### 8. Run tests
 
@@ -229,11 +235,11 @@ re-export.
 python -m pytest -q
 ```
 
-The current 202 tests cover normalizers, settings, strict schemas, ORM metadata,
+The current 206 tests cover normalizers, settings, strict schemas, ORM metadata,
 pgvector/HNSW configuration, GAEB parsing/validation, PDF table extraction,
 pricing, hybrid matching, LangGraph orchestration, Ed25519 approval, ClamAV
-scanning, FastAPI business routes, RBAC, tender persistence and offline
-migration rendering.
+scanning and audit chaining, MinIO object flows, FastAPI business routes, RBAC,
+tender persistence, e-invoicing and offline migration rendering.
 
 ### Parsing, pricing and matching
 
@@ -339,6 +345,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 |---|---|
 | Application | `APP_ENV`, `APP_DEBUG`, `APP_SECRET_KEY`, `APP_TIMEZONE` |
 | API / JWT | `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `JWT_EXPIRY_MINUTES`, `API_ADMIN_*`, `MAX_UPLOAD_SIZE_MB` |
+| Invoice seller | `COMPANY_NAME`, `COMPANY_STREET`, `COMPANY_CITY`, `COMPANY_POSTAL_CODE`, `COMPANY_VAT_ID`, `COMPANY_IBAN` |
 | PostgreSQL | `POSTGRES_*`, optional `DATABASE_URL`, `DATABASE_ECHO` |
 | MinIO | `MINIO_*` |
 | ClamAV | `CLAMAV_HOST`, `CLAMAV_PORT`, `CLAMAV_TIMEOUT_SECONDS` |
@@ -399,6 +406,7 @@ the default application, JWT or API-admin secrets.
 - [x] P1 — Ed25519 approval payload, signing, verification and approval gate
 - [x] P1 — pgvector catalogue retrieval, JWT/RBAC FastAPI business API and API integration tests
 - [x] P1 — PostgreSQL tender repository and ClamAV-scanned uploads
+- [x] P1 — MinIO upload/artifact storage, audit-chained scans and invoice download endpoints
 - [x] P2.1 — ZUGFeRD 2.2/Factur-X and XRechnung 3.0 generators with Leitweg-ID validation
 - [ ] P1 — unit conversion, refresh tokens and advanced RBAC
 - [ ] P2 — ERPNext/n8n integrations, Telegram notifier

@@ -210,14 +210,15 @@ class ZUGFeRDGenerator:
     def build_xml(self, invoice: Invoice) -> bytes:
         return build_cii_xml(invoice)
 
-    def generate(
+    def build(
         self,
         invoice: Invoice,
-        output_path: str | Path,
         *,
         base_pdf: bytes | str | Path | None = None,
         check_xsd: bool = True,
-    ) -> Path:
+    ) -> bytes:
+        """Return Factur-X PDF bytes with embedded CII XML."""
+
         try:
             from facturx import generate_from_binary
         except ImportError as exc:  # pragma: no cover - optional dependency
@@ -232,7 +233,7 @@ class ZUGFeRDGenerator:
 
         xml = self.build_xml(invoice)
         try:
-            output = generate_from_binary(
+            return generate_from_binary(
                 pdf_bytes,
                 xml,
                 flavor="factur-x",
@@ -248,6 +249,15 @@ class ZUGFeRDGenerator:
         except Exception as exc:
             raise InvoiceGenerationError(f"factur-x could not generate the PDF: {exc}") from exc
 
+    def generate(
+        self,
+        invoice: Invoice,
+        output_path: str | Path,
+        *,
+        base_pdf: bytes | str | Path | None = None,
+        check_xsd: bool = True,
+    ) -> Path:
+        output = self.build(invoice, base_pdf=base_pdf, check_xsd=check_xsd)
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(output)

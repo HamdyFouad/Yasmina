@@ -12,12 +12,16 @@ from src.api.security import AuthError, Principal, Role, decode_access_token
 from src.config import Settings, get_settings
 from src.db import get_session_factory
 from src.integrations.clamav_client import ClamAVScanner
+from src.integrations.minio_client import MinioObjectStorage
 from src.repositories.tender_repository import TenderRepository
+from src.services.audit_service import AuditService
 
 __all__ = [
     "bearer_scheme",
     "get_app_settings",
+    "get_audit_service",
     "get_clamav_scanner",
+    "get_object_storage",
     "get_principal",
     "get_session",
     "get_tender_repository",
@@ -85,3 +89,15 @@ def get_clamav_scanner(
         settings.clamav_port,
         timeout=settings.clamav_timeout_seconds,
     )
+
+
+def get_audit_service(
+    session: AsyncSession = Depends(get_session),
+) -> AuditService:
+    return AuditService(session)
+
+
+def get_object_storage(
+    settings: Settings = Depends(get_app_settings),
+) -> MinioObjectStorage:
+    return MinioObjectStorage(settings)
