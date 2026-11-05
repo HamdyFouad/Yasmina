@@ -73,13 +73,29 @@ reconciled with the authoritative spec later.
   `approver`, `viewer`. Only the single admin credential can obtain a token from
   `/auth/token`; sales/approver tokens must be minted by an external identity
   layer for now.
-- Uploaded tenders and their parsed pyGAEB documents live in a process-local
-  store. Multi-worker deployments need a database/object-storage repository.
-- Uploads are limited by `MAX_UPLOAD_SIZE_MB`; ClamAV scanning is not yet wired
-  into the HTTP upload path.
+- Uploaded tenders and positions are persisted in PostgreSQL via
+  `TenderRepository`; the source file path is retained in tender metadata so a
+  GAEB document can be rehydrated for later X84 export. Multi-worker deployments
+  still need shared object storage for the uploaded bytes.
+- Uploads are limited by `MAX_UPLOAD_SIZE_MB` and pass a ClamAV INSTREAM scan
+  before parsing. Scanning fails closed: if clamd is unavailable the upload is
+  rejected with 503.
 - `POST /tenders/{id}/workflow` returns `pending_approval` for an unsigned offer
   and `approved` once a correctly signed offer is supplied. `export_path` is
   restricted to `GAEB_EXPORT_DIR`.
+
+## E-invoicing assumptions (P2.1)
+
+- Invoice lines use the shared `UnitOfMeasure`; UBL/CII unit codes are mapped to
+  UN/ECE `C62`, `KGM`, `LTR`, `MTR` and `MTK`.
+- XRechnung buyer reference (BT-10) is validated as a Leitweg-ID: 5–46
+  characters, coarse/fine/check segments and ISO 7064 MOD 97-10 check digits.
+  Private B2B references can bypass the Leitweg check explicitly.
+- ZUGFeRD/Factur-X CII XML is validated against the Factur-X EN16931 XSD bundled
+  with the `factur-x` library. The default PDF is a blank base document; a real
+  PDF/A-3 renderer/template should be supplied via `base_pdf` for production.
+- VAT is grouped per rate; the invoice model enforces line, net, VAT and gross
+  reconciliation.
 
 ## Open questions for spec reconciliation
 

@@ -6,11 +6,11 @@
 cleaning & hygiene supplies sector** — paper towels, nitrile/latex gloves, and
 waste bags across all thicknesses, volumes and colour standards.
 
-> **Status:** P0 foundation and the P1 core are complete: GAEB/PDF ingestion,
-> XSD/penny validation, deterministic pricing, pgvector hybrid matching,
-> LangGraph orchestration, DeepSeek extraction, Ed25519 approval and a
-> JWT-secured FastAPI business API. ERPNext/n8n integrations and e-invoicing
-> generators remain.
+> **Status:** P0 foundation, P1 core, durable tender persistence, ClamAV-scanned
+> uploads and the P2.1 e-invoicing generators are complete: GAEB/PDF ingestion,
+> XSD/penny validation, deterministic pricing, pgvector matching, LangGraph,
+> DeepSeek extraction, Ed25519 approval, JWT business API, ZUGFeRD 2.2 and
+> XRechnung 3.0. ERPNext/n8n integrations remain.
 
 ---
 
@@ -62,13 +62,14 @@ src/
   preflight.py           # startup checks (config, DB, MinIO, ClamAV, n8n)
   api/
     security.py          # JWT issuance/validation + RBAC roles
-    deps.py              # auth, DB session and tender-store dependencies
+    deps.py              # auth, DB, ClamAV and repository dependencies
     schemas.py           # API request DTOs and payload parsers
-    store.py             # process-local tender store
     routes/
       auth.py            # POST /auth/token
-      tenders.py         # upload, match, price, workflow
+      tenders.py         # upload (scanned), match, price, workflow
       approvals.py       # verify and approve offers
+  repositories/
+    tender_repository.py # PostgreSQL tender/position persistence
   models/
     enums.py             # canonical StrEnums
     schemas.py           # strict Pydantic v2 domain models
@@ -87,8 +88,12 @@ src/
     nodes.py             # enrich, match, price, approval gate, export
     state.py             # typed state, dependencies and offer request
     deepseek.py          # DeepSeek structured extraction client
-  integrations/          # planned: ERPNext, n8n, Telegram clients
-  generators/            # planned: ZUGFeRD, XRechnung
+  integrations/          # ClamAV scanner; ERPNext/n8n/Telegram planned
+  generators/
+    invoice_models.py    # shared invoice/party/line models
+    leitweg.py           # Leitweg-ID format + MOD-97-10 validation
+    zugferd_generator.py # Factur-X/ZUGFeRD 2.2 CII + PDF embedding
+    xrechnung_generator.py # XRechnung 3.0 UBL XML
 alembic/                 # async migrations (0001 schema, 0002 audit guard)
 docker/                  # PostgreSQL bootstrap (pgvector, n8n database)
 docs/
@@ -213,7 +218,10 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/tenders/upload 
 The matching route retrieves candidates directly from `catalog_articles` using
 pgvector cosine distance. The workflow route runs the LangGraph state machine;
 it returns `pending_approval` until a signed offer is supplied, then
-`approved`. Tenders are held in a process-local store in this revision.
+`approved`. Uploads are ClamAV-scanned (INSTREAM) before parsing and fail closed
+if the scanner is unavailable. Tenders and positions are persisted in PostgreSQL
+through `TenderRepository`; the uploaded source path is retained for X84
+re-export.
 
 ### 8. Run tests
 
@@ -221,10 +229,11 @@ it returns `pending_approval` until a signed offer is supplied, then
 python -m pytest -q
 ```
 
-The current 190 tests cover normalizers, settings, strict schemas, ORM metadata,
+The current 202 tests cover normalizers, settings, strict schemas, ORM metadata,
 pgvector/HNSW configuration, GAEB parsing/validation, PDF table extraction,
-pricing, hybrid matching, LangGraph orchestration, Ed25519 approval, FastAPI
-business routes, RBAC and offline migration rendering.
+pricing, hybrid matching, LangGraph orchestration, Ed25519 approval, ClamAV
+scanning, FastAPI business routes, RBAC, tender persistence and offline
+migration rendering.
 
 ### Parsing, pricing and matching
 
@@ -244,6 +253,40 @@ GAEB validation supports optional XSD schemas (point `xsd_dir` at the official
 GAEB 2021-05 schemas) and always runs deterministic penny reconciliation. The
 X84 writer requires an approved offer plus an `ApprovalService` that verifies
 the Ed25519 signature.
+
+### E-invoicing (ZUGFeRD / XRechnung)
+
+```python
+from datetime import date
+from decimal import Decimal
+
+from src.generators import Invoice, InvoiceLine, InvoiceParty
+from src.generators import XRechnungGenerator, ZUGFeRDGenerator
+
+invoice = Invoice(
+    invoice_number="INV-2026-001",
+    issue_date=date(2026, 1, 15),
+    due_date=date(2026, 2, 14),
+    seller=seller, buyer=buyer,
+    buyer_reference="991-03730-19",  # Leitweg-ID
+    lines=[line],
+    total_net=Decimal("100.00"),
+    total_vat=Decimal("19.00"),
+    total_gross=Decimal("119.00"),
+)
+
+XRechnungGenerator().generate(invoice, "invoice.xml")
+ZUGFeRDGenerator().generate(invoice, "invoice.pdf")
+```
+
+- XRechnung 3.0 is emitted as UBL 2.1 with the XRechnung customization ID.
+- Leitweg-ID validation enforces 5–46 characters, segment structure and the
+  MOD-97-10 check number.
+- ZUGFeRD/Factur-X embeds valid EN 16931 CII XML in a PDF. Pass `base_pdf=` with
+  a real PDF/A-3 document for production; the default blank PDF is a test
+  fallback, not a certified PDF/A-3 renderer.
+- The CII XML is XSD-validated by the `factur-x` package; the UBL invoice is
+  validated against the UBL 2.1 schema in tests.
 
 ### Agent workflow and HITL approval
 
@@ -355,8 +398,10 @@ the default application, JWT or API-admin secrets.
 - [x] P1 — LangGraph orchestration and DeepSeek extraction client
 - [x] P1 — Ed25519 approval payload, signing, verification and approval gate
 - [x] P1 — pgvector catalogue retrieval, JWT/RBAC FastAPI business API and API integration tests
-- [ ] P1 — unit conversion, durable API persistence, refresh tokens and advanced RBAC
-- [ ] P2 — ERPNext/n8n integrations, ZUGFeRD/XRechnung generators
+- [x] P1 — PostgreSQL tender repository and ClamAV-scanned uploads
+- [x] P2.1 — ZUGFeRD 2.2/Factur-X and XRechnung 3.0 generators with Leitweg-ID validation
+- [ ] P1 — unit conversion, refresh tokens and advanced RBAC
+- [ ] P2 — ERPNext/n8n integrations, Telegram notifier
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and
 `docs/ASSUMPTIONS.md` for fields inferred while Sections 5–8 are still being

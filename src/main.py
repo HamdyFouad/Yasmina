@@ -16,8 +16,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from src.api.routes import approvals, auth, tenders
-from src.api.store import TenderStore
 from src.config import Settings, ensure_env_file, get_settings, reset_settings_cache
+from src.db import dispose_engine
 from src.preflight import CheckResult, PreflightOptions, run_preflight
 
 __all__ = ["app", "create_app"]
@@ -60,7 +60,10 @@ def create_app(settings: Settings | None = None, *, run_startup_checks: bool = T
             logger.info("preflight passed (env=%s)", current.app_env)
         else:
             app.state.preflight = ()
-        yield
+        try:
+            yield
+        finally:
+            await dispose_engine()
 
     application = FastAPI(
         title="Project Yasmina",
@@ -68,7 +71,6 @@ def create_app(settings: Settings | None = None, *, run_startup_checks: bool = T
         version="0.1.0",
         lifespan=app_lifespan,
     )
-    application.state.tender_store = TenderStore()
     application.include_router(auth.router, prefix="/api/v1")
     application.include_router(tenders.router, prefix="/api/v1")
     application.include_router(approvals.router, prefix="/api/v1")

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +17,13 @@ from src.agents.graph import run_agent
 from src.agents.nodes import price_offer
 from src.agents.state import initial_state
 from src.api.context import build_agent_context
-from src.api.deps import get_app_settings, get_session, get_store, require_roles
+from src.api.deps import (
+    get_app_settings,
+    get_clamav_scanner,
+    get_session,
+    get_tender_repository,
+    require_roles,
+)
 from src.api.schemas import (
     MatchPayload,
     PricePayload,
@@ -26,12 +32,17 @@ from src.api.schemas import (
     parse_supplier_quotes,
 )
 from src.api.security import Principal, Role
-from src.api.store import StoredTender
 from src.config import Settings
+from src.integrations.clamav_client import ClamAVError, ClamAVScanner
 from src.models.enums import ProcurementProcedure, TenderSourceFormat
 from src.models.schemas import CustomerOffer, Tender
 from src.parsers.gaeb_parser import GaebParseError, parse_gaeb
 from src.parsers.pdf_parser import PdfParseError, PdfParserUnavailable, parse_pdf
+from src.repositories.tender_repository import (
+    StoredTender,
+    TenderRepository,
+    TenderRepositoryError,
+)
 from src.services.matching_service import HybridMatchingService, MatchResult, MatchingError
 
 __all__ = ["router"]
@@ -53,8 +64,7 @@ def _match_payload(result: MatchResult) -> dict[str, Any]:
     }
 
 
-def _tender_or_404(tender_id: UUID, request: Request) -> StoredTender:
-    stored = get_store(request).get(tender_id)
+def _tender_or_404(tender_id: UUID, stored: StoredTender | None) -> StoredTender:
     if stored is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tender not found")
     return stored
@@ -92,9 +102,10 @@ def _export_target(settings: Settings, raw: str) -> Path:
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_tender(
-    request: Request,
     file: UploadFile = File(...),
     settings: Settings = Depends(get_app_settings),
+    repository: TenderRepository = Depends(get_tender_repository),
+    scanner: ClamAVScanner = Depends(get_clamav_scanner),
     _: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
 ) -> dict[str, Any]:
     """Parse a GAEB X83/D83 or PDF LV and keep it for later workflow steps."""
@@ -114,6 +125,19 @@ async def upload_tender(
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"upload exceeds {settings.max_upload_size_mb} MB",
+        )
+
+    try:
+        scan = await scanner.scan_bytes(data)
+    except ClamAVError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"malware scanner unavailable: {exc}",
+        ) from exc
+    if not scan.clean:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"malware detected: {scan.signature or 'unknown signature'}",
         )
 
     _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -137,17 +161,21 @@ async def upload_tender(
     except (GaebParseError, PdfParseError, ValidationError) as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    get_store(request).put(
-        StoredTender(
-            tender=tender,
-            document=document,
+    try:
+        stored = await repository.save(
+            tender,
             source_filename=filename,
             source_path=path,
+            document=document,
         )
-    )
+    except TenderRepositoryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     return {
-        "tender_id": str(tender.id),
-        "tender": tender.model_dump(mode="json"),
+        "tender_id": str(stored.tender.id),
+        "tender": stored.tender.model_dump(mode="json"),
         "warnings": warnings,
     }
 
@@ -156,14 +184,14 @@ async def upload_tender(
 async def match_tender(
     tender_id: UUID,
     payload: MatchPayload,
-    request: Request,
     session: AsyncSession = Depends(get_session),
+    repository: TenderRepository = Depends(get_tender_repository),
     settings: Settings = Depends(get_app_settings),
     _: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
 ) -> dict[str, Any]:
     """Query catalogue embeddings from PostgreSQL and rank matches."""
 
-    stored = _tender_or_404(tender_id, request)
+    stored = _tender_or_404(tender_id, await repository.get(tender_id))
     if payload.query_embedding is not None and len(payload.query_embedding) != settings.embedding_dimensions:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -197,13 +225,13 @@ async def match_tender(
 async def price_tender(
     tender_id: UUID,
     payload: PricePayload,
-    request: Request,
+    repository: TenderRepository = Depends(get_tender_repository),
     settings: Settings = Depends(get_app_settings),
     _: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
 ) -> dict[str, Any]:
     """Price stored tender positions against supplied supplier quotes."""
 
-    stored = _tender_or_404(tender_id, request)
+    stored = _tender_or_404(tender_id, await repository.get(tender_id))
     try:
         quotes = parse_supplier_quotes(payload.supplier_quotes)
     except ValidationError as exc:
@@ -233,13 +261,13 @@ async def price_tender(
 async def run_tender_workflow(
     tender_id: UUID,
     payload: WorkflowPayload,
-    request: Request,
+    repository: TenderRepository = Depends(get_tender_repository),
     settings: Settings = Depends(get_app_settings),
     _: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
 ) -> dict[str, Any]:
     """Run the LangGraph workflow; pending/approved status is returned as data."""
 
-    stored = _tender_or_404(tender_id, request)
+    stored = _tender_or_404(tender_id, await repository.get(tender_id))
     try:
         quotes = parse_supplier_quotes(payload.supplier_quotes)
         offer = parse_customer_offer(payload.offer) if payload.offer is not None else None

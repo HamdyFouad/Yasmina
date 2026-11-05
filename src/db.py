@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
-
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -13,23 +11,33 @@ from sqlalchemy.ext.asyncio import (
 
 from src.config import Settings
 
-__all__ = ["get_engine", "get_session_factory"]
+__all__ = ["dispose_engine", "get_engine", "get_session_factory"]
 
-
-@lru_cache(maxsize=4)
-def _build_engine(database_url: str, echo: bool, pool_size: int) -> AsyncEngine:
-    return create_async_engine(
-        database_url,
-        echo=echo,
-        pool_size=pool_size,
-        pool_pre_ping=True,
-    )
+_ENGINES: dict[tuple[str, bool, int], AsyncEngine] = {}
 
 
 def get_engine(settings: Settings) -> AsyncEngine:
     assert settings.database_url is not None
-    return _build_engine(settings.database_url, settings.database_echo, settings.database_pool_size)
+    key = (settings.database_url, settings.database_echo, settings.database_pool_size)
+    engine = _ENGINES.get(key)
+    if engine is None:
+        engine = create_async_engine(
+            settings.database_url,
+            echo=settings.database_echo,
+            pool_size=settings.database_pool_size,
+            pool_pre_ping=True,
+        )
+        _ENGINES[key] = engine
+    return engine
 
 
 def get_session_factory(settings: Settings) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(get_engine(settings), expire_on_commit=False)
+
+
+async def dispose_engine() -> None:
+    """Dispose all cached engines (called on FastAPI shutdown/tests)."""
+
+    for engine in list(_ENGINES.values()):
+        await engine.dispose()
+    _ENGINES.clear()

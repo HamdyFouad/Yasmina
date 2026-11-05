@@ -9,16 +9,18 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.security import AuthError, Principal, Role, decode_access_token
-from src.api.store import TenderStore
 from src.config import Settings, get_settings
 from src.db import get_session_factory
+from src.integrations.clamav_client import ClamAVScanner
+from src.repositories.tender_repository import TenderRepository
 
 __all__ = [
     "bearer_scheme",
     "get_app_settings",
+    "get_clamav_scanner",
     "get_principal",
     "get_session",
-    "get_store",
+    "get_tender_repository",
     "require_roles",
 ]
 
@@ -69,5 +71,17 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
         yield session
 
 
-def get_store(request: Request) -> TenderStore:
-    return request.app.state.tender_store
+def get_tender_repository(
+    session: AsyncSession = Depends(get_session),
+) -> TenderRepository:
+    return TenderRepository(session)
+
+
+def get_clamav_scanner(
+    settings: Settings = Depends(get_app_settings),
+) -> ClamAVScanner:
+    return ClamAVScanner(
+        settings.clamav_host,
+        settings.clamav_port,
+        timeout=settings.clamav_timeout_seconds,
+    )

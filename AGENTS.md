@@ -21,13 +21,14 @@
 Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 10):
 - `src/config.py` (pydantic-settings)
 - `src/db.py` (async SQLAlchemy session factory)
-- `src/api/` (`security.py`, `deps.py`, `schemas.py`, `store.py`, `routes/tenders.py`, `routes/approvals.py`, `routes/auth.py`)
+- `src/api/` (`security.py`, `deps.py`, `schemas.py`, `routes/tenders.py`, `routes/approvals.py`, `routes/auth.py`)
+- `src/repositories/` (`tender_repository.py`)
 - `src/models/` (`enums.py`, `schemas.py`, `orm.py`)
 - `src/parsers/` (`normalizers.py`, `pdf_parser.py`, `gaeb_parser.py`, `gaeb_validator.py`)
 - `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`; `unit_converter.py` planned)
 - `src/agents/` (`graph.py`, `nodes.py`, `state.py`, `deepseek.py`)
-- `src/integrations/` (`erpnext_client.py`, `n8n_client.py`, `telegram_notifier.py`)
-- `src/generators/` (`zugferd_generator.py`, `xrechnung_generator.py`)
+- `src/integrations/` (`clamav_client.py`; ERPNext, n8n and Telegram planned)
+- `src/generators/` (`invoice_models.py`, `leitweg.py`, `zugferd_generator.py`, `xrechnung_generator.py`)
 - `tests/` (unit, integration, evals with German golden fixtures)
 
 ## 5. Execution Protocol for Coding Agents

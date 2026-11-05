@@ -18,12 +18,14 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
-from src.api.deps import get_session
+from src.api.deps import get_clamav_scanner, get_session, get_tender_repository
 from src.api.security import Role, create_access_token
 from src.config import Settings
+from src.integrations.clamav_client import ClamAVResult
 from src.main import create_app
 from src.models.enums import GloveSize, MaterialType, StandardizedColor, UnitOfMeasure
 from src.models.schemas import CustomerOffer, SupplierQuote, SupplierQuoteLine
+from src.repositories.tender_repository import StoredTender
 from src.services.approval_service import generate_keypair, sign_offer
 
 pygaeb = pytest.importorskip("pygaeb")
@@ -141,15 +143,46 @@ def make_candidate_rows() -> list[SimpleNamespace]:
     ]
 
 
+class FakeTenderRepository:
+    def __init__(self) -> None:
+        self.items: dict[Any, StoredTender] = {}
+
+    async def save(self, tender, *, source_filename=None, source_path=None, document=None):  # type: ignore[no-untyped-def]
+        stored = StoredTender(
+            tender=tender,
+            document=document,
+            source_filename=source_filename,
+            source_path=source_path,
+        )
+        self.items[tender.id] = stored
+        return stored
+
+    async def get(self, tender_id):  # type: ignore[no-untyped-def]
+        return self.items.get(tender_id)
+
+
+class CleanScanner:
+    async def scan_bytes(self, data: bytes) -> ClamAVResult:
+        return ClamAVResult(clean=True, signature=None, raw="stream: OK")
+
+
+class InfectedScanner:
+    async def scan_bytes(self, data: bytes) -> ClamAVResult:
+        return ClamAVResult(clean=False, signature="Eicar-Test-Signature", raw="stream: Eicar FOUND")
+
+
 @pytest.fixture()
 def api(workspace_tmp):  # type: ignore[no-untyped-def]
     app = create_app(make_settings(), run_startup_checks=False)
     fake_session = FakeSession(make_candidate_rows())
+    repository = FakeTenderRepository()
 
     async def fake_get_session():
         yield fake_session
 
     app.dependency_overrides[get_session] = fake_get_session
+    app.dependency_overrides[get_tender_repository] = lambda: repository
+    app.dependency_overrides[get_clamav_scanner] = lambda: CleanScanner()
     with TestClient(app) as client:
         yield client, app, fake_session
 
@@ -300,6 +333,21 @@ def test_approval_rbac_and_verification(api, workspace_tmp) -> None:  # type: ig
     )
     assert verify.status_code == 200
     assert verify.json()["valid"] is True
+
+
+def test_infected_upload_is_rejected(api, workspace_tmp) -> None:  # type: ignore[no-untyped-def]
+    client, app, _ = api
+    app.dependency_overrides[get_clamav_scanner] = lambda: InfectedScanner()
+    path = build_x83(workspace_tmp / "infected.X83")
+
+    response = client.post(
+        "/api/v1/tenders/upload",
+        files={"file": ("infected.X83", path.read_bytes(), "application/xml")},
+        headers=auth(SALES_TOKEN),
+    )
+
+    assert response.status_code == 422
+    assert "malware detected" in response.text
 
 
 def test_missing_bearer_is_401(api) -> None:  # type: ignore[no-untyped-def]
