@@ -9,9 +9,9 @@ waste bags across all thicknesses, volumes and colour standards.
 > **Status:** P0 foundation, P1 core, durable PostgreSQL tender persistence,
 > MinIO object storage, ClamAV-scanned/audited uploads, Ed25519 approval with
 > automatic XRechnung/ZUGFeRD generation, ERPNext quotation sync,
-> HMAC-authenticated n8n RFQ/quote flows and compliant portal scrapers are
-> complete. GAEB/PDF ingestion, XSD/penny validation, deterministic pricing,
-> pgvector matching, LangGraph and DeepSeek extraction are in place.
+> HMAC-authenticated n8n RFQ/quote flows, compliant portal scrapers, live
+> DeepSeek/Docling paths, deterministic unit conversion and the daily scrape
+> worker are complete.
 
 ---
 
@@ -85,8 +85,11 @@ src/
     pdf_parser.py        # Docling LV table extraction
   services/
     pricing_service.py   # pure-Decimal tiers, MOQ, margin, VAT
+    unit_converter.py    # auditable CARTON/PACK/PIECE/ROLL conversions
     matching_service.py  # pgvector retrieval + lexical/embedding ranking
     approval_service.py  # canonical payload, Ed25519 sign/verify/apply
+  scheduler.py           # dependency-free five-field cron scheduler
+  worker.py              # one-off/daily portal scrape CLI worker
   agents/
     graph.py             # LangGraph workflow and routing
     nodes.py             # enrich, match, price, approval gate, export
@@ -130,8 +133,12 @@ tests/                   # unit tests (no database required)
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,parsing,ai]"
 ```
+
+`parsing` installs Docling for live PDF table extraction; `ai` installs the
+LangChain OpenAI adapter used by the real DeepSeek client. Both are optional for
+the deterministic core, but required for the corresponding live execution path.
 
 ### 2. Configure
 
@@ -297,19 +304,37 @@ The Bayern scraper follows the publication iframe used by
 through `start_url` (the production UI is JavaScript-driven). Incomplete
 metadata is skipped rather than guessed.
 
+#### Daily scrape worker
+
+`yasmina-worker` (or `python -m src.worker`) runs `ingest_scraper()` once or on a
+five-field cron schedule in `APP_TIMEZONE`:
+
+```powershell
+# one immediate run, optionally only one portal
+python -m src.worker scrape --portal bayern --max-pages 2
+
+# long-running daily scheduler (default SCRAPER_SCHEDULE_CRON=0 2 * * *)
+python -m src.worker schedule --portal all
+```
+
+The scheduler is dependency-free and logs job failures without terminating. An
+injected pipeline hook is still the place to connect document parsing/queueing
+after the metadata row is committed.
+
 ### 8. Run tests
 
 ```powershell
 python -m pytest -q
 ```
 
-The current 247 tests cover normalizers, settings, strict schemas, ORM metadata,
+The current 266 tests cover normalizers, settings, strict schemas, ORM metadata,
 pgvector/HNSW configuration, GAEB parsing/validation, PDF table extraction,
-pricing, hybrid matching, LangGraph orchestration, Ed25519 approval, ClamAV
-scanning and audit chaining, MinIO object flows, ERPNext retries/payload mapping,
-n8n HMAC callbacks and idempotency, portal robots/rate/UA/artifact handling,
-CPV-filtered HTML extraction, FastAPI business routes, RBAC, tender persistence,
-e-invoicing and offline migration rendering.
+pricing, unit conversion, hybrid matching, LangGraph triage/enrichment,
+Ed25519 approval, ClamAV scanning and audit chaining, MinIO object flows,
+ERPNext retries/payload mapping, n8n HMAC callbacks and idempotency, portal
+robots/rate/UA/artifact handling, CPV-filtered HTML extraction, cron scheduling,
+FastAPI business routes, RBAC, tender persistence, e-invoicing and offline
+migration rendering.
 
 ### Parsing, pricing and matching
 
@@ -329,6 +354,33 @@ GAEB validation supports optional XSD schemas (point `xsd_dir` at the official
 GAEB 2021-05 schemas) and always runs deterministic penny reconciliation. The
 X84 writer requires an approved offer plus an `ApprovalService` that verifies
 the Ed25519 signature.
+
+### Live AI, Docling and unit conversion
+
+- `DEEPSEEK_ENABLED=true` plus `DEEPSEEK_API_KEY` activates the real
+  OpenAI-compatible DeepSeek client in `build_agent_context()`; there is no mock
+  in the production path. The LangGraph workflow calls `triage_tender()` before
+  enrichment and uses `extract_item_specs()` for missing item attributes.
+  Triaged-irrelevant tenders stop with `triage_rejected`; LLM/network failures
+  add a warning and fall back to deterministic processing.
+- PDF uploads call `parse_pdf()` without an injected converter, so the real
+  Docling `DocumentConverter` is used when the `parsing` extra is installed.
+- `UnitConverter` converts mismatched supplier/tender units using auditable
+  packaging factors from `SupplierQuoteLine.pack_size` or attributes such as
+  `units_per_carton`, `packs_per_carton` and `meters_per_roll`. It rewrites
+  prices, tiers, MOQ and quantities before deterministic pricing; missing
+  factors raise an explicit conversion error instead of guessing.
+
+```python
+from decimal import Decimal
+
+from src.models.enums import UnitOfMeasure
+from src.services.pricing_service import PricingService
+from src.services.unit_converter import UnitConverter
+
+converted = UnitConverter().convert_line(quote_line, UnitOfMeasure.STUECK)
+priced = PricingService().price_line(converted, quantity=Decimal("5000"))
+```
 
 ### E-invoicing (ZUGFeRD / XRechnung)
 
@@ -420,11 +472,11 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | MinIO | `MINIO_*` |
 | ClamAV | `CLAMAV_HOST`, `CLAMAV_PORT`, `CLAMAV_TIMEOUT_SECONDS` |
 | Preflight | `PREFLIGHT_TIMEOUT_SECONDS` |
-| DeepSeek | `DEEPSEEK_API_KEY`, `DEEPSEEK_CHAT_MODEL`, `DEEPSEEK_REASONER_MODEL` |
+| DeepSeek | `DEEPSEEK_ENABLED`, `DEEPSEEK_API_KEY`, `DEEPSEEK_CHAT_MODEL`, `DEEPSEEK_REASONER_MODEL` |
 | Embeddings | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` (BGE-M3, 1024) |
 | n8n | `N8N_WEBHOOK_BASE_URL`, `N8N_WEBHOOK_HMAC_SECRET`, `N8N_RFQ_WEBHOOK_PATH`, `N8N_CALLBACK_URL`, `N8N_CALLBACK_MAX_AGE_SECONDS` |
 | ERPNext | `ERPNEXT_BASE_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `ERPNEXT_ITEM_GROUP`, `ERPNEXT_SELLING_PRICE_LIST`, `ERPNEXT_QUOTATION_SERIES` |
-| Portal scrapers | `SCRAPER_REQUEST_DELAY_SECONDS`, `SCRAPER_ROBOTS_CACHE_SECONDS`, `SCRAPER_MAX_PAGES`, `SCRAPER_ARCHIVE_RAW`, `SCRAPER_ARCHIVE_PREFIX`, `SCRAPER_USER_AGENTS` |
+| Portal scrapers | `SCRAPER_REQUEST_DELAY_SECONDS`, `SCRAPER_ROBOTS_CACHE_SECONDS`, `SCRAPER_MAX_PAGES`, `SCRAPER_ARCHIVE_RAW`, `SCRAPER_ARCHIVE_PREFIX`, `SCRAPER_USER_AGENTS`, `SCRAPER_SCHEDULE_CRON` |
 | HITL | `ED25519_APPROVAL_PUBLIC_KEY`, `APPROVAL_SIGNATURE_REQUIRED` |
 | Pricing | `DEFAULT_VAT_RATE`, `DEFAULT_MARGIN_RATE`, `OFFER_VALIDITY_DAYS` |
 
@@ -482,7 +534,8 @@ the default application, JWT, API-admin or n8n HMAC secrets.
 - [x] P1.4 — ERPNext quotation sync and HMAC-signed n8n RFQ/quote integration
 - [x] P2.1 — ZUGFeRD 2.2/Factur-X and XRechnung 3.0 generators with Leitweg-ID validation
 - [x] P2.2 — robots-compliant Bayern/Bund portal scrapers, raw artifacts, CPV filter and ingestion bridge
-- [ ] P1 — unit conversion, refresh tokens and advanced RBAC
+- [x] P3 — live DeepSeek triage/spec extraction, real Docling PDF path, unit conversion and daily scrape worker
+- [ ] P1 — refresh tokens and advanced RBAC
 - [ ] P2 — Telegram notifier and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

@@ -376,6 +376,7 @@ async def run_tender_workflow(
     return {
         "status": result.get("status"),
         "offer": result_offer.model_dump(mode="json") if result_offer is not None else None,
+        "triage": result.get("triage"),
         "errors": result.get("errors", []),
         "warnings": result.get("warnings", []),
         "exported_path": result.get("exported_path"),

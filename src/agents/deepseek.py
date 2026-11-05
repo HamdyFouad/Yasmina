@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.config import Settings
 
-__all__ = ["DeepSeekClient", "DeepSeekUnavailable", "RawItemSpecs"]
+__all__ = ["DeepSeekClient", "DeepSeekUnavailable", "RawItemSpecs", "TenderTriage"]
 
 
 class DeepSeekUnavailable(RuntimeError):
@@ -31,7 +31,28 @@ class RawItemSpecs(BaseModel):
     pack_size: str | None = Field(default=None, description="Units per pack/carton if stated")
 
 
-_SYSTEM_PROMPT = """You extract product specifications from German tender/LV text.
+class TenderTriage(BaseModel):
+    """LLM relevance classification for a cleaning/hygiene tender."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    is_relevant: bool = Field(description="True only for cleaning/hygiene procurement")
+    confidence: float = Field(ge=0.0, le=1.0, description="Classifier confidence")
+    reason: str = Field(min_length=1, max_length=1000)
+    matched_cpv_codes: list[str] = Field(
+        default_factory=list,
+        description="CPV codes explicitly present in the text, not inferred",
+    )
+
+
+_TRIAGE_PROMPT = """You triage German public procurement notices for a B2B supplier
+of cleaning and hygiene products (paper towels, gloves, waste bags, cleaning
+chemicals). Mark is_relevant=true only when the notice's subject is one of those
+product families. Base the decision only on the supplied text and CPV codes.
+Do not infer prices, quantities, eligibility or missing CPV codes. Return a short
+factual reason and only CPV codes explicitly present in the text."""
+
+_ITEM_PROMPT = """You extract product specifications from German tender/LV text.
 Return only what the text supports. Do not invent values, prices, quantities or
 totals. Leave a field null when it is not stated. Do not perform arithmetic."""
 
@@ -45,22 +66,31 @@ class DeepSeekClient:
         *,
         model: str | None = None,
         temperature: float | None = None,
+        chat: Any | None = None,
     ) -> None:
-        if settings.deepseek_api_key is None:
-            raise DeepSeekUnavailable("DEEPSEEK_API_KEY is not configured")
-        try:
-            from langchain_openai import ChatOpenAI
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise DeepSeekUnavailable("langchain-openai is not installed") from exc
+        if chat is None:
+            api_key = (
+                settings.deepseek_api_key.get_secret_value().strip()
+                if settings.deepseek_api_key is not None
+                else ""
+            )
+            if not api_key:
+                raise DeepSeekUnavailable("DEEPSEEK_API_KEY is not configured")
+            try:
+                from langchain_openai import ChatOpenAI
+            except ImportError as exc:  # pragma: no cover - optional dependency
+                raise DeepSeekUnavailable("langchain-openai is not installed") from exc
 
-        self._chat = ChatOpenAI(
-            model=model or settings.deepseek_chat_model,
-            api_key=settings.deepseek_api_key.get_secret_value(),
-            base_url=settings.deepseek_base_url,
-            temperature=settings.deepseek_temperature if temperature is None else temperature,
-            max_retries=2,
-        )
-        self._structured = self._chat.with_structured_output(RawItemSpecs)
+            chat = ChatOpenAI(
+                model=model or settings.deepseek_chat_model,
+                api_key=api_key,
+                base_url=settings.deepseek_base_url,
+                temperature=settings.deepseek_temperature if temperature is None else temperature,
+                max_retries=2,
+            )
+        self._chat = chat
+        self._structured = chat.with_structured_output(RawItemSpecs)
+        self._triage_structured = chat.with_structured_output(TenderTriage)
 
     @classmethod
     def from_settings(
@@ -75,7 +105,7 @@ class DeepSeekClient:
         """Extract material/colour/size/thickness/pack hints from item text."""
 
         messages: list[Any] = [
-            ("system", _SYSTEM_PROMPT),
+            ("system", _ITEM_PROMPT),
             ("human", text),
         ]
         result = self._structured.invoke(messages)
@@ -84,6 +114,27 @@ class DeepSeekClient:
         if isinstance(result, dict):
             return RawItemSpecs.model_validate(result)
         return RawItemSpecs.model_validate(result.model_dump())
+
+    def triage_tender(
+        self,
+        text: str,
+        *,
+        cpv_codes: list[str] | None = None,
+    ) -> TenderTriage:
+        """Classify whether a tender belongs to the hygiene/cleaning portfolio."""
+
+        cpv_line = ", ".join(cpv_codes or []) or "none supplied"
+        result = self._triage_structured.invoke(
+            [
+                ("system", _TRIAGE_PROMPT),
+                ("human", f"CPV codes: {cpv_line}\n\nTender text:\n{text}"),
+            ]
+        )
+        if isinstance(result, TenderTriage):
+            return result
+        if isinstance(result, dict):
+            return TenderTriage.model_validate(result)
+        return TenderTriage.model_validate(result.model_dump())
 
     def summarize(self, text: str, *, max_words: int = 120) -> str:
         """Summarize tender text without changing any business data."""

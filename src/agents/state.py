@@ -11,6 +11,7 @@ from src.models.schemas import CustomerOffer, SupplierQuote, Tender
 from src.services.approval_service import ApprovalService
 from src.services.matching_service import CatalogCandidate, HybridMatchingService, MatchResult
 from src.services.pricing_service import PricingService
+from src.services.unit_converter import UnitConverter
 
 __all__ = [
     "AgentContext",
@@ -32,6 +33,7 @@ class AgentStatus:
     """Status values used by the graph (plain constants keep state serializable)."""
 
     NEW = "new"
+    TRIAGE_REJECTED = "triage_rejected"
     PENDING_APPROVAL = "pending_approval"
     APPROVED = "approved"
     EXPORTED = "exported"
@@ -45,6 +47,7 @@ class AgentState(TypedDict, total=False):
     catalog: list[CatalogCandidate]
     offer_request: "OfferRequest"
     matches: dict[str, list[MatchResult]]
+    triage: dict[str, Any]
     offer: CustomerOffer | None
     status: str
     errors: list[str]
@@ -73,6 +76,7 @@ class AgentContext:
     approval: ApprovalService
     pricing: PricingService = field(default_factory=PricingService)
     matcher: HybridMatchingService = field(default_factory=HybridMatchingService)
+    converter: UnitConverter = field(default_factory=UnitConverter)
     llm: ItemSpecExtractor | None = None
 
 

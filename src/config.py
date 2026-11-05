@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     preflight_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
 
     # --- LLM / embeddings --------------------------------------------------
+    deepseek_enabled: bool = True
     deepseek_api_key: SecretStr | None = None
     deepseek_base_url: str = "https://api.deepseek.com/v1"
     deepseek_chat_model: str = "deepseek-chat"
@@ -125,6 +126,7 @@ class Settings(BaseSettings):
     scraper_archive_raw: bool = True
     scraper_archive_prefix: str = "scrapers"
     scraper_user_agents: list[str] = Field(default_factory=list)
+    scraper_schedule_cron: str = "0 2 * * *"
 
     # --- HITL approval -----------------------------------------------------
     ed25519_approval_public_key: str | None = None

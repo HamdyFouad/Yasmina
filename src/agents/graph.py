@@ -20,6 +20,8 @@ from src.agents.nodes import (
     price_offer,
     route_after_approval,
     route_after_price,
+    route_after_triage,
+    triage_tender,
 )
 from src.agents.state import AgentContext, AgentState, initial_state
 
@@ -30,13 +32,19 @@ def build_agent_graph(context: AgentContext) -> Any:
     """Compile the deterministic workflow with injected services."""
 
     graph = StateGraph(AgentState)
+    graph.add_node("triage", lambda state: triage_tender(state, context))
     graph.add_node("enrich", lambda state: enrich_specs(state, context))
     graph.add_node("match", lambda state: match_catalog(state, context))
     graph.add_node("price", lambda state: price_offer(state, context))
     graph.add_node("approval", lambda state: approval_gate(state, context))
     graph.add_node("export", lambda state: export_offer(state, context))
 
-    graph.add_edge(START, "enrich")
+    graph.add_edge(START, "triage")
+    graph.add_conditional_edges(
+        "triage",
+        route_after_triage,
+        {"enrich": "enrich", "stop": END},
+    )
     graph.add_edge("enrich", "match")
     graph.add_edge("match", "price")
     graph.add_conditional_edges(

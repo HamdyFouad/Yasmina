@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from src.models.enums import GloveSize, MaterialType, StandardizedColor, UnitOfMeasure
+from src.parsers import pdf_parser
 from src.parsers.pdf_parser import PdfParseError, parse_pdf
 
 
@@ -136,3 +137,26 @@ def test_no_items_is_an_error(workspace_tmp) -> None:  # type: ignore[no-untyped
 
     with pytest.raises(PdfParseError, match="no LV positions"):
         parse_pdf(pdf, converter=FakeConverter([table]))
+
+
+def test_production_path_invokes_the_default_docling_converter(
+    workspace_tmp, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    pdf = make_pdf(workspace_tmp)
+    table = FakeTable(
+        [{"Pos.": "1.1", "Menge": "1", "Einheit": "Stk.", "Kurztext": "Handschuhe"}]
+    )
+    converter = FakeConverter([table])
+    calls: list[Path] = []
+
+    def fake_default() -> FakeConverter:
+        calls.append(pdf)
+        return converter
+
+    monkeypatch.setattr(pdf_parser, "_default_converter", fake_default)
+
+    result = parse_pdf(pdf)
+
+    assert calls == [pdf]
+    assert result.converter_name == "FakeConverter"
+    assert result.items[0].unit is UnitOfMeasure.STUECK

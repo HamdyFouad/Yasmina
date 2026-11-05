@@ -1,4 +1,4 @@
-# P0–P2 Inference Notes — Domain & Service Assumptions
+# P0–P3 Inference Notes — Domain & Service Assumptions
 
 Sections 5–8 of `docs/DETAILED_SPEC.md` (field-by-field schemas and pricing
 rules) are not yet published. This file records the contract inferred for the
@@ -152,6 +152,31 @@ reconciled with the authoritative spec later.
   so the pipeline is responsible for fetching and parsing those documents. A
   hand-off failure after the repository commit therefore leaves a persisted row
   for operational review instead of deleting it.
+
+## Live AI, conversions & scheduling assumptions (P3)
+
+- The production API context has no mock LLM. `DEEPSEEK_ENABLED=true` with a
+  non-empty `DEEPSEEK_API_KEY` constructs the real OpenAI-compatible client;
+  otherwise enrichment is skipped deterministically. Triage is called at the
+  start of the LangGraph workflow, before spec extraction. Triage/spec API
+  failures are warnings, not fatal exceptions; a negative triage stops the
+  workflow with `triage_rejected`.
+- PDF uploads call `parse_pdf()` without an injected converter, so production
+  uses Docling's real `DocumentConverter` when the `parsing` extra is installed.
+  Test doubles remain confined to dependency-injected tests.
+- Unit conversion uses explicit packaging facts only. `SupplierQuoteLine.pack_size`
+  is interpreted as pieces per source `PACK`/`KARTON`; additional factors can be
+  supplied in `attributes` (`units_per_pack`, `packs_per_carton`,
+  `units_per_carton`, `cartons_per_palette`, `units_per_palette`,
+  `meters_per_roll`). Weight, volume and area units are only converted to the
+  same unit; no density or sheet-count assumptions are invented. Missing
+  factors raise `UnitConversionError`.
+- The scheduler is a dependency-free five-field cron implementation in
+  `APP_TIMEZONE`. The default `0 2 * * *` runs `ingest_scraper()` daily through
+  `src.worker`. Job failures are logged without terminating the loop. The
+  worker exposes an immediate `scrape` command and a long-running `schedule`
+  command; production still injects the pipeline hook when a real ingestion
+  queue/graph should be triggered.
 
 ## E-invoicing assumptions (P2.1)
 

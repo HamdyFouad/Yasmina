@@ -31,6 +31,7 @@ from src.parsers.normalizers import (
     normalize_material,
 )
 from src.services.pricing_service import select_tier_price
+from src.services.unit_converter import UnitConversionError
 
 __all__ = [
     "approval_gate",
@@ -40,6 +41,8 @@ __all__ = [
     "price_offer",
     "route_after_approval",
     "route_after_price",
+    "route_after_triage",
+    "triage_tender",
 ]
 
 _THICKNESS_RE = re.compile(r"(?P<value>\d+(?:[.,]\d+)?)\s*(?P<unit>µm|um|mikron|micron|mm)?", re.IGNORECASE)
@@ -112,6 +115,55 @@ def _enrich_item(item: TenderItem, raw: Any) -> TenderItem:
             updates["pack_size"] = pack_size
 
     return item.model_copy(update=updates) if updates else item
+
+
+def _triage_text(tender: Tender) -> str:
+    item_text = " ".join(
+        f"{item.position_number} {item.short_text} {item.long_text or ''}".strip()
+        for item in tender.items
+    )
+    return (
+        f"Title: {tender.title}\n"
+        f"Client: {tender.client_name}\n"
+        f"Description: {tender.description or ''}\n"
+        f"CPV: {', '.join(tender.cpv_codes) or 'none'}\n"
+        f"Positions: {item_text}"
+    )[:12000]
+
+
+def triage_tender(state: AgentState, context: AgentContext) -> dict[str, Any]:
+    """Optional live-LLM relevance classification before enrichment/pricing."""
+
+    tender = state.get("tender")
+    if tender is None or context.llm is None:
+        return {}
+    method = getattr(context.llm, "triage_tender", None)
+    if not callable(method):
+        return {}
+
+    try:
+        result = method(_triage_text(tender), cpv_codes=list(tender.cpv_codes))
+        data = result.model_dump() if hasattr(result, "model_dump") else dict(result)
+    except Exception as exc:
+        return {
+            "warnings": _append(
+                state,
+                "warnings",
+                f"LLM triage failed; continuing deterministically: {exc}",
+            )
+        }
+
+    if not bool(data.get("is_relevant", True)):
+        return {
+            "status": AgentStatus.TRIAGE_REJECTED,
+            "triage": data,
+            "errors": _append(
+                state,
+                "errors",
+                f"tender triaged as not relevant: {data.get('reason', 'no reason supplied')}",
+            ),
+        }
+    return {"triage": data}
 
 
 def enrich_specs(state: AgentState, context: AgentContext) -> dict[str, Any]:
@@ -223,14 +275,18 @@ def price_offer(state: AgentState, context: AgentContext) -> dict[str, Any]:
         if not candidates:
             errors.append(f"no supplier quote line linked to position {item.position_number}")
             continue
-        unit_matches = [line for line in candidates if line.unit is item.unit]
-        if not unit_matches:
-            errors.append(
-                f"unit conversion required for position {item.position_number}: "
-                f"tender {item.unit.value} vs quote {candidates[0].unit.value}"
-            )
+        eligible: list[SupplierQuoteLine] = []
+        conversion_errors: list[str] = []
+        for candidate in candidates:
+            try:
+                eligible.append(context.converter.convert_line(candidate, item.unit))
+            except UnitConversionError as exc:
+                conversion_errors.append(str(exc))
+        if not eligible:
+            detail = "; ".join(conversion_errors) if conversion_errors else "no matching unit"
+            errors.append(f"unit conversion required for position {item.position_number}: {detail}")
             continue
-        line = _best_quote_line(unit_matches, item)
+        line = _best_quote_line(eligible, item)
         if line is None:
             errors.append(f"no usable quote line for position {item.position_number}")
             continue
@@ -354,6 +410,10 @@ def export_offer(state: AgentState, context: AgentContext) -> dict[str, Any]:
 
 def route_after_price(state: AgentState) -> str:
     return "approval" if state.get("offer") is not None else "stop"
+
+
+def route_after_triage(state: AgentState) -> str:
+    return "stop" if state.get("status") == AgentStatus.TRIAGE_REJECTED else "enrich"
 
 
 def route_after_approval(state: AgentState) -> str:

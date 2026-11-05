@@ -61,6 +61,7 @@ Repository = "https://github.com/HamdyFouad/Yasmina"
 [project.scripts]
 yasmina-preflight = "src.preflight:main"
 yasmina-approval = "src.services.approval_service:main"
+yasmina-worker = "src.worker:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]

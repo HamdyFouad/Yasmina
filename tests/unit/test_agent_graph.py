@@ -7,10 +7,11 @@ from decimal import Decimal
 
 import pytest
 
-from src.agents.deepseek import DeepSeekClient, DeepSeekUnavailable, RawItemSpecs
+from src.agents.deepseek import DeepSeekClient, DeepSeekUnavailable, RawItemSpecs, TenderTriage
 from src.agents.graph import run_agent
 from src.agents.nodes import approval_gate, export_offer, route_after_approval
 from src.agents.state import AgentContext, AgentStatus, OfferRequest, initial_state
+from src.api import context as api_context
 from src.config import Settings
 from src.models.enums import (
     CustomerOfferStatus,
@@ -199,6 +200,41 @@ def test_missing_quote_fails_pricing() -> None:
     assert any("no supplier quote" in error for error in result["errors"])
 
 
+def test_mismatched_units_are_converted_before_pricing() -> None:
+    item = make_item(quantity=Decimal("5000.0000"), unit=UnitOfMeasure.STUECK)
+    tender = make_tender(item)
+    quote_line = SupplierQuoteLine(
+        line_number=1,
+        description=item.short_text,
+        tender_item_id=item.id,
+        quantity=Decimal("5.0000"),
+        unit=UnitOfMeasure.KARTON,
+        unit_price_net=Decimal("10.0000"),
+        pack_size=1000,
+    )
+    quote = SupplierQuote(
+        supplier_name="Hygiene Gross GmbH",
+        quote_reference="ANG-77",
+        lines=[quote_line],
+    )
+    _, public_hex = generate_keypair()
+    context = AgentContext(approval=ApprovalService(public_hex))
+
+    result = run_agent(
+        initial_state(tender=tender, supplier_quotes=[quote], request=make_request()),
+        context,
+    )
+
+    assert result["status"] == AgentStatus.PENDING_APPROVAL
+    offer = result["offer"]
+    assert offer is not None
+    assert offer.lines[0].unit is UnitOfMeasure.STUECK
+    assert offer.lines[0].cost_unit_price_net == Decimal("0.0100")
+    assert offer.lines[0].unit_price_net == Decimal("0.0115")
+    assert offer.total_net == Decimal("57.50")
+    assert offer.total_gross == Decimal("68.43")
+
+
 def test_llm_enrichment_fills_missing_specs() -> None:
     item = make_item(material=None, color=None, glove_size=GloveSize.NOT_APPLICABLE)
     tender = make_tender(item)
@@ -228,6 +264,92 @@ def test_llm_enrichment_fills_missing_specs() -> None:
     assert enriched.glove_size is GloveSize.M
     assert enriched.thickness_um == Decimal("120.00")
     assert enriched.pack_size == 1000
+
+
+def test_llm_triage_can_stop_irrelevant_tender() -> None:
+    item = make_item()
+    tender = make_tender(item)
+    quote = make_quote(item)
+    _, public_hex = generate_keypair()
+
+    class RejectingLLM:
+        def triage_tender(self, text: str, *, cpv_codes: list[str] | None = None) -> TenderTriage:
+            return TenderTriage(
+                is_relevant=False,
+                confidence=0.97,
+                reason="Road construction, not hygiene supplies",
+            )
+
+        def extract_item_specs(self, text: str) -> RawItemSpecs:
+            raise AssertionError("enrichment must not run after triage rejection")
+
+    context = AgentContext(approval=ApprovalService(public_hex), llm=RejectingLLM())
+    result = run_agent(
+        initial_state(tender=tender, supplier_quotes=[quote], request=make_request()),
+        context,
+    )
+
+    assert result["status"] == AgentStatus.TRIAGE_REJECTED
+    assert result.get("offer") is None
+    assert result["triage"]["is_relevant"] is False
+    assert any("not relevant" in error for error in result["errors"])
+
+
+def test_deepseek_client_real_methods_with_injected_transport() -> None:
+    class FakeStructured:
+        def __init__(self, result: object) -> None:
+            self.result = result
+
+        def invoke(self, messages: object) -> object:
+            return self.result
+
+    class FakeChat:
+        def with_structured_output(self, schema: object) -> FakeStructured:
+            if schema is TenderTriage:
+                return FakeStructured(
+                    TenderTriage(
+                        is_relevant=True,
+                        confidence=0.93,
+                        reason="Hygiene paper and cleaning chemicals",
+                        matched_cpv_codes=["33760000-5"],
+                    )
+                )
+            return FakeStructured(RawItemSpecs(material="Nitril", color="blau"))
+
+        def invoke(self, messages: object) -> object:
+            raise AssertionError("summarize is not used here")
+
+    settings = Settings(_env_file=None, database_url=None, deepseek_api_key="test-key")
+    client = DeepSeekClient(settings, chat=FakeChat())
+
+    triage = client.triage_tender("Reinigungspapier", cpv_codes=["33760000-5"])
+    specs = client.extract_item_specs("Nitrilhandschuhe blau")
+
+    assert triage.is_relevant is True
+    assert triage.matched_cpv_codes == ["33760000-5"]
+    assert specs.material == "Nitril"
+
+
+def test_build_agent_context_honours_live_toggle(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    disabled = Settings(
+        _env_file=None,
+        database_url=None,
+        deepseek_api_key="test-key",
+        deepseek_enabled=False,
+    )
+    assert api_context.build_agent_context(disabled).llm is None
+
+    blank = Settings(_env_file=None, database_url=None, deepseek_api_key="", deepseek_enabled=True)
+    assert api_context.build_agent_context(blank).llm is None
+
+    monkeypatch.setattr(api_context, "DeepSeekClient", lambda settings: object())
+    enabled = Settings(
+        _env_file=None,
+        database_url=None,
+        deepseek_api_key="test-key",
+        deepseek_enabled=True,
+    )
+    assert api_context.build_agent_context(enabled).llm is not None
 
 
 def test_deepseek_client_requires_api_key() -> None:

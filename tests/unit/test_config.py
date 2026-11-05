@@ -112,6 +112,7 @@ def test_scraper_defaults() -> None:
     assert settings.scraper_max_pages == 5
     assert settings.scraper_archive_raw is True
     assert settings.scraper_user_agents == []
+    assert settings.scraper_schedule_cron == "0 2 * * *"
 
 
 def test_ensure_env_file_copies_template_once(workspace_tmp, monkeypatch) -> None:  # type: ignore[no-untyped-def]
