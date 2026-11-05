@@ -188,9 +188,20 @@ class TenderRepository:
             .options(selectinload(TenderORM.items))
         )
         orm = (await self.session.execute(statement)).scalars().first()
-        if orm is None:
-            return None
+        return self._stored(orm) if orm is not None else None
 
+    async def get_by_number(self, tender_number: str) -> StoredTender | None:
+        """Look up a tender by its stable portal/tender number."""
+
+        statement = (
+            select(TenderORM)
+            .where(TenderORM.tender_number == tender_number)
+            .options(selectinload(TenderORM.items))
+        )
+        orm = (await self.session.execute(statement)).scalars().first()
+        return self._stored(orm) if orm is not None else None
+
+    def _stored(self, orm: TenderORM) -> StoredTender:
         tender = orm_to_tender(orm)
         metadata = dict(tender.metadata or {})
         source_path = metadata.get("_source_path")

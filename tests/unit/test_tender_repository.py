@@ -15,7 +15,7 @@ from src.models.enums import (
 )
 from src.models.orm import Tender as TenderORM
 from src.models.schemas import Tender, TenderItem
-from src.repositories.tender_repository import orm_to_tender, tender_to_orm
+from src.repositories.tender_repository import TenderRepository, orm_to_tender, tender_to_orm
 
 
 def make_tender() -> Tender:
@@ -89,3 +89,40 @@ def test_tender_orm_roundtrip_preserves_optional_fields() -> None:
     assert item.long_text == "Langtext"
     assert item.thickness_um == Decimal("120.00")
     assert item.attributes == {}
+
+
+class _Scalars:
+    def __init__(self, value: object) -> None:
+        self.value = value
+
+    def first(self) -> object:
+        return self.value
+
+
+class _Result:
+    def __init__(self, value: object) -> None:
+        self.value = value
+
+    def scalars(self) -> _Scalars:
+        return _Scalars(self.value)
+
+
+class _Session:
+    def __init__(self, value: object) -> None:
+        self.value = value
+        self.statement: object | None = None
+
+    async def execute(self, statement: object) -> _Result:
+        self.statement = statement
+        return _Result(self.value)
+
+
+async def test_get_by_number_loads_portal_tender() -> None:
+    tender = make_tender().model_copy(update={"tender_number": "BY-2026-001"})
+    session = _Session(tender_to_orm(tender))
+
+    stored = await TenderRepository(session).get_by_number("BY-2026-001")  # type: ignore[arg-type]
+
+    assert stored is not None
+    assert stored.tender.tender_number == "BY-2026-001"
+    assert "tender_number" in str(session.statement)

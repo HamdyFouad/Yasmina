@@ -8,20 +8,20 @@ waste bags across all thicknesses, volumes and colour standards.
 
 > **Status:** P0 foundation, P1 core, durable PostgreSQL tender persistence,
 > MinIO object storage, ClamAV-scanned/audited uploads, Ed25519 approval with
-> automatic XRechnung/ZUGFeRD generation, ERPNext quotation sync and
-> HMAC-authenticated n8n RFQ/quote flows are complete. GAEB/PDF ingestion,
-> XSD/penny validation, deterministic pricing, pgvector matching, LangGraph and
-> DeepSeek extraction are in place.
+> automatic XRechnung/ZUGFeRD generation, ERPNext quotation sync,
+> HMAC-authenticated n8n RFQ/quote flows and compliant portal scrapers are
+> complete. GAEB/PDF ingestion, XSD/penny validation, deterministic pricing,
+> pgvector matching, LangGraph and DeepSeek extraction are in place.
 
 ---
 
 ## What it does
 
-Yasmina ingests public and private tenders (GAEB `.x83`/`.d83`/`.x84`, PDF tables),
-normalizes messy German source text such as `"Nitril"`, `"Gr. 8"`, `"19 %"` or
-`"Karton à 1000 Stk"`, matches positions against supplier catalogues, prices
-offers deterministically, and prepares ERPNext quotations / GAEB bids and
-ZUGFeRD/XRechnung invoices.
+Yasmina ingests public and private tenders (GAEB `.x83`/`.d83`/`.x84`, PDF tables,
+and portal notices), normalizes messy German source text such as `"Nitril"`,
+`"Gr. 8"`, `"19 %"` or `"Karton à 1000 Stk"`, matches positions against supplier
+catalogues, prices offers deterministically, and prepares ERPNext quotations /
+GAEB bids and ZUGFeRD/XRechnung invoices.
 
 Core principles:
 
@@ -93,6 +93,13 @@ src/
     state.py             # typed state, dependencies and offer request
     deepseek.py          # DeepSeek structured extraction client
   integrations/          # ClamAV, MinIO, ERPNext and n8n clients
+  scrapers/
+    base_scraper.py      # robots.txt, rate limit, UA rotation, MinIO raw archive
+    html_portal.py       # generic listing/detail card parser + CPV filtering
+    bayern_vergabe.py    # vergabe.bayern.de scraper
+    oeffentlichevergabe.py # oeffentlichevergabe.de scraper
+    ingestion.py         # TenderRepository persistence + pipeline hand-off
+    models.py            # DiscoveredTender, CPV/date normalization
   generators/
     invoice_models.py    # shared invoice/party/line models
     leitweg.py           # Leitweg-ID format + MOD-97-10 validation
@@ -260,18 +267,49 @@ Invoke-RestMethod -Method Post `
   -ContentType "application/json" -Body $body
 ```
 
+### Portal scrapers (Bayern & Bund)
+
+`src/scrapers/` discovers public notices from
+`vergabe.bayern.de` and `oeffentlichevergabe.de` with the same guardrails:
+
+- `robots.txt` is fetched and cached per origin/User-Agent; 401/403/429/5xx
+  fail closed, while a normal 4xx (including the portals' 404 robots.txt)
+  means no restrictions.
+- Requests are spaced per host and raised to the robots `Crawl-delay`.
+- A rotating User-Agent pool is used; every raw response is archived to MinIO
+  under `scrapers/<portal>/<date>/<sha256>.html` before parsing.
+- Listings are filtered strictly against `33760000-5`, `19520000-7`,
+  `33141420-0` and `39830000-9`. Cards missing a CPV/deadline are enriched from
+  the detail page before the filter is applied.
+- `PortalIngestionBridge` persists mapped metadata through `TenderRepository`
+  (idempotent by tender number) and calls an injected ingestion pipeline hook.
+
+```python
+from src.scrapers import BayernVergabeScraper, PortalIngestionBridge
+
+scraper = BayernVergabeScraper(settings, storage)
+bridge = PortalIngestionBridge(repository, pipeline=pipeline, audit=audit)
+report, results = await bridge.ingest_scraper(scraper, max_pages=2)
+```
+
+The Bayern scraper follows the publication iframe used by
+`vergabe.bayern.de`; the federal scraper accepts an HTML search-result URL
+through `start_url` (the production UI is JavaScript-driven). Incomplete
+metadata is skipped rather than guessed.
+
 ### 8. Run tests
 
 ```powershell
 python -m pytest -q
 ```
 
-The current 228 tests cover normalizers, settings, strict schemas, ORM metadata,
+The current 247 tests cover normalizers, settings, strict schemas, ORM metadata,
 pgvector/HNSW configuration, GAEB parsing/validation, PDF table extraction,
 pricing, hybrid matching, LangGraph orchestration, Ed25519 approval, ClamAV
 scanning and audit chaining, MinIO object flows, ERPNext retries/payload mapping,
-n8n HMAC callbacks and idempotency, FastAPI business routes, RBAC, tender
-persistence, e-invoicing and offline migration rendering.
+n8n HMAC callbacks and idempotency, portal robots/rate/UA/artifact handling,
+CPV-filtered HTML extraction, FastAPI business routes, RBAC, tender persistence,
+e-invoicing and offline migration rendering.
 
 ### Parsing, pricing and matching
 
@@ -386,6 +424,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | Embeddings | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` (BGE-M3, 1024) |
 | n8n | `N8N_WEBHOOK_BASE_URL`, `N8N_WEBHOOK_HMAC_SECRET`, `N8N_RFQ_WEBHOOK_PATH`, `N8N_CALLBACK_URL`, `N8N_CALLBACK_MAX_AGE_SECONDS` |
 | ERPNext | `ERPNEXT_BASE_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `ERPNEXT_ITEM_GROUP`, `ERPNEXT_SELLING_PRICE_LIST`, `ERPNEXT_QUOTATION_SERIES` |
+| Portal scrapers | `SCRAPER_REQUEST_DELAY_SECONDS`, `SCRAPER_ROBOTS_CACHE_SECONDS`, `SCRAPER_MAX_PAGES`, `SCRAPER_ARCHIVE_RAW`, `SCRAPER_ARCHIVE_PREFIX`, `SCRAPER_USER_AGENTS` |
 | HITL | `ED25519_APPROVAL_PUBLIC_KEY`, `APPROVAL_SIGNATURE_REQUIRED` |
 | Pricing | `DEFAULT_VAT_RATE`, `DEFAULT_MARGIN_RATE`, `OFFER_VALIDITY_DAYS` |
 
@@ -397,7 +436,8 @@ the default application, JWT, API-admin or n8n HMAC secrets.
 ## Domain model
 
 - **Tender / TenderItem** — tender metadata and normalized positions (quantity,
-  unit, glove size, material, colour, thickness in µm, packaging).
+  unit, glove size, material, colour, thickness in µm, packaging); portal
+  discoveries use `source_format=PORTAL` and retain the raw artifact key.
 - **SupplierQuote / SupplierQuoteLine / PriceTier** — supplier pricing with MOQ
   and volume breaks.
 - **CustomerOffer / CustomerOfferLine** — derived selling prices, net/VAT/gross
@@ -441,6 +481,7 @@ the default application, JWT, API-admin or n8n HMAC secrets.
 - [x] P1 — MinIO upload/artifact storage, audit-chained scans and invoice download endpoints
 - [x] P1.4 — ERPNext quotation sync and HMAC-signed n8n RFQ/quote integration
 - [x] P2.1 — ZUGFeRD 2.2/Factur-X and XRechnung 3.0 generators with Leitweg-ID validation
+- [x] P2.2 — robots-compliant Bayern/Bund portal scrapers, raw artifacts, CPV filter and ingestion bridge
 - [ ] P1 — unit conversion, refresh tokens and advanced RBAC
 - [ ] P2 — Telegram notifier and production ERPNext/n8n workflow templates
 

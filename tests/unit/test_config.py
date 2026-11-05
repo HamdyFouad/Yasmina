@@ -105,6 +105,15 @@ def test_integration_defaults() -> None:
     assert settings.n8n_rfq_webhook_path == "/webhook/yasmina/rfq"
 
 
+def test_scraper_defaults() -> None:
+    settings = make_settings()
+
+    assert settings.scraper_request_delay_seconds == 2.0
+    assert settings.scraper_max_pages == 5
+    assert settings.scraper_archive_raw is True
+    assert settings.scraper_user_agents == []
+
+
 def test_ensure_env_file_copies_template_once(workspace_tmp, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.delenv("APP_ENV", raising=False)
     template = workspace_tmp / "example.env"

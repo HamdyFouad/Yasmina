@@ -115,6 +115,17 @@ class Settings(BaseSettings):
     erpnext_max_retries: int = Field(default=2, ge=0, le=5)
     erpnext_retry_backoff_seconds: float = Field(default=0.5, ge=0, le=10)
 
+    # --- Portal scrapers ---------------------------------------------------
+    scraper_request_delay_seconds: float = Field(default=2.0, ge=0.0, le=120.0)
+    scraper_timeout_seconds: float = Field(default=20.0, gt=0.0, le=120.0)
+    scraper_max_retries: int = Field(default=2, ge=0, le=5)
+    scraper_retry_backoff_seconds: float = Field(default=1.0, ge=0.0, le=30.0)
+    scraper_robots_cache_seconds: int = Field(default=3600, ge=0, le=86400)
+    scraper_max_pages: int = Field(default=5, ge=1, le=100)
+    scraper_archive_raw: bool = True
+    scraper_archive_prefix: str = "scrapers"
+    scraper_user_agents: list[str] = Field(default_factory=list)
+
     # --- HITL approval -----------------------------------------------------
     ed25519_approval_public_key: str | None = None
     approval_signature_required: bool = True

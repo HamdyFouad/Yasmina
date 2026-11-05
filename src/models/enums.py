@@ -111,6 +111,7 @@ class TenderSourceFormat(StrEnum):
     GAEB_D83 = "GAEB_D83"
     GAEB_X84 = "GAEB_X84"
     PDF_DOCLING = "PDF_DOCLING"
+    PORTAL = "PORTAL"
     API = "API"
     MANUAL = "MANUAL"
 

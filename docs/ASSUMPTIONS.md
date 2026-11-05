@@ -1,4 +1,4 @@
-# P0/P1 Inference Notes — Domain & Service Assumptions
+# P0–P2 Inference Notes — Domain & Service Assumptions
 
 Sections 5–8 of `docs/DETAILED_SPEC.md` (field-by-field schemas and pricing
 rules) are not yet published. This file records the contract inferred for the
@@ -122,6 +122,36 @@ reconciled with the authoritative spec later.
 - Inbound callbacks expect already-normalized canonical `SupplierQuote` JSON;
   `n8n` is responsible for German-text normalization before signing the body.
   Quote ingestion and the idempotency success marker share one transaction.
+
+## Portal scraper assumptions (P2.2)
+
+- Portal discoveries use the added `TenderSourceFormat.PORTAL` value and
+  `TenderStatus.PUBLISHED`; the detail URL is stored in `source_reference`.
+- CPV filtering is exact on the eight-digit CPV base. A missing check digit is
+  accepted, but codes outside `33760000`, `19520000`, `33141420` and `39830000`
+  are never persisted, even if they share a prefix.
+- The generic HTML parser accepts article/search-result/list rows. Complete
+  listing cards need no detail request; cards without a CPV, deadline or client
+  are enriched from the detail page before filtering. Metadata that cannot be
+  verified is skipped rather than guessed.
+- `vergabe.bayern.de` embeds its publication list in an iframe; the scraper
+  follows that iframe only when the landing page contains no cards. The federal
+  UI is a JavaScript application, so production deployments may point
+  `start_url` at a rendered HTML search export while using the same parser.
+- `robots.txt` is cached per origin/User-Agent. HTTP 401/403/429/5xx fail closed;
+  ordinary 4xx responses (including the portals' current 404 robots.txt) mean
+  no restrictions. Request spacing is the larger of the configured delay and
+  robots `Crawl-delay`.
+- Raw response bytes are archived to MinIO as
+  `scrapers/<portal>/<date>/<sha256>.<html|json|bin>` before parsing. Archival
+  failure aborts the request instead of silently parsing unarchived data.
+- `PortalIngestionBridge` saves metadata through `TenderRepository` and is
+  idempotent by `tender_number`; an existing row is not re-ingested. A pipeline
+  hook must be injected to hand the committed tender to the processing graph or
+  a queue. Portal notifications currently contain no positions or attachments,
+  so the pipeline is responsible for fetching and parsing those documents. A
+  hand-off failure after the repository commit therefore leaves a persisted row
+  for operational review instead of deleting it.
 
 ## E-invoicing assumptions (P2.1)
 
