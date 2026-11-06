@@ -78,6 +78,7 @@ __all__ = [
     "TenderIngestionJob",
     "TenderItem",
     "ScraperState",
+    "WorkerRun",
     "WorkflowCheckpoint",
     "WorkflowCheckpointBlob",
     "WorkflowCheckpointWrite",
@@ -692,6 +693,52 @@ class ScraperState(Base, TimestampMixin):
     last_scraped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class WorkerRun(Base, TimestampMixin):
+    """Execution history for scraper and ingestion-outbox worker runs."""
+
+    __tablename__ = "worker_runs"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    run_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    resource: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="running", server_default=text("'running'")
+    )
+    worker_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    items_processed: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    errors_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "run_type IN ('scrape', 'ingestion')",
+            name="run_type_valid",
+        ),
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'failed', 'skipped', 'cancelled')",
+            name="status_valid",
+        ),
+        CheckConstraint("items_processed >= 0", name="items_non_negative"),
+        CheckConstraint("errors_count >= 0", name="errors_non_negative"),
+        Index("ix_worker_runs_started_at", "started_at"),
+        Index("ix_worker_runs_type_status", "run_type", "status"),
+    )
 
 
 # ---------------------------------------------------------------------------

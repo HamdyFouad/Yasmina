@@ -116,6 +116,14 @@ class Settings(BaseSettings):
     erpnext_max_retries: int = Field(default=2, ge=0, le=5)
     erpnext_retry_backoff_seconds: float = Field(default=0.5, ge=0, le=10)
 
+    # --- Telegram alerts ---------------------------------------------------
+    telegram_bot_token: SecretStr | None = None
+    telegram_approval_chat_id: str | None = None
+    telegram_alerts_enabled: bool = True
+    telegram_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    telegram_max_retries: int = Field(default=2, ge=0, le=5)
+    telegram_retry_backoff_seconds: float = Field(default=0.5, ge=0, le=10)
+
     # --- Portal scrapers ---------------------------------------------------
     scraper_request_delay_seconds: float = Field(default=2.0, ge=0.0, le=120.0)
     scraper_timeout_seconds: float = Field(default=20.0, gt=0.0, le=120.0)

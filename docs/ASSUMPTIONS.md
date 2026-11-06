@@ -227,9 +227,42 @@ reconciled with the authoritative spec later.
 - `ScraperState.last_scraped_at` records the start of a run for observability;
   the incremental watermark is `last_success_at`, passed as `since` on the next
   run. `last_error` is retained on failure without moving the watermark.
-- The two live PostgreSQL outbox tests are skipped unless
+- The four live PostgreSQL outbox tests are skipped unless
   `YASMINA_TEST_DATABASE_URL` is set; the mocked repository/processor tests cover
   enqueue, claim, retry and completion semantics.
+
+## Worker hardening & observability assumptions (P4.3)
+
+- Portal serialisation uses PostgreSQL session-level advisory locks rather than
+  a lock table. The key is a deterministic signed 64-bit BLAKE2b digest of
+  `yasmina:portal-lock:<lowercase portal>`. Each scrape checks out a dedicated
+  connection, calls `pg_try_advisory_lock`, and keeps that connection open until
+  the scrape finishes. A competing worker receives `False`, records a `skipped`
+  run and continues with the next portal. A crashed process releases the lock
+  automatically when PostgreSQL closes the connection.
+- SIGINT and SIGTERM only set a cooperative `asyncio.Event`. The current portal
+  scrape and the current DeepSeek/Docling job are allowed to finish; the worker
+  then releases locks, returns claimed-but-unstarted outbox rows to `pending`
+  (decrementing the speculative attempt), and exits. Scheduler idle waits wake
+  immediately instead of sleeping until the next cron minute. A second signal
+  is treated the same way; there is no hard-cancel path.
+- `worker_runs` stores one row per portal scrape and one row per ingestion
+  batch, with `run_type` (`scrape`/`ingestion`), resource, status
+  (`running`/`succeeded`/`failed`/`skipped`/`cancelled`), start/finish,
+  `duration_ms`, `items_processed`, `errors_count`, an error summary and a JSONB
+  detail payload. `items_processed` counts successfully parsed/ingested jobs;
+  retryable failures increment `errors_count` without incrementing the item
+  count. `GET /healthz/worker` reports `degraded` (HTTP 200) for a failed latest
+  run or a non-empty dead-letter queue and 503 only if metrics cannot be read.
+- Telegram alerting is optional and enabled only when both
+  `TELEGRAM_BOT_TOKEN` and `TELEGRAM_APPROVAL_CHAT_ID` are set. A scheduled
+  scrape exception sends one alert after the run is recorded; an ingestion job
+  that reaches the terminal `failed` state sends one dead-letter alert. Delivery
+  is best-effort, retries transient HTTP failures, and never changes the job or
+  run status.
+- Worker locking, run history and Telegram tests add two live PostgreSQL tests
+  alongside the four existing outbox/offer checks (six total), all skipped
+  unless `YASMINA_TEST_DATABASE_URL` is set.
 
 ## E-invoicing assumptions (P2.1)
 

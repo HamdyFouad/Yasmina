@@ -24,6 +24,7 @@ EXPECTED_TABLES = {
     "workflow_checkpoint_writes",
     "tender_ingestion_jobs",
     "scraper_states",
+    "worker_runs",
 }
 
 
@@ -147,3 +148,19 @@ def test_ingestion_outbox_and_watermark_shape() -> None:
     assert "ix_tender_ingestion_jobs_status_available" in {index.name for index in jobs.indexes}
     assert states.c.portal_name.primary_key is True
     assert states.c.last_success_at.nullable is True
+
+
+def test_worker_run_history_shape() -> None:
+    runs = Base.metadata.tables["worker_runs"]
+
+    assert {
+        "ck_worker_runs_run_type_valid",
+        "ck_worker_runs_status_valid",
+        "ck_worker_runs_items_non_negative",
+        "ck_worker_runs_errors_non_negative",
+    } <= {constraint.name for constraint in runs.constraints}
+    assert runs.c.details.nullable is False
+    assert runs.c.duration_ms.nullable is True
+    assert {"ix_worker_runs_started_at", "ix_worker_runs_type_status"} == {
+        index.name for index in runs.indexes
+    }

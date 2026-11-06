@@ -17,10 +17,13 @@ from src.integrations.erpnext_client import ERPNextClient
 from src.integrations.minio_client import MinioObjectStorage
 from src.integrations.n8n_client import N8nClient
 from src.repositories.integration_repository import IntegrationRepository
+from src.repositories.ingestion_repository import TenderIngestionJobRepository
 from src.repositories.offer_repository import OfferRepository
 from src.repositories.supplier_quote_repository import SupplierQuoteRepository
 from src.repositories.tender_repository import TenderRepository
+from src.repositories.worker_run_repository import WorkerRunRepository
 from src.services.audit_service import AuditService
+from src.services.worker_metrics import WorkerHealthService
 
 __all__ = [
     "bearer_scheme",
@@ -36,6 +39,7 @@ __all__ = [
     "get_session",
     "get_supplier_quote_repository",
     "get_tender_repository",
+    "get_worker_health_service",
     "get_workflow_checkpointer",
     "require_roles",
 ]
@@ -149,3 +153,12 @@ def get_workflow_checkpointer(
     settings: Settings = Depends(get_app_settings),
 ) -> SqlAlchemyCheckpointSaver:
     return SqlAlchemyCheckpointSaver(get_session_factory(settings))
+
+
+def get_worker_health_service(
+    session: AsyncSession = Depends(get_session),
+) -> WorkerHealthService:
+    return WorkerHealthService(
+        WorkerRunRepository(session),
+        TenderIngestionJobRepository(session),
+    )

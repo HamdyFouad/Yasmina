@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from src.api.routes import approvals, auth, integrations, offers, tenders
+from src.api.routes import approvals, auth, integrations, offers, ops, tenders
 from src.config import Settings, ensure_env_file, get_settings, reset_settings_cache
 from src.db import dispose_engine
 from src.preflight import CheckResult, PreflightOptions, run_preflight
@@ -76,6 +76,7 @@ def create_app(settings: Settings | None = None, *, run_startup_checks: bool = T
     application.include_router(approvals.router, prefix="/api/v1")
     application.include_router(offers.router, prefix="/api/v1")
     application.include_router(integrations.router, prefix="/api/v1")
+    application.include_router(ops.router)
 
     @application.get("/healthz", tags=["ops"])
     async def healthz() -> dict[str, str]:

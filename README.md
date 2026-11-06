@@ -12,7 +12,8 @@ waste bags across all thicknesses, volumes and colour standards.
 > sync, HMAC-authenticated n8n RFQ/quote flows, compliant portal scrapers with
 > attachment harvesting and durable ingestion outbox, live DeepSeek/Docling
 > paths, deterministic unit conversion, PostgreSQL LangGraph checkpoints and
-> the daily scrape/ingestion worker are complete.
+> the production-hardened scrape/ingestion worker (advisory locks, graceful
+> shutdown, run metrics and Telegram alerts) are complete.
 
 ---
 
@@ -72,10 +73,12 @@ src/
       approvals.py       # idempotent approval, offer persistence, ERPNext + invoices
       offers.py          # owner-aware offer retrieval
       integrations.py    # n8n RFQ dispatch + signed quote callback
+      ops.py             # /healthz/worker run history + outbox metrics
   repositories/
     tender_repository.py # PostgreSQL tender/position persistence
     offer_repository.py  # offer lines, artifacts and ERPNext names
     ingestion_repository.py # outbox jobs + scraper watermarks
+    worker_run_repository.py # run history for scrapes and ingestion batches
     integration_repository.py # durable idempotency-key ledger
     supplier_quote_repository.py # inbound n8n quote persistence
   models/
@@ -91,17 +94,19 @@ src/
     pricing_service.py   # pure-Decimal tiers, MOQ, margin, VAT
     unit_converter.py    # auditable CARTON/PACK/PIECE/ROLL conversions
     ingestion_processor.py # PDF/GAEB parsing + triage worker
+    worker_lock.py       # PostgreSQL advisory locks per portal
+    worker_metrics.py    # worker health snapshot aggregation
     matching_service.py  # pgvector retrieval + lexical/embedding ranking
     approval_service.py  # canonical payload, Ed25519 sign/verify/apply
   scheduler.py           # dependency-free five-field cron scheduler
-  worker.py              # one-off/daily portal scrape CLI worker
+  worker.py              # scrape/process CLI, signals, locks, alerts
   agents/
     graph.py             # LangGraph workflow and routing
     checkpoint.py        # SQLAlchemy-backed checkpoint saver
     nodes.py             # enrich, match, price, approval gate, export
     state.py             # typed state, dependencies and offer request
     deepseek.py          # DeepSeek structured extraction client
-  integrations/          # ClamAV, MinIO, ERPNext and n8n clients
+  integrations/          # ClamAV, MinIO, ERPNext, n8n and Telegram clients
   scrapers/
     base_scraper.py      # robots.txt, rate limit, UA rotation, MinIO raw archive
     html_portal.py       # generic listing/detail card parser + CPV filtering
@@ -114,7 +119,7 @@ src/
     leitweg.py           # Leitweg-ID format + MOD-97-10 validation
     zugferd_generator.py # Factur-X/ZUGFeRD 2.2 CII + PDF embedding
     xrechnung_generator.py # XRechnung 3.0 UBL XML
-alembic/                 # async migrations (0001 schema, 0002 audit guard, 0003 idempotency, 0004 offers/checkpoints, 0005 ingestion outbox)
+alembic/                 # async migrations (0001 schema, 0002 audit guard, 0003 idempotency, 0004 offers/checkpoints, 0005 ingestion outbox, 0006 worker runs)
 docker/                  # PostgreSQL bootstrap (pgvector, n8n database)
 docs/
   DETAILED_SPEC.md       # authoritative engineering specification
@@ -212,6 +217,7 @@ PostgreSQL, pgvector, MinIO authentication or ClamAV fail, startup aborts with a
 `Startup preflight failed` error.
 
 - `GET /healthz` — process liveness
+- `GET /healthz/worker` — latest scrape/ingestion run, duration, item/error counts and outbox queue state
 - `GET /readyz` — startup preflight results
 - `GET /docs` — OpenAPI UI
 
@@ -378,26 +384,48 @@ The scheduler is dependency-free and logs job failures without terminating.
 Each scheduled scrape is followed by one `process_jobs_once()` pass, so a single
 cron entry keeps both discovery and parsing moving.
 
+#### Production hardening and observability
+
+- **Distributed portal locks:** every worker opens a dedicated connection and
+  takes `pg_try_advisory_lock(<stable portal key>)` before scraping a portal. A
+  second worker gets `False`, records the portal as `skipped` and moves on; the
+  lock is released in `finally` (and by PostgreSQL if the connection dies).
+- **Graceful shutdown:** SIGINT/SIGTERM set a cooperative stop event. The
+  current scrape portal and current DeepSeek/Docling job finish, their locks are
+  released, unstarted claims return to `pending`, and the process exits without
+  cancelling an in-flight API call.
+- **Run history:** `worker_runs` records `run_type`, portal/resource, status,
+  start/finish times, duration, processed items, error counts and details for
+  each scrape and each ingestion batch. `GET /healthz/worker` returns the latest
+  run per type, status counts, outbox queue counts and the ten most recent runs;
+  it returns 503 only when the metrics query itself fails.
+- **Telegram alerts:** set `TELEGRAM_BOT_TOKEN` and
+  `TELEGRAM_APPROVAL_CHAT_ID` to receive alerts after a scheduled scrape
+  exception or when an ingestion job exhausts `max_attempts` and reaches the
+  dead-letter `failed` state. Delivery is best-effort and never breaks the
+  worker.
+
 ### 8. Run tests
 
 ```powershell
 python -m pytest -q
 ```
 
-The current 281 tests pass (plus four optional PostgreSQL-only tests that are
+The current 298 tests pass (plus six optional PostgreSQL-only tests that are
 skipped unless `YASMINA_TEST_DATABASE_URL` is set) and cover normalizers,
 settings, strict schemas, ORM metadata, pgvector/HNSW configuration, GAEB
 parsing/validation, PDF table extraction, pricing, unit conversion, hybrid
 matching, LangGraph triage/enrichment and checkpointing, Ed25519 approval,
 offer persistence/idempotency, durable ingestion outbox claiming/retry,
-attachment harvesting and watermarking, ClamAV scanning and audit chaining,
-MinIO object flows, ERPNext retries/payload mapping, n8n HMAC callbacks and
-idempotency, portal robots/rate/UA/artifact handling, CPV-filtered HTML
-extraction, cron scheduling, FastAPI business routes, RBAC, tender persistence,
-e-invoicing and offline migration rendering.
+attachment harvesting and watermarking, advisory locking, signal-driven
+shutdown, worker run metrics, Telegram delivery, ClamAV scanning and audit
+chaining, MinIO object flows, ERPNext retries/payload mapping, n8n HMAC
+callbacks and idempotency, portal robots/rate/UA/artifact handling,
+CPV-filtered HTML extraction, cron scheduling, FastAPI business routes, RBAC,
+tender persistence, e-invoicing and offline migration rendering.
 
 ```powershell
-# optional live PostgreSQL offer/checkpoint and ingestion-outbox tests
+# optional live PostgreSQL offer/checkpoint, outbox/lock and run-history tests
 # (after alembic upgrade head)
 $env:YASMINA_TEST_DATABASE_URL = "postgresql+asyncpg://yasmina:yasmina@localhost:5432/yasmina"
 python -m pytest -q tests/integration/test_offer_workflow_db.py tests/integration/test_ingestion_outbox_db.py
@@ -542,6 +570,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | DeepSeek | `DEEPSEEK_ENABLED`, `DEEPSEEK_API_KEY`, `DEEPSEEK_CHAT_MODEL`, `DEEPSEEK_REASONER_MODEL` |
 | Embeddings | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` (BGE-M3, 1024) |
 | n8n | `N8N_WEBHOOK_BASE_URL`, `N8N_WEBHOOK_HMAC_SECRET`, `N8N_RFQ_WEBHOOK_PATH`, `N8N_CALLBACK_URL`, `N8N_CALLBACK_MAX_AGE_SECONDS` |
+| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_APPROVAL_CHAT_ID`, `TELEGRAM_ALERTS_ENABLED`, `TELEGRAM_TIMEOUT_SECONDS`, `TELEGRAM_MAX_RETRIES`, `TELEGRAM_RETRY_BACKOFF_SECONDS` |
 | ERPNext | `ERPNEXT_BASE_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `ERPNEXT_ITEM_GROUP`, `ERPNEXT_SELLING_PRICE_LIST`, `ERPNEXT_QUOTATION_SERIES` |
 | Portal scrapers | `SCRAPER_REQUEST_DELAY_SECONDS`, `SCRAPER_ROBOTS_CACHE_SECONDS`, `SCRAPER_MAX_PAGES`, `SCRAPER_ARCHIVE_RAW`, `SCRAPER_ARCHIVE_PREFIX`, `SCRAPER_USER_AGENTS`, `SCRAPER_HARVEST_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENT_MB`, `SCRAPER_SCHEDULE_CRON` |
 | HITL | `ED25519_APPROVAL_PUBLIC_KEY`, `APPROVAL_SIGNATURE_REQUIRED` |
@@ -563,6 +592,8 @@ the default application, JWT, API-admin or n8n HMAC secrets.
   totals and the Ed25519 approval envelope.
 - **CatalogArticle** — supplier catalogue with a pgvector embedding and HNSW
   cosine index for semantic matching.
+- **WorkerRun** — start/finish, duration, item/error counts and details for every
+  scrape portal run and ingestion batch.
 - **AuditLog** — append-only, hash-chained compliance trail.
 
 ### Database guarantees
@@ -575,6 +606,8 @@ the default application, JWT, API-admin or n8n HMAC secrets.
 | Audit immutability | `BEFORE UPDATE/DELETE/TRUNCATE` triggers raising an exception |
 | Offer idempotency | unique `offer_number` + approval signature/payload comparison |
 | Workflow durability | PostgreSQL checkpoint header/blob/write tables |
+| Portal serialisation | PostgreSQL session-level advisory locks per portal |
+| Worker observability | `worker_runs` history + `/healthz/worker` snapshot |
 | Vector search | `vector(1024)` + HNSW `vector_cosine_ops` (`m=16`, `ef_construction=64`) |
 
 ---
@@ -606,6 +639,7 @@ the default application, JWT, API-admin or n8n HMAC secrets.
 - [x] P3 — live DeepSeek triage/spec extraction, real Docling PDF path, unit conversion and daily scrape worker
 - [x] P4.1 — durable offer persistence, idempotent approvals, owner-aware offer API and PostgreSQL LangGraph checkpoints
 - [x] P4.2 — portal attachment download to MinIO, durable ingestion outbox, watermark-based incremental scraping and queued DeepSeek/Docling processing
+- [x] P4.3 — PostgreSQL advisory portal locks, SIGINT/SIGTERM graceful shutdown, persisted worker run history, `/healthz/worker` metrics and Telegram failure/dead-letter alerts
 - [ ] P1 — refresh tokens and advanced RBAC
 - [ ] P2 — Telegram notifier and production ERPNext/n8n workflow templates
 

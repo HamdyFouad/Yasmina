@@ -24,6 +24,12 @@ from src.integrations.n8n_client import (
     N8nError,
     N8nSignatureError,
 )
+from src.integrations.telegram_notifier import (
+    TelegramAlertResult,
+    TelegramConfigurationError,
+    TelegramError,
+    TelegramNotifier,
+)
 
 __all__ = [
     "ClamAVError",
@@ -42,6 +48,10 @@ __all__ = [
     "N8nError",
     "N8nSignatureError",
     "ObjectStorageError",
+    "TelegramAlertResult",
+    "TelegramConfigurationError",
+    "TelegramError",
+    "TelegramNotifier",
     "object_name_for_invoice",
     "object_name_for_tender",
 ]

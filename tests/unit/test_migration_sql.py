@@ -31,6 +31,7 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert "CREATE TABLE workflow_checkpoint_writes" in sql
     assert "CREATE TABLE tender_ingestion_jobs" in sql
     assert "CREATE TABLE scraper_states" in sql
+    assert "CREATE TABLE worker_runs" in sql
     assert "invoice_artifacts" in sql
     assert "USING hnsw (embedding vector_cosine_ops)" in sql
     assert "CREATE TRIGGER trg_audit_logs_append_only" in sql
@@ -39,6 +40,6 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert sql.rstrip().endswith("COMMIT;")
 
     # Every domain table is created exactly once.
-    assert sql.count("CREATE TABLE ") == 17  # 16 domain tables + alembic_version
+    assert sql.count("CREATE TABLE ") == 18  # 17 domain tables + alembic_version
 
     reset_settings_cache()

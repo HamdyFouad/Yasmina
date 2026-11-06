@@ -19,6 +19,7 @@ __all__ = [
     "CronScheduleError",
     "parse_cron",
     "run_scheduler",
+    "wait_for_stop",
 ]
 
 logger = logging.getLogger("yasmina.scheduler")
@@ -153,6 +154,24 @@ def parse_cron(expression: str, *, timezone: str = "Europe/Berlin") -> CronExpre
     return CronExpression.parse(expression, timezone=timezone)
 
 
+async def wait_for_stop(
+    delay: float,
+    stop_event: asyncio.Event | None,
+    sleep: Callable[[float], Awaitable[None]] | None = None,
+) -> None:
+    """Sleep for ``delay`` seconds, returning immediately when shutdown is requested."""
+
+    if delay <= 0:
+        return
+    if stop_event is None:
+        await (sleep or asyncio.sleep)(delay)
+        return
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=delay)
+    except TimeoutError:
+        pass
+
+
 async def run_scheduler(
     job: Callable[[], Awaitable[object]],
     schedule: CronExpression,
@@ -181,8 +200,9 @@ async def run_scheduler(
         next_run = schedule.next_after(now_local)
         delay = max(0.0, (next_run - now_local.astimezone(schedule.timezone)).total_seconds())
         if delay > 0:
-            await sleep(delay)
+            await wait_for_stop(delay, stop_event, sleep)
         if stop_event is not None and stop_event.is_set():
+            logger.info("scheduler shutdown requested; stopping before next run")
             break
         try:
             await job()

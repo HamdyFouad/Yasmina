@@ -9,15 +9,17 @@ import pytest
 from sqlalchemy import delete
 
 from src.config import Settings
-from src.db import dispose_engine, get_session_factory
+from src.db import dispose_engine, get_engine, get_session_factory
 from src.models.enums import ProcurementProcedure, TenderSourceFormat
-from src.models.orm import ScraperState, Tender as TenderORM, TenderIngestionJob
+from src.models.orm import ScraperState, Tender as TenderORM, TenderIngestionJob, WorkerRun
 from src.models.schemas import Tender
 from src.repositories.ingestion_repository import (
     ScraperStateRepository,
     TenderIngestionJobRepository,
 )
 from src.repositories.tender_repository import TenderRepository
+from src.repositories.worker_run_repository import WorkerRunRepository
+from src.services.worker_lock import DatabasePortalLock
 
 DATABASE_URL = os.getenv("YASMINA_TEST_DATABASE_URL")
 
@@ -125,6 +127,57 @@ async def test_outbox_failure_returns_job_to_pending_until_attempt_limit() -> No
         async with factory() as session:
             await session.execute(delete(TenderIngestionJob).where(TenderIngestionJob.id == job.id))
             await session.execute(delete(TenderORM).where(TenderORM.id == tender.id))
+            await session.commit()
+    finally:
+        await dispose_engine()
+
+
+async def test_portal_advisory_lock_is_exclusive_per_portal() -> None:
+    current = settings()
+    engine = get_engine(current)
+    first = DatabasePortalLock(engine)
+    second = DatabasePortalLock(engine)
+    try:
+        assert await first.acquire("vergabe.bayern") is True
+        assert await second.acquire("vergabe.bayern") is False
+
+        await first.release("vergabe.bayern")
+        assert await second.acquire("vergabe.bayern") is True
+    finally:
+        await first.release_all()
+        await second.release_all()
+        await dispose_engine()
+
+
+async def test_worker_run_history_records_counts_and_duration() -> None:
+    factory = get_session_factory(settings())
+    try:
+        async with factory() as session:
+            runs = WorkerRunRepository(session)
+            started = await runs.start(
+                run_type="scrape",
+                resource="vergabe.bayern",
+                worker_id="live-test",
+            )
+            finished = await runs.finish(
+                started.id,
+                status="succeeded",
+                items_processed=4,
+                errors_count=1,
+                details={"portal": "vergabe.bayern"},
+            )
+            assert finished.status == "succeeded"
+            assert finished.items_processed == 4
+            assert finished.errors_count == 1
+            assert finished.duration_ms is not None
+            assert finished.duration_ms >= 0
+
+            latest = await runs.latest_by_type()
+            assert latest["scrape"].id == started.id
+            counts = await runs.status_counts()
+            assert counts["succeeded"] >= 1
+
+            await session.execute(delete(WorkerRun).where(WorkerRun.id == started.id))
             await session.commit()
     finally:
         await dispose_engine()

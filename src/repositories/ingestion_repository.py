@@ -158,7 +158,13 @@ class TenderIngestionJobRepository:
         *,
         retry_backoff_seconds: int = 60,
         now: datetime | None = None,
-    ) -> None:
+    ) -> str:
+        """Record a failed attempt and return the resulting status.
+
+        ``pending`` means another attempt was scheduled; ``failed`` is the
+        terminal dead-letter state reached at ``max_attempts``.
+        """
+
         row = await self.session.get(TenderIngestionJob, job_id)
         if row is None:
             raise IngestionRepositoryError(f"ingestion job {job_id} does not exist")
@@ -172,6 +178,22 @@ class TenderIngestionJobRepository:
             row.status = "pending"
             row.available_at = current + timedelta(seconds=retry_backoff_seconds)
         await self.session.commit()
+        return row.status
+
+    async def release(self, job_id: UUID, *, now: datetime | None = None) -> None:
+        """Return a claimed-but-unstarted job to the queue (graceful shutdown)."""
+
+        row = await self.session.get(TenderIngestionJob, job_id)
+        if row is None:
+            raise IngestionRepositoryError(f"ingestion job {job_id} does not exist")
+        if row.status != "processing":
+            return
+        row.status = "pending"
+        row.attempts = max(0, row.attempts - 1)
+        row.available_at = now or datetime.now(timezone.utc)
+        row.locked_at = None
+        row.locked_by = None
+        await self.session.commit()
 
     async def pending_count(self) -> int:
         return int(
@@ -183,6 +205,17 @@ class TenderIngestionJobRepository:
                 )
             ).scalar_one()
         )
+
+    async def status_counts(self) -> dict[str, int]:
+        rows = (
+            await self.session.execute(
+                select(TenderIngestionJob.status, func.count()).group_by(TenderIngestionJob.status)
+            )
+        ).all()
+        counts = {"pending": 0, "processing": 0, "completed": 0, "skipped": 0, "failed": 0}
+        for status, count in rows:
+            counts[str(status)] = int(count)
+        return counts
 
 
 class ScraperStateRepository:
