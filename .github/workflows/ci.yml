@@ -185,7 +185,23 @@ jobs:
         run: python -m src.preflight --skip n8n
 
       - name: Full test suite (live database included)
-        run: python -m pytest -q
+        # Keep the pytest output on the runner, but also publish a failure
+        # summary into the check run so a red build is diagnosable without
+        # downloading the full job log.
+        run: |
+          set +e
+          python -m pytest -q --tb=short > pytest.log 2>&1
+          status=$?
+          tail -n 40 pytest.log
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "### Pytest failures"
+              echo '```text'
+              tail -n 150 pytest.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
 
       - name: Compile sources
         run: python -m compileall -q src alembic tests
