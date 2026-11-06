@@ -238,9 +238,13 @@ class FakeStorage:
 class FakeAudit:
     def __init__(self) -> None:
         self.entries: list[dict[str, Any]] = []
+        self.events: list[dict[str, Any]] = []
 
     async def record_clamav(self, **kwargs: Any) -> None:
         self.entries.append(kwargs)
+
+    async def append(self, **kwargs: Any) -> None:
+        self.events.append(kwargs)
 
 
 class FakeOfferRepository:

@@ -88,6 +88,8 @@ jobs:
           grep -q "CREATE TABLE credit_notes" migration.sql
           grep -q "CREATE TRIGGER trg_invoice_events_append_only" migration.sql
           grep -q "CREATE TRIGGER trg_invoice_events_no_truncate" migration.sql
+          grep -q "CREATE TABLE password_reset_tokens" migration.sql
+          grep -q "ALTER TABLE users ADD COLUMN mfa_enabled" migration.sql
           grep -q "INSERT INTO alembic_version" migration.sql
 
       - name: Ensure .env is not tracked

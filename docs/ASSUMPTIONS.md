@@ -425,6 +425,57 @@ reconciled with the authoritative spec later.
 - P4.7 brings the default suite to 323 tests and the live PostgreSQL suite to
   fourteen tests.
 
+## Account lifecycle, MFA & auth-audit assumptions (P4.8)
+
+- TOTP follows RFC 6238 with SHA-1, six digits and a 30-second step; the ±1 step
+  window, digits and interval are configurable (`MFA_TOTP_*`). The implementation
+  is stdlib-only (`hmac`/`hashlib`) and is validated against the RFC 6238 test
+  vectors, so no additional runtime dependency is introduced.
+- Enrolled secrets are sealed with Fernet using a key derived from
+  `APP_SECRET_KEY` (`sha256(app_secret_key)`). Losing or rotating that key makes
+  existing enrolments undecryptable; the account then has to re-enrol, which is
+  safer than silently accepting an unusable second factor.
+- `users.mfa_last_step` stores the highest accepted time step. A code whose step
+  is not strictly greater is rejected even if the HMAC still matches, so a
+  captured code cannot be replayed inside its validity window. The same counter
+  drives `POST /auth/mfa/verify` and the login challenge.
+- MFA stays disabled between `POST /auth/mfa/setup` and
+  `POST /auth/mfa/verify`, so an interrupted enrolment cannot lock a user out.
+  `POST /auth/mfa/disable` requires both the account password and a live code
+  and revokes every refresh session afterwards.
+- The bootstrap admin (`API_ADMIN_*`) is configuration, not a database row, so it
+  cannot enrol MFA, change its password through the API or hold refresh tokens.
+  It remains an emergency access path and its password is managed by the
+  deployment configuration.
+- Password reset tokens are `secrets.token_urlsafe(32)` values stored only as
+  SHA-256 hashes, with `expires_at`, `used_at`, `issued_by` and `requested_ip`.
+  Issuing a new token invalidates the previous unused token for that account.
+  Consumption is atomic (`SELECT … FOR UPDATE`), single-use, and revokes all
+  refresh sessions. The new password is validated before the token is burned.
+- `POST /auth/password/reset/request` always returns `202` without a token to
+  avoid account enumeration. Delivery uses the existing Telegram notifier
+  (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_APPROVAL_CHAT_ID`); when that channel is not
+  configured the token is issued but not delivered, and an operator uses the
+  admin endpoint instead. No SMTP/email integration exists yet.
+- `POST /auth/users/{username}/password/reset` is admin-only and returns the raw
+  token once for out-of-band handover. This is equivalent to the existing
+  privilege of creating users with a chosen password, and it is audited.
+- Authentication audit events are written through the existing hash-chained
+  `audit_logs` service: `USER_LOGIN_SUCCEEDED`, `USER_LOGIN_FAILED`,
+  `USER_LOGOUT`, `USER_LOGGED_OUT_ALL_DEVICES`, `USER_CREATED`,
+  `USER_PASSWORD_CHANGED`, `USER_PASSWORD_RESET_REQUESTED`,
+  `USER_PASSWORD_RESET_COMPLETED`, `USER_MFA_ENABLED`, `USER_MFA_DISABLED` and
+  `SYSTEM_TOKEN_CLEANUP`. Passwords, reset tokens and TOTP secrets are never
+  included in payloads. A failed audit append surfaces as a server error rather
+  than succeeding the request, so identity events are not silently dropped.
+- `yasmina-admin purge-auth-tokens` deletes refresh tokens whose `expires_at` has
+  passed and revoked sessions older than `AUTH_TOKEN_RETENTION_DAYS` (7), expired
+  `token_blocklist` rows and used/expired password reset tokens. `--dry-run`
+  counts the same predicates without deleting. Each real run appends a
+  `SYSTEM_TOKEN_CLEANUP` audit entry with the counts.
+- P4.8 brings the default suite to 337 tests and the live PostgreSQL suite to
+  twenty tests.
+
 ## E-invoicing assumptions (P2.1)
 
 - Invoice lines use the shared `UnitOfMeasure`; UBL/CII unit codes are mapped to

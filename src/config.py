@@ -52,7 +52,17 @@ class Settings(BaseSettings):
     api_admin_password: SecretStr = SecretStr("change-me-admin-password")
     password_min_length: int = Field(default=12, ge=8, le=128)
     password_hash_algorithm: Literal["argon2id"] = "argon2id"
+    password_reset_token_expiry_minutes: int = Field(default=15, ge=1, le=1440)
     max_upload_size_mb: int = Field(default=25, ge=1, le=200)
+
+    # --- MFA / TOTP --------------------------------------------------------
+    mfa_issuer: str = Field(default="Yasmina", min_length=1, max_length=64)
+    mfa_totp_interval_seconds: int = Field(default=30, ge=10, le=300)
+    mfa_totp_digits: Literal[6, 8] = 6
+    mfa_totp_window: int = Field(default=1, ge=0, le=10)
+
+    # --- Token maintenance -------------------------------------------------
+    auth_token_retention_days: int = Field(default=7, ge=0, le=365)
 
     # --- API rate limiting -------------------------------------------------
     rate_limit_enabled: bool = True

@@ -22,13 +22,13 @@
 Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 10):
 - `src/config.py` (pydantic-settings)
 - `src/db.py` (async SQLAlchemy session factory)
-- `src/admin.py` (`yasmina-admin` catalogue seeding CLI)
+- `src/admin.py` (`yasmina-admin` catalogue seeding and auth-token retention CLI)
 - `src/main.py` (FastAPI app + startup preflight lifespan)
 - `src/api/` (`security.py`, `rate_limit.py`, `deps.py`, `schemas.py`, `routes/tenders.py`, `routes/approvals.py`, `routes/offers.py`, `routes/invoices.py`, `routes/ops.py`, `routes/auth.py`)
 - `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `invoice_repository.py`, `credit_note_repository.py`, `invoice_event_repository.py`, `user_repository.py`, `catalog_repository.py`, `ingestion_repository.py`, `worker_run_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`)
 - `src/models/` (`enums.py`, `schemas.py`, `orm.py`)
 - `src/parsers/` (`normalizers.py`, `pdf_parser.py`, `gaeb_parser.py`, `gaeb_validator.py`)
-- `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `password_service.py`, `embedding_service.py`, `ingestion_processor.py`, `worker_lock.py`, `worker_metrics.py`)
+- `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `password_service.py`, `mfa_service.py`, `token_maintenance.py`, `embedding_service.py`, `ingestion_processor.py`, `worker_lock.py`, `worker_metrics.py`)
 - `src/agents/` (`graph.py`, `checkpoint.py`, `nodes.py`, `state.py`, `deepseek.py`)
 - `src/integrations/` (`clamav_client.py`, `minio_client.py`, `erpnext_client.py`, `n8n_client.py`, `telegram_notifier.py`; Telegram approval bot planned)
 - `src/scrapers/` (`base_scraper.py`, `bayern_vergabe.py`, `oeffentlichevergabe.py`, `ingestion.py`)
@@ -52,7 +52,11 @@ When given an implementation task:
 - Infrastructure: `docker compose up -d postgres minio clamav` (add `--profile automation` for n8n).
 - Preflight: `python -m src.preflight` (or `python -m src.preflight --json`).
 - Approval: `yasmina-approval sign|verify` (see `src/services/approval_service.py`).
-- Auth: `POST /api/v1/auth/token` (access + refresh), `/auth/refresh` (rotating), `/auth/logout` (JTI blocklist), `/auth/users` (admin). Four-eyes rejects self-approval by owner/tender creator.
+- Auth: `POST /api/v1/auth/token` (access + refresh; `totp_code` when MFA is enabled), `/auth/refresh` (rotating), `/auth/logout` (JTI blocklist), `/auth/users` (admin). Four-eyes rejects self-approval by owner/tender creator.
+- Account lifecycle: `POST /auth/password/change` (current password required), `/auth/password/reset` (single-use token), `/auth/password/reset/request` (public, always 202), `/auth/users/{username}/password/reset` (admin-issued token), `/auth/logout/all` (revoke every refresh session).
+- MFA: `/auth/mfa/setup` returns a base32 secret + `otpauth://` URI, `/auth/mfa/verify` enables TOTP enrollment, `/auth/mfa/disable` needs password + live code; secrets are Fernet-sealed from `APP_SECRET_KEY` and `users.mfa_last_step` blocks code replay. RFC 6238 code lives in `src/services/mfa_service.py`.
+- Token retention: `python -m src.admin purge-auth-tokens [--retention-days N] [--dry-run] [--json]` purges expired refresh tokens, stale revoked sessions, expired JTIs and used/expired reset tokens, and appends a `SYSTEM_TOKEN_CLEANUP` audit entry.
+- Auth audit: `AuditService` records `USER_LOGIN_SUCCEEDED|FAILED`, `USER_LOGOUT`, `USER_LOGGED_OUT_ALL_DEVICES`, `USER_CREATED`, `USER_PASSWORD_CHANGED`, `USER_PASSWORD_RESET_REQUESTED|COMPLETED`, `USER_MFA_ENABLED|DISABLED`; never include passwords, reset tokens or TOTP secrets.
 - Rate limits: `/auth` 20/min, `/upload` 30/min, other `/api/v1` 300/min by default; adjust `RATE_LIMIT_*` settings.
 - E-invoicing: `XRechnungGenerator` runs KoSIT EN16931 + XRechnung CIUS Schematron via `saxonche`; `ZUGFeRDGenerator` embeds CII XML in the branded PDF/A-3 carrier; `InvoiceRepository` owns gapless `INV-YYYY-XXXX` numbering and multi-rate VAT rows.
 - Billing: `GET /api/v1/invoices[/{id}]` (owner-scoped for sales), `POST /invoices/{id}/payments` and `POST /invoices/{id}/credits` (admin-only); `CreditNoteRepository` allocates a gapless `GS-YYYY-XXXX` credit number across the invoice VAT buckets and applies it atomically.

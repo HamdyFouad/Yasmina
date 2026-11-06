@@ -81,6 +81,7 @@ __all__ = [
     "InvoiceLine",
     "InvoiceNumberSequence",
     "InvoiceVatSplit",
+    "PasswordResetToken",
     "RefreshToken",
     "Supplier",
     "SupplierQuote",
@@ -942,8 +943,20 @@ class User(Base, TimestampMixin):
         Integer, nullable=False, default=0, server_default=text("0")
     )
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    mfa_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    mfa_secret: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    mfa_enrolled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    mfa_last_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     refresh_tokens: Mapped[list[RefreshToken]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    password_reset_tokens: Mapped[list[PasswordResetToken]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -951,6 +964,7 @@ class User(Base, TimestampMixin):
 
     __table_args__ = (
         CheckConstraint("failed_login_attempts >= 0", name="failed_attempts_non_negative"),
+        CheckConstraint("mfa_last_step IS NULL OR mfa_last_step >= 0", name="mfa_last_step_non_negative"),
         Index("ix_users_active", "is_active"),
     )
 
@@ -994,6 +1008,34 @@ class TokenBlocklist(Base):
     )
 
     __table_args__ = (Index("ix_token_blocklist_expires", "expires_at"),)
+
+
+class PasswordResetToken(Base, TimestampMixin):
+    """Single-use, hashed, short-lived password reset token."""
+
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    issued_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    requested_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="password_reset_tokens")
+
+    __table_args__ = (
+        CheckConstraint("token_hash ~ '^[0-9a-f]{64}$'", name="password_reset_token_hash_format"),
+        Index("ix_password_reset_tokens_expires", "expires_at"),
+    )
 
 
 # ---------------------------------------------------------------------------

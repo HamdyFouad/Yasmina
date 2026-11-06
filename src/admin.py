@@ -30,12 +30,14 @@ from src.services.embedding_service import (
     build_embedding_provider,
     embedding_text,
 )
+from src.services.token_maintenance import TokenCleanupResult, purge_auth_tokens
 
 __all__ = [
     "CatalogSeedError",
     "load_catalog_rows",
     "main",
     "parse_catalog_rows",
+    "purge_tokens",
     "seed_catalog",
 ]
 
@@ -247,6 +249,28 @@ async def seed_catalog(
     }
 
 
+async def purge_tokens(
+    *,
+    settings: Settings,
+    retention_days: int | None = None,
+    dry_run: bool = False,
+) -> TokenCleanupResult:
+    """Drop expired refresh tokens, blocklisted JTIs and reset tokens."""
+
+    factory = get_session_factory(settings)
+    try:
+        async with factory() as session:
+            return await purge_auth_tokens(
+                session,
+                retention_days=(
+                    settings.auth_token_retention_days if retention_days is None else retention_days
+                ),
+                dry_run=dry_run,
+            )
+    finally:
+        await dispose_engine()
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="yasmina-admin", description="Project Yasmina administration")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -265,6 +289,18 @@ def _parser() -> argparse.ArgumentParser:
     )
     seed.add_argument("--dry-run", action="store_true")
     seed.add_argument("--json", action="store_true", dest="as_json")
+    purge = subparsers.add_parser(
+        "purge-auth-tokens",
+        help="delete expired refresh tokens, access-token JTIs and reset tokens",
+    )
+    purge.add_argument(
+        "--retention-days",
+        type=int,
+        default=None,
+        help="keep revoked refresh tokens this many days (default: AUTH_TOKEN_RETENTION_DAYS)",
+    )
+    purge.add_argument("--dry-run", action="store_true", help="count rows without deleting")
+    purge.add_argument("--json", action="store_true", dest="as_json")
     return parser
 
 
@@ -290,6 +326,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"catalogue: {summary['articles']} articles, "
                     f"{summary['suppliers']} suppliers, "
                     f"{summary.get('upserted', 0)} upserted"
+                )
+            return 0
+        if args.command == "purge-auth-tokens":
+            cleanup = asyncio.run(
+                purge_tokens(
+                    settings=get_settings(),
+                    retention_days=args.retention_days,
+                    dry_run=args.dry_run,
+                )
+            )
+            if args.as_json:
+                print(json.dumps(cleanup.as_dict(), indent=2, ensure_ascii=False))
+            else:
+                prefix = "would purge" if cleanup.dry_run else "purged"
+                print(
+                    f"{prefix}: {cleanup.refresh_tokens} refresh tokens, "
+                    f"{cleanup.blocklisted_jtis} blocklisted JTIs, "
+                    f"{cleanup.password_reset_tokens} password reset tokens "
+                    f"(retention {cleanup.retention_days} days)"
                 )
             return 0
     except (CatalogSeedError, EmbeddingError, ValueError) as exc:

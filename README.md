@@ -19,8 +19,10 @@ waste bags across all thicknesses, volumes and colour standards.
 > paths, deterministic unit conversion, PostgreSQL LangGraph checkpoints,
 > the production-hardened scrape/ingestion worker (advisory locks, graceful
 > shutdown, run metrics and Telegram alerts), a billing REST API with payments
-> and credit notes, embedded-font PDF/A-3 output gated by veraPDF, and a
-> GoBD-compliant append-only invoice event log are complete.
+> and credit notes, embedded-font PDF/A-3 output gated by veraPDF, a
+> GoBD-compliant append-only invoice event log, and an account-lifecycle layer
+> with TOTP MFA, password resets, global logout, hashed reset tokens and a
+> token-retention CLI are complete.
 
 ---
 
@@ -90,7 +92,8 @@ src/
     invoice_repository.py # gapless invoice numbers, VAT splits, payment/credit status
     credit_note_repository.py # gapless GS-YYYY-XXXX credit notes + VAT allocation
     invoice_event_repository.py # GoBD append-only hash-chained invoice events
-    user_repository.py   # users, Argon2id auth, refresh rotation, JTI blocklist
+    user_repository.py   # users, Argon2id auth, refresh rotation, JTI blocklist,
+                         # password-reset tokens and MFA state
     catalog_repository.py # supplier catalogue + embedding upserts
     ingestion_repository.py # outbox jobs + scraper watermarks
     worker_run_repository.py # run history for scrapes and ingestion batches
@@ -115,6 +118,8 @@ src/
     worker_metrics.py    # worker health snapshot aggregation
     matching_service.py  # pgvector retrieval + lexical/embedding ranking
     approval_service.py  # canonical payload, Ed25519 sign/verify/apply
+    mfa_service.py       # RFC 6238 TOTP, sealed secrets and otpauth URIs
+    token_maintenance.py # expired refresh/JTI/reset-token retention job
   scheduler.py           # dependency-free five-field cron scheduler
   worker.py              # scrape/process CLI, signals, locks, alerts
   agents/
@@ -251,11 +256,19 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 
 | Method | Path | Role |
 |---|---|---|
-| POST | `/auth/token` | username/password login (admin bootstrap allowed) |
+| POST | `/auth/token` | username/password login (+ `totp_code` when MFA is enabled) |
 | POST | `/auth/refresh` | rotating refresh token |
 | POST | `/auth/logout` | authenticated user; revokes access JTI and refresh token |
+| POST | `/auth/logout/all` | authenticated user; revokes every refresh session |
 | GET | `/auth/me` | any authenticated role |
 | POST | `/auth/users` | admin only |
+| POST | `/auth/password/change` | authenticated user (current password required) |
+| POST | `/auth/password/reset/request` | public; always `202`, token delivered out-of-band |
+| POST | `/auth/password/reset` | public; single-use reset token + new password |
+| POST | `/auth/users/{username}/password/reset` | admin only; returns a one-time reset token |
+| POST | `/auth/mfa/setup` | authenticated user; returns secret + otpauth URI |
+| POST | `/auth/mfa/verify` | authenticated user; enables MFA with a live code |
+| POST | `/auth/mfa/disable` | authenticated user; password + live code required |
 | POST | `/tenders/upload` | sales/admin; sets tender owner |
 | POST | `/tenders/{id}/match` | sales (own), admin |
 | POST | `/tenders/{id}/price` | sales (own), admin |
@@ -293,6 +306,42 @@ refresh token. Approval of an offer whose owner is the authenticated principal
 (or whose signed `approved_by` equals the owner) is rejected with `403` by the
 four-eyes rule. Rate limits return `429` with `Retry-After` for `/auth` (20/min),
 `/tenders/upload` (30/min) and other `/api/v1` routes (300/min) by default.
+
+#### Account lifecycle, MFA and auth auditing
+
+- **Password change** (`POST /auth/password/change`) verifies the current
+  password, enforces the Argon2id policy, stamps `password_changed_at`, and
+  revokes every refresh token of the account.
+- **Password reset** is a two-step, single-use flow. An admin can mint a reset
+  token with `POST /auth/users/{username}/password/reset` and hand it over
+  out-of-band; `POST /auth/password/reset/request` is the public self-service
+  variant and always returns `202` (no account enumeration), delivering the raw
+  token through the Telegram notifier when it is configured. Only the SHA-256
+  hash is stored in `password_reset_tokens`, tokens expire after
+  `PASSWORD_RESET_TOKEN_EXPIRY_MINUTES` (15), only the newest token per account
+  stays usable, and consuming a token revokes all refresh sessions.
+- **Logout everywhere** (`POST /auth/logout/all`) revokes every live refresh
+  token for the caller and blocklists the current access-token `jti`.
+- **TOTP MFA** follows RFC 6238 (SHA-1, 6 digits, 30-second step, ±1 step skew)
+  and is implemented without an extra dependency. `/auth/mfa/setup` returns a
+  base32 secret and an `otpauth://totp/...` provisioning URI; the secret stays
+  inactive until `/auth/mfa/verify` proves a live code, and it is sealed with
+  Fernet using a key derived from `APP_SECRET_KEY` before storage. When MFA is
+  enabled, `/auth/token` returns `401` with `X-Yasmina-MFA-Required: true` until
+  a valid `totp_code` is supplied; the accepted time step is persisted so a code
+  cannot be replayed. `/auth/mfa/disable` requires both the password and a live
+  code.
+- **Audit logging.** Login success/failure (including failures caused by a bad
+  TOTP code), logout, logout-all, user creation, password change, reset request
+  and completion, MFA enable/disable and the token-retention job append
+  hash-chained entries to `audit_logs`. Raw passwords, reset tokens and TOTP
+  secrets are never written to the audit payload.
+
+```powershell
+# expire old rows: expired refresh tokens, stale revoked sessions, expired JTIs
+python -m src.admin purge-auth-tokens --dry-run --json
+python -m src.admin purge-auth-tokens --retention-days 14
+```
 
 The matching route retrieves candidates directly from `catalog_articles` using
 pgvector cosine distance. The workflow route runs the LangGraph state machine;
@@ -478,7 +527,7 @@ cron entry keeps both discovery and parsing moving.
 python -m pytest -q
 ```
 
-The current 323 tests pass (plus seventeen optional tests — fourteen live
+The current 337 tests pass (plus twenty-three optional tests — twenty live
 PostgreSQL tests, two MinIO/ClamAV smoke tests and the DeepSeek eval — that are
 skipped unless their environment variables are set) and cover normalizers, settings, strict schemas,
 ORM metadata, pgvector/HNSW configuration, GAEB parsing/validation, PDF table
@@ -487,7 +536,9 @@ triage/enrichment and checkpointing, Ed25519 approval, offer
 persistence/idempotency, gapless invoice and credit-note numbering, multi-rate
 VAT, KoSIT Schematron validation, embedded-font PDF/A-3 invoices, the
 append-only invoice event chain, billing/payment/credit API routes, Argon2id
-users, refresh-token rotation/reuse detection, JWT blocklisting, four-eyes
+users, RFC 6238 TOTP vectors, MFA enrolment/login challenges, password reset
+tokens and token retention, refresh-token rotation/reuse detection, JWT
+blocklisting, four-eyes
 approval, tender/offer ownership, rate limiting, catalogue CSV/JSON seeding and
 vector upserts, deepseek extraction evals, durable ingestion outbox
 claiming/retry,
@@ -500,9 +551,9 @@ tender persistence, e-invoicing and offline migration rendering.
 
 ```powershell
 # optional live PostgreSQL offer/checkpoint, outbox/lock, invoice, identity,
-# catalogue and billing tests (after alembic upgrade head)
+# catalogue, billing and account-lifecycle tests (after alembic upgrade head)
 $env:YASMINA_TEST_DATABASE_URL = "postgresql+asyncpg://yasmina:yasmina@localhost:5432/yasmina"
-python -m pytest -q tests/integration/test_offer_workflow_db.py tests/integration/test_ingestion_outbox_db.py tests/integration/test_invoices_db.py tests/integration/test_identity_db.py tests/integration/test_catalog_seed_db.py tests/integration/test_billing_db.py
+python -m pytest -q tests/integration/test_offer_workflow_db.py tests/integration/test_ingestion_outbox_db.py tests/integration/test_invoices_db.py tests/integration/test_identity_db.py tests/integration/test_catalog_seed_db.py tests/integration/test_billing_db.py tests/integration/test_account_lifecycle_db.py
 # with local MinIO/ClamAV:
 $env:YASMINA_TEST_SERVICES = "1"
 python -m pytest -q tests/integration/test_services_smoke.py
@@ -714,7 +765,8 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | Group | Examples |
 |---|---|
 | Application | `APP_ENV`, `APP_DEBUG`, `APP_SECRET_KEY`, `APP_TIMEZONE` |
-| API / JWT | `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `JWT_EXPIRY_MINUTES`, `REFRESH_TOKEN_EXPIRY_DAYS`, `API_ADMIN_*`, `PASSWORD_MIN_LENGTH`, `PASSWORD_HASH_ALGORITHM`, `MAX_UPLOAD_SIZE_MB` |
+| API / JWT | `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `JWT_EXPIRY_MINUTES`, `REFRESH_TOKEN_EXPIRY_DAYS`, `API_ADMIN_*`, `PASSWORD_MIN_LENGTH`, `PASSWORD_HASH_ALGORITHM`, `PASSWORD_RESET_TOKEN_EXPIRY_MINUTES`, `MAX_UPLOAD_SIZE_MB` |
+| MFA / retention | `MFA_ISSUER`, `MFA_TOTP_INTERVAL_SECONDS`, `MFA_TOTP_DIGITS`, `MFA_TOTP_WINDOW`, `AUTH_TOKEN_RETENTION_DAYS` |
 | Rate limiting | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_AUTH_PER_MINUTE`, `RATE_LIMIT_UPLOAD_PER_MINUTE`, `RATE_LIMIT_BUSINESS_PER_MINUTE` |
 | Invoice seller | `COMPANY_NAME`, `COMPANY_STREET`, `COMPANY_CITY`, `COMPANY_POSTAL_CODE`, `COMPANY_VAT_ID`, `COMPANY_IBAN`, `COMPANY_EMAIL`, `COMPANY_PHONE` |
 | PostgreSQL | `POSTGRES_*`, optional `DATABASE_URL`, `DATABASE_ECHO` |
@@ -758,8 +810,11 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - **InvoiceEvent** — append-only, hash-chained lifecycle log (`ISSUED`,
   `PAYMENT_RECORDED`, `CREDIT_ISSUED`, `STATUS_CHANGED`, `CANCELLED`) with
   sequence, actor, amount, reference and payload.
-- **User / RefreshToken / TokenBlocklist** — Argon2id identities, hashed rotating
-  refresh sessions and revoked access-token JTIs.
+- **User / RefreshToken / TokenBlocklist** — Argon2id identities with optional
+  TOTP MFA (sealed secret, enrolment timestamp, last accepted step), hashed
+  rotating refresh sessions and revoked access-token JTIs.
+- **PasswordResetToken** — single-use, SHA-256-hashed reset token with expiry,
+  issuer, requester IP and a `used_at` stamp.
 - **AuditLog** — append-only, hash-chained compliance trail.
 
 ### Database guarantees
@@ -780,6 +835,8 @@ secrets in production, and verifies that Argon2id password hashing is available.
 | Billing event log | append-only `invoice_events` + SHA-256 `prev_hash` chain |
 | Event immutability | `BEFORE UPDATE/DELETE/TRUNCATE` triggers raising an exception |
 | Identity | unique username/email + Argon2id password hashes |
+| MFA replay guard | `mfa_last_step` monotonic check on every accepted TOTP code |
+| Password reset | single-use SHA-256 token hashes + expiry + `used_at` |
 | Refresh sessions | SHA-256 token hashes, rotation families, reuse detection |
 | Access revocation | `token_blocklist` JTI rows checked on every authenticated request |
 | Vector search | `vector(1024)` + HNSW `vector_cosine_ops` (`m=16`, `ef_construction=64`) |
@@ -799,6 +856,14 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - Refresh tokens are opaque random values stored only as SHA-256 hashes. Every
   refresh rotates the token within a family; reuse of a rotated token revokes
   the complete family.
+- TOTP secrets are sealed with Fernet under a key derived from `APP_SECRET_KEY`
+  before they touch the database, and an accepted time step is recorded per
+  account so a captured code cannot be replayed. A lost `APP_SECRET_KEY` forces
+  re-enrolment rather than silently disabling the second factor.
+- Password reset tokens are 256-bit random values stored only as SHA-256 hashes,
+  expire after 15 minutes by default, are single-use and invalidate older
+  outstanding tokens for the same account. They are never returned by the
+  self-service endpoint and never written to logs or audit payloads.
 - The four-eyes rule blocks the offer/tender owner (or signed `approved_by`
   matching the owner) from approving the offer. Sales users can only access
   tenders and offers they own; admins and viewers retain the documented wider
@@ -833,6 +898,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P4.5 — Argon2id users, short-lived JWTs, rotating refresh-token families, JTI blocklist, four-eyes approval, ownership-scoped APIs and token-bucket rate limiting
 - [x] P4.6 — CI real-service containers (PostgreSQL/pgvector, MinIO, ClamAV), ruff/mypy quality gates, pgvector catalogue seeding CLI and DeepSeek extraction evals
 - [x] P4.7 — embedded-font PDF/A-3 with a veraPDF CI gate, `GET /invoices` + payment and credit-note REST endpoints, gapless `GS-YYYY-XXXX` credit notes and a GoBD append-only hash-chained invoice event log
+- [x] P4.8 — password change/reset flows, TOTP MFA with replay protection, logout-all, identity audit events and a refresh-token/token-blocklist retention CLI
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

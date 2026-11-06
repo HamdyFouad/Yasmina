@@ -24,6 +24,7 @@ from src.repositories.offer_repository import OfferRepository
 from src.repositories.supplier_quote_repository import SupplierQuoteRepository
 from src.repositories.tender_repository import TenderRepository
 from src.repositories.user_repository import (
+    PasswordResetTokenRepository,
     RefreshTokenRepository,
     TokenBlocklistRepository,
     UserRepository,
@@ -44,6 +45,7 @@ __all__ = [
     "get_n8n_client",
     "get_object_storage",
     "get_offer_repository",
+    "get_password_reset_repository",
     "get_principal",
     "get_refresh_token_repository",
     "get_session",
@@ -213,3 +215,9 @@ def get_token_blocklist_repository(
     session: AsyncSession = Depends(get_session),
 ) -> TokenBlocklistRepository:
     return TokenBlocklistRepository(session)
+
+
+def get_password_reset_repository(
+    session: AsyncSession = Depends(get_session),
+) -> PasswordResetTokenRepository:
+    return PasswordResetTokenRepository(session)

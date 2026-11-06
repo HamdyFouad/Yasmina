@@ -22,7 +22,12 @@ __all__ = [
     "InvoiceRequestPayload",
     "LogoutRequest",
     "MatchPayload",
+    "MfaCodePayload",
+    "MfaDisablePayload",
     "OfferRequestPayload",
+    "PasswordChangePayload",
+    "PasswordResetPayload",
+    "PasswordResetRequestPayload",
     "PricePayload",
     "RFQDispatchPayload",
     "RFQSupplier",
@@ -40,6 +45,7 @@ __all__ = [
 class TokenRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=256)
+    totp_code: str | None = Field(default=None, min_length=6, max_length=16)
 
 
 class RefreshTokenRequest(BaseModel):
@@ -48,6 +54,28 @@ class RefreshTokenRequest(BaseModel):
 
 class LogoutRequest(BaseModel):
     refresh_token: str | None = Field(default=None, max_length=512)
+
+
+class PasswordChangePayload(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=1, max_length=256)
+
+
+class PasswordResetRequestPayload(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+
+
+class PasswordResetPayload(BaseModel):
+    token: str = Field(min_length=20, max_length=512)
+    new_password: str = Field(min_length=1, max_length=256)
+
+
+class MfaCodePayload(BaseModel):
+    code: str = Field(min_length=6, max_length=16)
+
+
+class MfaDisablePayload(MfaCodePayload):
+    password: str = Field(min_length=1, max_length=256)
 
 
 class UserCreatePayload(BaseModel):

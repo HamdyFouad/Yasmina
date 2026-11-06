@@ -32,6 +32,7 @@ EXPECTED_TABLES = {
     "users",
     "refresh_tokens",
     "token_blocklist",
+    "password_reset_tokens",
     "credit_note_number_sequences",
     "credit_notes",
     "invoice_events",
@@ -223,8 +224,26 @@ def test_identity_and_refresh_token_tables_shape() -> None:
     }
     assert blocklist.c.jti.primary_key is True
     assert "ix_token_blocklist_expires" in {index.name for index in blocklist.indexes}
+    assert users.c.mfa_enabled.nullable is False
+    assert users.c.mfa_secret.type.length == 512
+    assert "ck_users_mfa_last_step_non_negative" in {constraint.name for constraint in users.constraints}
     assert tenders.c.owner.nullable is True
     assert "ix_tenders_owner" in {index.name for index in tenders.indexes}
+
+
+def test_password_reset_token_shape() -> None:
+    tokens = Base.metadata.tables["password_reset_tokens"]
+
+    assert tokens.c.token_hash.unique is True
+    assert tokens.c.token_hash.type.length == 64
+    assert tokens.c.used_at.nullable is True
+    assert "ck_password_reset_tokens_password_reset_token_hash_format" in {
+        constraint.name for constraint in tokens.constraints
+    }
+    assert {index.name for index in tokens.indexes} >= {
+        "ix_password_reset_tokens_user_id",
+        "ix_password_reset_tokens_expires",
+    }
 
 
 def test_billing_event_and_credit_note_shape() -> None:
