@@ -133,6 +133,8 @@ module = [
     "sentence_transformers.*",
     "reportlab",
     "reportlab.*",
+    "langchain_openai",
+    "langchain_openai.*",
 ]
 ignore_missing_imports = true
 

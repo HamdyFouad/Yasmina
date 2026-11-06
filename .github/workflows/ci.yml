@@ -69,8 +69,9 @@ jobs:
 
       - name: veraPDF PDF/A-3 conformance
         run: |
-          docker run --rm -v "$PWD:/data" verapdf/cli:latest -f 3b /data/sample-invoice.pdf > verapdf-report.xml
+          docker run --rm -v "$PWD:/data" verapdf/cli:latest -f 3b /data/sample-invoice.pdf > verapdf-report.xml || true
           grep -q 'isCompliant="true"' verapdf-report.xml
+          grep -q 'PDF/A-3b' verapdf-report.xml
           echo "PDF/A-3b conformance verified."
 
       - name: Compile sources
@@ -139,13 +140,15 @@ jobs:
 
       - name: Start MinIO
         # GitHub service containers cannot pass a command; MinIO requires
-        # `server /data`, so start the container explicitly.
+        # `server /data`, so start the container explicitly. Upstream stopped
+        # serving anonymous Docker Hub pulls, so the pinned pgsty mirror
+        # (same as docker-compose.yml) is used instead.
         run: |
           docker run -d --name yasmina-minio \
             -p 9000:9000 \
             -e MINIO_ROOT_USER="$MINIO_ACCESS_KEY" \
             -e MINIO_ROOT_PASSWORD="$MINIO_SECRET_KEY" \
-            minio/minio:latest server /data
+            pgsty/minio:RELEASE.2026-08-04T00-00-00Z server /data
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then
               exit 0

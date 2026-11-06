@@ -696,7 +696,8 @@ GitHub Actions (`.github/workflows/ci.yml`) has two gates:
   against it, failing the build unless the report contains
   `isCompliant="true"` for the PDF/A-3b profile.
 - **tests** — Python 3.11 and 3.12 jobs with `pgvector/pgvector:pg16` and
-  ClamAV services plus a MinIO server container. The workflow applies Alembic,
+  ClamAV services plus a `pgsty/minio` server container (MinIO no longer serves
+  anonymous Docker Hub pulls). The workflow applies Alembic,
   creates the MinIO bucket, runs the real-service preflight, then runs the full
   pytest suite with `YASMINA_TEST_DATABASE_URL` so the live PostgreSQL tests
   execute.

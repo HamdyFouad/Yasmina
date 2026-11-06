@@ -351,13 +351,17 @@ reconciled with the authoritative spec later.
   under the strict configuration in `pyproject.toml`. FastAPI's intentional
   `Depends`/`File`/`Query` calls in argument defaults are exempted from B008;
   external packages without type metadata (lxml, facturx, saxonche, docling,
-  asyncpg, sentence-transformers) have explicit mypy import overrides rather
-  than broad `Any` suppressions.
+  asyncpg, sentence-transformers, reportlab, langchain-openai) have explicit
+  mypy import overrides rather than broad `Any` suppressions. langchain-openai is
+  only imported lazily inside `DeepSeekClient`, so it stays an optional `ai`
+  extra while the type checker tolerates its absence.
 - The test job uses `pgvector/pgvector:pg16` and `clamav/clamav:stable` services
-  plus a MinIO server container. It applies Alembic, creates the MinIO bucket,
-  runs `python -m src.preflight --skip n8n` against the real services and then
-  the full pytest suite with `YASMINA_TEST_DATABASE_URL`, so the live DB tests
-  are mandatory in CI.
+  plus a MinIO server container. Upstream MinIO stopped serving anonymous Docker
+  Hub pulls, so both CI and `docker-compose.yml` use the pinned `pgsty/minio`
+  mirror of the official release binaries. The job applies Alembic, creates the
+  MinIO bucket, runs `python -m src.preflight --skip n8n` against the real
+  services and then the full pytest suite with `YASMINA_TEST_DATABASE_URL`, so
+  the live DB tests are mandatory in CI.
 - Catalogue files accept CSV/TSV/JSON with at least `article_number` and
   `description`; `supplier` may come from a column or `--supplier`. German
   material/colour/size/unit/package strings pass through the same normalizers as
