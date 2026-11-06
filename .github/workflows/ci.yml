@@ -185,21 +185,19 @@ jobs:
         run: python -m src.preflight --skip n8n
 
       - name: Full test suite (live database included)
-        # Keep the pytest output on the runner, but also publish a failure
-        # summary into the check run so a red build is diagnosable without
-        # downloading the full job log.
+        # Keep the pytest output on the runner, but also surface failures as
+        # check-run annotations so a red build is diagnosable without access to
+        # the full job log.
         run: |
           set +e
           python -m pytest -q --tb=short > pytest.log 2>&1
           status=$?
           tail -n 40 pytest.log
           if [ "$status" -ne 0 ]; then
-            {
-              echo "### Pytest failures"
-              echo '```text'
-              tail -n 150 pytest.log
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
+            failures=$(grep -E '^(FAILED|ERROR) ' pytest.log | head -n 25 | awk '{printf "%s%%0A", $0}')
+            echo "::error title=Pytest failures::${failures:-pytest exited non-zero}"
+            log_tail=$(tail -n 25 pytest.log | awk '{printf "%s%%0A", $0}')
+            echo "::error title=Pytest log tail::${log_tail}"
           fi
           exit "$status"
 
