@@ -47,7 +47,11 @@ def test_report_failure_detection() -> None:
     assert report.to_dict()["ok"] is False
 
 
-def test_production_requires_hitl_guardrails() -> None:
+def test_production_requires_hitl_guardrails(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # CI exports ED25519_APPROVAL_PUBLIC_KEY for the whole workflow, and
+    # pydantic-settings reads ambient environment variables even with
+    # ``_env_file=None``. Clear it so the missing-key case is deterministic.
+    monkeypatch.delenv("ED25519_APPROVAL_PUBLIC_KEY", raising=False)
     production_secrets = {
         "app_secret_key": "a-real-secret",
         "jwt_secret_key": "a-real-jwt-secret-with-32-bytes-ok",
