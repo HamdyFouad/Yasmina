@@ -7,6 +7,13 @@ from src.repositories.ingestion_repository import (
     ScraperStateRepository,
     TenderIngestionJobRepository,
 )
+from src.repositories.invoice_repository import (
+    InvoiceNumberExhaustedError,
+    InvoiceRepository,
+    InvoiceRepositoryConflict,
+    InvoiceRepositoryError,
+    StoredInvoice,
+)
 from src.repositories.offer_repository import (
     OfferRepository,
     OfferRepositoryConflict,
@@ -30,10 +37,15 @@ from src.repositories.worker_run_repository import (
 
 __all__ = [
     "IngestionJobView",
+    "InvoiceNumberExhaustedError",
+    "InvoiceRepository",
+    "InvoiceRepositoryConflict",
+    "InvoiceRepositoryError",
     "OfferRepository",
     "OfferRepositoryConflict",
     "OfferRepositoryError",
     "ScraperStateRepository",
+    "StoredInvoice",
     "StoredOffer",
     "StoredTender",
     "TenderIngestionJobRepository",

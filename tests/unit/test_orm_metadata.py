@@ -25,6 +25,10 @@ EXPECTED_TABLES = {
     "tender_ingestion_jobs",
     "scraper_states",
     "worker_runs",
+    "invoice_number_sequences",
+    "invoices",
+    "invoice_lines",
+    "invoice_vat_splits",
 }
 
 
@@ -163,4 +167,37 @@ def test_worker_run_history_shape() -> None:
     assert runs.c.duration_ms.nullable is True
     assert {"ix_worker_runs_started_at", "ix_worker_runs_type_status"} == {
         index.name for index in runs.indexes
+    }
+
+
+def test_invoice_and_vat_tables_shape() -> None:
+    invoices = Base.metadata.tables["invoices"]
+    lines = Base.metadata.tables["invoice_lines"]
+    splits = Base.metadata.tables["invoice_vat_splits"]
+    sequences = Base.metadata.tables["invoice_number_sequences"]
+
+    assert invoices.c.offer_id.unique is True
+    assert invoices.c.vat_breakdown.nullable is False
+    assert invoices.c.status.nullable is False
+    assert {
+        "ck_invoices_invoice_number_format",
+        "ck_invoices_totals_consistent",
+        "ck_invoices_payment_plus_credit_bounded",
+    } <= {constraint.name for constraint in invoices.constraints}
+    assert {"uq_invoice_year_sequence"} <= {
+        constraint.name for constraint in invoices.constraints
+    }
+    assert lines.c.vat_rate.nullable is False
+    assert "uq_invoice_line" in {constraint.name for constraint in lines.constraints}
+    assert "uq_invoice_vat_rate" in {constraint.name for constraint in splits.constraints}
+    assert sequences.c.last_value.nullable is False
+    assert sequences.c.year.primary_key is True
+
+
+def test_customer_offer_line_has_vat_rate() -> None:
+    lines = Base.metadata.tables["customer_offer_lines"]
+
+    assert lines.c.vat_rate.nullable is False
+    assert "ck_customer_offer_lines_vat_rate_range" in {
+        constraint.name for constraint in lines.constraints
     }

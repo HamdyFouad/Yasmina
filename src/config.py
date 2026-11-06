@@ -52,14 +52,15 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = Field(default=25, ge=1, le=200)
 
     # --- Company / invoice seller -----------------------------------------
-    company_name: str = "Yasmina GmbH"
-    company_street: str | None = None
-    company_city: str | None = None
-    company_postal_code: str | None = None
+    company_name: str = "BayerClean"
+    company_street: str | None = "Reithmayrstraße 52"
+    company_city: str | None = "Regensburg"
+    company_postal_code: str | None = "93055"
     company_country_code: str = "DE"
     company_vat_id: str | None = None
     company_iban: str | None = None
-    company_email: str | None = None
+    company_email: str | None = "rechnung@bayerclean.de"
+    company_phone: str | None = "+49 941 123456"
 
     # --- Database ----------------------------------------------------------
     postgres_user: str = "yasmina"

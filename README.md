@@ -6,14 +6,16 @@
 cleaning & hygiene supplies sector** — paper towels, nitrile/latex gloves, and
 waste bags across all thicknesses, volumes and colour standards.
 
-> **Status:** P0 foundation, P1 core, durable PostgreSQL tender/offer
+> **Status:** P0 foundation, P1 core, durable PostgreSQL tender/offer/invoice
 > persistence, MinIO object storage, ClamAV-scanned/audited uploads, Ed25519
-> approval with automatic XRechnung/ZUGFeRD generation, ERPNext quotation
-> sync, HMAC-authenticated n8n RFQ/quote flows, compliant portal scrapers with
-> attachment harvesting and durable ingestion outbox, live DeepSeek/Docling
-> paths, deterministic unit conversion, PostgreSQL LangGraph checkpoints and
-> the production-hardened scrape/ingestion worker (advisory locks, graceful
-> shutdown, run metrics and Telegram alerts) are complete.
+> approval with automatic XRechnung/ZUGFeRD generation, KoSIT Schematron
+> validation, gapless `INV-YYYY-XXXX` numbering, branded PDF/A-3 carrier
+> invoices with multi-rate VAT, ERPNext quotation sync, HMAC-authenticated n8n
+> RFQ/quote flows, compliant portal scrapers with attachment harvesting and
+> durable ingestion outbox, live DeepSeek/Docling paths, deterministic unit
+> conversion, PostgreSQL LangGraph checkpoints and the production-hardened
+> scrape/ingestion worker (advisory locks, graceful shutdown, run metrics and
+> Telegram alerts) are complete.
 
 ---
 
@@ -77,6 +79,7 @@ src/
   repositories/
     tender_repository.py # PostgreSQL tender/position persistence
     offer_repository.py  # offer lines, artifacts and ERPNext names
+    invoice_repository.py # gapless invoice numbers, VAT splits, payment/credit status
     ingestion_repository.py # outbox jobs + scraper watermarks
     worker_run_repository.py # run history for scrapes and ingestion batches
     integration_repository.py # durable idempotency-key ledger
@@ -117,9 +120,11 @@ src/
   generators/
     invoice_models.py    # shared invoice/party/line models
     leitweg.py           # Leitweg-ID format + MOD-97-10 validation
+    pdf_template.py      # branded PDF/A-3 carrier invoice layout
+    schematron/          # vendored KoSIT EN16931 + XRechnung CIUS rules
     zugferd_generator.py # Factur-X/ZUGFeRD 2.2 CII + PDF embedding
-    xrechnung_generator.py # XRechnung 3.0 UBL XML
-alembic/                 # async migrations (0001 schema, 0002 audit guard, 0003 idempotency, 0004 offers/checkpoints, 0005 ingestion outbox, 0006 worker runs)
+    xrechnung_generator.py # XRechnung 3.0 UBL XML + KoSIT validation
+alembic/                 # async migrations (0001 schema, 0002 audit guard, 0003 idempotency, 0004 offers/checkpoints, 0005 ingestion outbox, 0006 worker runs, 0007 invoices/VAT)
 docker/                  # PostgreSQL bootstrap (pgvector, n8n database)
 docs/
   DETAILED_SPEC.md       # authoritative engineering specification
@@ -144,7 +149,7 @@ tests/                   # unit tests (no database required)
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev,parsing,ai]"
+python -m pip install -e ".[dev,parsing,ai,e-invoicing]"
 ```
 
 `parsing` installs Docling for live PDF table extraction; `ai` installs the
@@ -259,8 +264,10 @@ audit log. Raw uploads are stored in MinIO, while tenders and positions are
 persisted in PostgreSQL through `TenderRepository`.
 
 Approving an offer with an `invoice` block generates both XRechnung XML and
-ZUGFeRD PDF and stores them under `offers/{offer_number}/` in MinIO. The download
-endpoint serves `format=xrechnung|zugferd`. If ERPNext credentials are configured,
+ZUGFeRD PDF and stores them under `offers/{offer_number}/` in MinIO. The invoice
+row receives a transactionally allocated `INV-YYYY-XXXX` number, line-level VAT
+rates, persisted VAT splits and payment/credit status. The download endpoint
+serves `format=xrechnung|zugferd`. If ERPNext credentials are configured,
 approval also creates (or returns) the matching ERPNext Quotation and stores its
 name on the offer.
 
@@ -411,24 +418,25 @@ cron entry keeps both discovery and parsing moving.
 python -m pytest -q
 ```
 
-The current 298 tests pass (plus six optional PostgreSQL-only tests that are
+The current 306 tests pass (plus nine optional PostgreSQL-only tests that are
 skipped unless `YASMINA_TEST_DATABASE_URL` is set) and cover normalizers,
 settings, strict schemas, ORM metadata, pgvector/HNSW configuration, GAEB
 parsing/validation, PDF table extraction, pricing, unit conversion, hybrid
 matching, LangGraph triage/enrichment and checkpointing, Ed25519 approval,
-offer persistence/idempotency, durable ingestion outbox claiming/retry,
-attachment harvesting and watermarking, advisory locking, signal-driven
-shutdown, worker run metrics, Telegram delivery, ClamAV scanning and audit
-chaining, MinIO object flows, ERPNext retries/payload mapping, n8n HMAC
-callbacks and idempotency, portal robots/rate/UA/artifact handling,
-CPV-filtered HTML extraction, cron scheduling, FastAPI business routes, RBAC,
-tender persistence, e-invoicing and offline migration rendering.
+offer persistence/idempotency, gapless invoice numbering, multi-rate VAT,
+KoSIT Schematron validation, branded PDF/A-3 invoices, durable ingestion
+outbox claiming/retry, attachment harvesting and watermarking, advisory
+locking, signal-driven shutdown, worker run metrics, Telegram delivery, ClamAV
+scanning and audit chaining, MinIO object flows, ERPNext retries/payload
+mapping, n8n HMAC callbacks and idempotency, portal robots/rate/UA/artifact
+handling, CPV-filtered HTML extraction, cron scheduling, FastAPI business
+routes, RBAC, tender persistence, e-invoicing and offline migration rendering.
 
 ```powershell
-# optional live PostgreSQL offer/checkpoint, outbox/lock and run-history tests
+# optional live PostgreSQL offer/checkpoint, outbox/lock, run-history and invoice tests
 # (after alembic upgrade head)
 $env:YASMINA_TEST_DATABASE_URL = "postgresql+asyncpg://yasmina:yasmina@localhost:5432/yasmina"
-python -m pytest -q tests/integration/test_offer_workflow_db.py tests/integration/test_ingestion_outbox_db.py
+python -m pytest -q tests/integration/test_offer_workflow_db.py tests/integration/test_ingestion_outbox_db.py tests/integration/test_invoices_db.py
 ```
 
 ### Parsing, pricing and matching
@@ -487,7 +495,7 @@ from src.generators import Invoice, InvoiceLine, InvoiceParty
 from src.generators import XRechnungGenerator, ZUGFeRDGenerator
 
 invoice = Invoice(
-    invoice_number="INV-2026-001",
+    invoice_number="INV-2026-0001",
     issue_date=date(2026, 1, 15),
     due_date=date(2026, 2, 14),
     seller=seller, buyer=buyer,
@@ -502,14 +510,32 @@ XRechnungGenerator().generate(invoice, "invoice.xml")
 ZUGFeRDGenerator().generate(invoice, "invoice.pdf")
 ```
 
-- XRechnung 3.0 is emitted as UBL 2.1 with the XRechnung customization ID.
+- XRechnung 3.0 is emitted as UBL 2.1 with the XRechnung customization ID and
+  validated against **both** the official EN16931 rules and the KoSIT
+  XRechnung 3.0.2 CIUS Schematron (vendored under
+  `src/generators/schematron/kosit/`). Validation runs locally through Saxon-HE;
+  fatal/error findings abort generation instead of producing a merely
+  XSD-valid document.
 - Leitweg-ID validation enforces 5–46 characters, segment structure and the
   MOD-97-10 check number.
-- ZUGFeRD/Factur-X embeds valid EN 16931 CII XML in a PDF. Pass `base_pdf=` with
-  a real PDF/A-3 document for production; the default blank PDF is a test
-  fallback, not a certified PDF/A-3 renderer.
+- Invoice numbers are allocated by `InvoiceRepository` from a row-locked yearly
+  counter in the same transaction as the invoice insert. A failed insert rolls
+  the counter back, so `INV-YYYY-0001`, `0002`, … remain gapless. The counter
+  refuses to exceed `9999`.
+- `invoices` stores the seller/buyer address blocks, line items, multi-rate VAT
+  splits (19 %, 7 %, 0 %), `paid_amount`, `credited_amount`, credit-note number
+  and status (`ISSUED`, `PARTIALLY_PAID`, `PAID`, `OVERDUE`,
+  `PARTIALLY_CREDITED`, `CREDITED`, `CANCELLED`).
+- ZUGFeRD/Factur-X embeds valid EN 16931 CII XML in a dynamically rendered
+  branded PDF/A-3 carrier. The layout uses BayerClean, Reithmayrstraße 52,
+  93055 Regensburg, an address block, line table, VAT split and totals; it adds
+  PDF/A XMP identification and an sRGB output intent before Factur-X embedding.
+  Pass `base_pdf=` to supply an externally certified PDF/A-3 carrier instead.
 - The CII XML is XSD-validated by the `factur-x` package; the UBL invoice is
-  validated against the UBL 2.1 schema in tests.
+  checked against UBL 2.1 plus KoSIT Schematron in the test suite.
+- `saxonche` is required for production XRechnung validation and is part of the
+  `e-invoicing` extra. `XRechnungGenerator.build(validate_schematron=False)` is
+  available only for controlled offline diagnostics.
 
 ### Agent workflow and HITL approval
 
@@ -562,7 +588,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 |---|---|
 | Application | `APP_ENV`, `APP_DEBUG`, `APP_SECRET_KEY`, `APP_TIMEZONE` |
 | API / JWT | `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `JWT_EXPIRY_MINUTES`, `API_ADMIN_*`, `MAX_UPLOAD_SIZE_MB` |
-| Invoice seller | `COMPANY_NAME`, `COMPANY_STREET`, `COMPANY_CITY`, `COMPANY_POSTAL_CODE`, `COMPANY_VAT_ID`, `COMPANY_IBAN` |
+| Invoice seller | `COMPANY_NAME`, `COMPANY_STREET`, `COMPANY_CITY`, `COMPANY_POSTAL_CODE`, `COMPANY_VAT_ID`, `COMPANY_IBAN`, `COMPANY_EMAIL`, `COMPANY_PHONE` |
 | PostgreSQL | `POSTGRES_*`, optional `DATABASE_URL`, `DATABASE_ECHO` |
 | MinIO | `MINIO_*` |
 | ClamAV | `CLAMAV_HOST`, `CLAMAV_PORT`, `CLAMAV_TIMEOUT_SECONDS` |
@@ -594,6 +620,9 @@ the default application, JWT, API-admin or n8n HMAC secrets.
   cosine index for semantic matching.
 - **WorkerRun** — start/finish, duration, item/error counts and details for every
   scrape portal run and ingestion batch.
+- **Invoice / InvoiceLine / InvoiceVatSplit** — legally issued invoice linked to
+  one offer, gapless yearly `INV-YYYY-XXXX` number, line-level VAT rates,
+  persisted VAT buckets, payment/credit amounts and artifact keys.
 - **AuditLog** — append-only, hash-chained compliance trail.
 
 ### Database guarantees
@@ -608,6 +637,8 @@ the default application, JWT, API-admin or n8n HMAC secrets.
 | Workflow durability | PostgreSQL checkpoint header/blob/write tables |
 | Portal serialisation | PostgreSQL session-level advisory locks per portal |
 | Worker observability | `worker_runs` history + `/healthz/worker` snapshot |
+| Invoice numbering | row-locked yearly counter updated in the invoice transaction |
+| Multi-rate VAT | per-line rate + `invoice_vat_splits` rows and JSONB snapshot |
 | Vector search | `vector(1024)` + HNSW `vector_cosine_ops` (`m=16`, `ef_construction=64`) |
 
 ---
@@ -640,6 +671,7 @@ the default application, JWT, API-admin or n8n HMAC secrets.
 - [x] P4.1 — durable offer persistence, idempotent approvals, owner-aware offer API and PostgreSQL LangGraph checkpoints
 - [x] P4.2 — portal attachment download to MinIO, durable ingestion outbox, watermark-based incremental scraping and queued DeepSeek/Docling processing
 - [x] P4.3 — PostgreSQL advisory portal locks, SIGINT/SIGTERM graceful shutdown, persisted worker run history, `/healthz/worker` metrics and Telegram failure/dead-letter alerts
+- [x] P4.4 — invoice ORM with gapless `INV-YYYY-XXXX` numbering, KoSIT Schematron validation, branded PDF/A-3 carrier invoices and multi-rate VAT records
 - [ ] P1 — refresh tokens and advanced RBAC
 - [ ] P2 — Telegram notifier and production ERPNext/n8n workflow templates
 

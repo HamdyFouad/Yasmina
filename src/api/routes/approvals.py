@@ -13,6 +13,7 @@ from src.api.deps import (
     get_app_settings,
     get_audit_service,
     get_erpnext_client,
+    get_invoice_repository,
     get_object_storage,
     get_offer_repository,
     get_session,
@@ -30,6 +31,7 @@ from src.integrations.minio_client import (
 )
 from src.models.enums import AuditEventType
 from src.models.schemas import CustomerOffer
+from src.repositories.invoice_repository import InvoiceRepository
 from src.repositories.offer_repository import (
     OfferRepository,
     OfferRepositoryConflict,
@@ -82,6 +84,7 @@ async def approve_offer_endpoint(
     storage: MinioObjectStorage = Depends(get_object_storage),
     erpnext: ERPNextClient = Depends(get_erpnext_client),
     repository: OfferRepository = Depends(get_offer_repository),
+    invoices: InvoiceRepository = Depends(get_invoice_repository),
     audit: AuditService = Depends(get_audit_service),
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_roles(Role.APPROVER, Role.ADMIN)),
@@ -166,6 +169,7 @@ async def approve_offer_endpoint(
                 settings,
                 payload.invoice,
                 storage,
+                invoice_repository=invoices,
             )
         except (InvoiceWiringError, ObjectStorageError) as exc:
             raise HTTPException(

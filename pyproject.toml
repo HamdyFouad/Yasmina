@@ -29,6 +29,7 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "cryptography>=42",
     "langgraph>=0.2",
+    "pypdf>=5.0",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +44,7 @@ ai = [
 e-invoicing = [
     "factur-x>=3.0",
     "lxml>=5.2",
+    "saxonche>=12,<14",
 ]
 dev = [
     "pytest>=8.2",
@@ -53,6 +55,7 @@ dev = [
     "pygaeb",
     "langgraph>=0.2",
     "factur-x>=3.0",
+    "saxonche>=12,<14",
 ]
 
 [project.urls]

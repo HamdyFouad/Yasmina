@@ -347,6 +347,7 @@ class CustomerOfferLine(YasminaSchema):
     margin_rate: MarginRate
     unit_price_net: Money
     total_net: Money2
+    vat_rate: VatRate = Decimal("0.19")
 
     @model_validator(mode="after")
     def _validate_selling_price(self) -> Self:
@@ -426,8 +427,17 @@ class CustomerOffer(YasminaSchema):
             raise ValueError(f"total_net {self.total_net} does not equal sum of lines {q2(line_sum)}")
 
         expected_vat = q2(self.total_net * self.vat_rate)
-        if self.total_vat != expected_vat:
-            raise ValueError(f"total_vat {self.total_vat} does not equal net*vat_rate = {expected_vat}")
+        by_rate: dict[Decimal, Decimal] = {}
+        for line in self.lines:
+            by_rate[line.vat_rate] = by_rate.get(line.vat_rate, Decimal("0.00")) + line.total_net
+        expected_vat_by_line = q2(
+            sum((q2(base * rate) for rate, base in by_rate.items()), start=Decimal("0.00"))
+        )
+        if self.total_vat != expected_vat_by_line:
+            raise ValueError(
+                f"total_vat {self.total_vat} does not equal the line-rate split "
+                f"{expected_vat_by_line} (global rate would be {expected_vat})"
+            )
 
         expected_gross = q2(self.total_net + self.total_vat)
         if self.total_gross != expected_gross:

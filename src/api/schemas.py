@@ -99,6 +99,7 @@ class InvoiceBuyerPayload(BaseModel):
     postal_code: str = Field(min_length=1, max_length=32)
     country_code: str = Field(default="DE", min_length=2, max_length=2)
     vat_id: str | None = Field(default=None, max_length=32)
+    email: EmailStr | None = None
 
 
 class InvoiceRequestPayload(BaseModel):

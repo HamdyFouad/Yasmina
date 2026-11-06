@@ -15,6 +15,7 @@ __all__ = [
     "Currency",
     "CustomerOfferStatus",
     "GloveSize",
+    "InvoiceStatus",
     "MaterialType",
     "ProcurementProcedure",
     "StandardizedColor",
@@ -169,9 +170,25 @@ class AuditEventType(StrEnum):
     OFFER_PRICED = "OFFER_PRICED"
     OFFER_APPROVED = "OFFER_APPROVED"
     OFFER_REJECTED = "OFFER_REJECTED"
+    INVOICE_ISSUED = "INVOICE_ISSUED"
+    INVOICE_PAYMENT_RECORDED = "INVOICE_PAYMENT_RECORDED"
+    INVOICE_CREDITED = "INVOICE_CREDITED"
     ERP_QUOTATION_CREATED = "ERP_QUOTATION_CREATED"
     RFQ_DISPATCHED = "RFQ_DISPATCHED"
     GAEB_EXPORTED = "GAEB_EXPORTED"
     CLAMAV_SCAN_CLEAN = "CLAMAV_SCAN_CLEAN"
     CLAMAV_SCAN_REJECTED = "CLAMAV_SCAN_REJECTED"
     SYSTEM_MIGRATION = "SYSTEM_MIGRATION"
+
+
+class InvoiceStatus(StrEnum):
+    """Payment and credit lifecycle of an issued invoice."""
+
+    DRAFT = "DRAFT"
+    ISSUED = "ISSUED"
+    PARTIALLY_PAID = "PARTIALLY_PAID"
+    PAID = "PAID"
+    OVERDUE = "OVERDUE"
+    PARTIALLY_CREDITED = "PARTIALLY_CREDITED"
+    CREDITED = "CREDITED"
+    CANCELLED = "CANCELLED"

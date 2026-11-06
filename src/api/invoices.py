@@ -12,6 +12,10 @@ from src.generators.xrechnung_generator import XRechnungGenerator
 from src.generators.zugferd_generator import ZUGFeRDGenerator
 from src.integrations.minio_client import MinioObjectStorage, object_name_for_invoice
 from src.models.schemas import CustomerOffer
+from src.repositories.invoice_repository import (
+    InvoiceRepository,
+    InvoiceRepositoryError,
+)
 
 __all__ = ["InvoiceWiringError", "build_invoice", "generate_invoice_artifacts"]
 
@@ -31,6 +35,9 @@ def _seller(settings: Settings) -> InvoiceParty:
         country_code=settings.company_country_code,
         vat_id=settings.company_vat_id,
         email=settings.company_email,
+        contact_name=settings.company_name,
+        telephone=settings.company_phone,
+        endpoint_id=settings.company_email,
     )
 
 
@@ -52,11 +59,12 @@ def build_invoice(
             unit=line.unit,
             unit_price=line.unit_price_net,
             line_total=line.total_net,
-            vat_rate=offer.vat_rate,
+            vat_rate=line.vat_rate,
         )
         for index, line in enumerate(offer.lines, start=1)
     ]
 
+    buyer_email = request.buyer.email or offer.customer_contact_email
     buyer = InvoiceParty(
         name=offer.customer_name,
         street=request.buyer.street,
@@ -64,6 +72,9 @@ def build_invoice(
         postal_code=request.buyer.postal_code,
         country_code=request.buyer.country_code,
         vat_id=request.buyer.vat_id,
+        email=buyer_email,
+        contact_name=offer.customer_name,
+        endpoint_id=str(buyer_email) if buyer_email else None,
     )
     return Invoice(
         invoice_number=offer.offer_number,
@@ -89,10 +100,22 @@ async def generate_invoice_artifacts(
     settings: Settings,
     request: InvoiceRequestPayload,
     storage: MinioObjectStorage,
+    *,
+    invoice_repository: InvoiceRepository | None = None,
 ) -> dict[str, Any]:
-    """Generate XML/PDF and persist both in MinIO under the offer prefix."""
+    """Generate XML/PDF and persist both in MinIO under the invoice prefix."""
 
     invoice = build_invoice(offer, settings, request)
+    stored_invoice = None
+    if invoice_repository is not None:
+        try:
+            stored_invoice = await invoice_repository.get_by_offer(offer.id)
+            if stored_invoice is None:
+                stored_invoice = await invoice_repository.create(invoice, offer_id=offer.id)
+            invoice = stored_invoice.invoice
+        except InvoiceRepositoryError as exc:
+            raise InvoiceWiringError(f"invoice persistence failed: {exc}") from exc
+
     try:
         xrechnung = XRechnungGenerator().build(invoice)
         zugferd = ZUGFeRDGenerator().build(invoice)
@@ -103,7 +126,7 @@ async def generate_invoice_artifacts(
     pdf_key = object_name_for_invoice(offer.offer_number, "pdf")
     await storage.put_bytes(xml_key, xrechnung, "application/xml")
     await storage.put_bytes(pdf_key, zugferd, "application/pdf")
-    return {
+    artifacts = {
         "xrechnung": {
             "object_name": xml_key,
             "download_url": f"/api/v1/approvals/{offer.offer_number}/documents/xrechnung",
@@ -115,3 +138,9 @@ async def generate_invoice_artifacts(
             "media_type": "application/pdf",
         },
     }
+    if invoice_repository is not None and stored_invoice is not None:
+        try:
+            await invoice_repository.attach_artifacts(stored_invoice.id, artifacts)
+        except InvoiceRepositoryError as exc:
+            raise InvoiceWiringError(f"invoice artifact persistence failed: {exc}") from exc
+    return artifacts

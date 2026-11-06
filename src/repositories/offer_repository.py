@@ -55,6 +55,7 @@ def _line_to_orm(line: CustomerOfferLine, offer_id: UUID) -> CustomerOfferLineOR
         margin_rate=line.margin_rate,
         unit_price_net=line.unit_price_net,
         total_net=line.total_net,
+        vat_rate=line.vat_rate,
     )
 
 
@@ -72,6 +73,7 @@ def _line_to_schema(line: CustomerOfferLineORM) -> CustomerOfferLine:
         margin_rate=line.margin_rate,
         unit_price_net=line.unit_price_net,
         total_net=line.total_net,
+        vat_rate=line.vat_rate,
     )
 
 

@@ -261,8 +261,48 @@ reconciled with the authoritative spec later.
   is best-effort, retries transient HTTP failures, and never changes the job or
   run status.
 - Worker locking, run history and Telegram tests add two live PostgreSQL tests
-  alongside the four existing outbox/offer checks (six total), all skipped
-  unless `YASMINA_TEST_DATABASE_URL` is set.
+  alongside the existing outbox/offer checks; with the three invoice tests the
+  live PostgreSQL suite is nine tests, all skipped unless
+  `YASMINA_TEST_DATABASE_URL` is set.
+
+## Production invoice & billing assumptions (P4.4)
+
+- A `CustomerOffer` has at most one `invoices` row (`offer_id` unique). The
+  invoice is linked by `offer_id`; the artifact object keys remain under the
+  offer prefix for backward-compatible download URLs.
+- Invoice numbers are allocated from `invoice_number_sequences` using a row lock
+  (`SELECT … FOR UPDATE`) in the same transaction as the invoice/line inserts.
+  An invoice rollback also rolls back the counter, so `INV-YYYY-0001`,
+  `INV-YYYY-0002`, … contain no gaps. The yearly counter is capped at `9999`
+  and numbering is scoped to the invoice issue date's year.
+- `CustomerOfferLine` now carries its own `vat_rate`; `CustomerOffer.total_vat`
+  is validated against the line-rate split rather than a single global rate.
+  Migration 0007 backfills existing lines from `customer_offers.vat_rate`, so
+  legacy single-rate approvals continue to validate and verify.
+  `invoices.vat_breakdown` stores an exact string snapshot and
+  `invoice_vat_splits` stores one row per rate. Line rates and split rates use
+  `Numeric(6, 4)`; monetary values remain `Decimal` with two places.
+- Payment and credit state is derived only through repository methods
+  (`record_payment`, `record_credit`, `mark_overdue`) with bounded amounts.
+  Full payment sets `PAID`; partial payment `PARTIALLY_PAID`; full credit
+  `CREDITED`; partial credit `PARTIALLY_CREDITED`. Credit notes never reuse an
+  invoice number and are referenced by `credit_note_number`.
+- KoSIT validation executes the vendored official XSLT rule sets for both
+  EN16931 and XRechnung 3.0.2 CIUS, using Saxon-HE (`saxonche`) locally. Only
+  `fatal`/`error` findings block generation; warnings and informational findings
+  remain visible in `KoSITValidationReport`. The release and attribution are in
+  `src/generators/schematron/kosit/NOTICE`.
+- The branded carrier PDF is rendered by `pdf_template.build_branded_pdf` with
+  BayerClean, Reithmayrstraße 52, 93055 Regensburg defaults, German address /
+  line / VAT / totals blocks, PDF/A-3 XMP identification and an sRGB output
+  intent. Factur-X embedding preserves the XMP metadata and output intent in
+  the generated hybrid PDF. A caller may still pass `base_pdf=` for an
+  externally certified PDF/A-3 carrier.
+- KoSIT requires seller contact name, telephone and e-mail plus buyer/seller
+  electronic endpoints; `COMPANY_EMAIL`, `COMPANY_PHONE`, the buyer e-mail and a
+  payment account (IBAN) must therefore be configured in production.
+- Invoice integration tests create records under the isolated year 2099 and
+  clean them up, so they never consume production invoice numbers.
 
 ## E-invoicing assumptions (P2.1)
 
@@ -272,8 +312,9 @@ reconciled with the authoritative spec later.
   characters, coarse/fine/check segments and ISO 7064 MOD 97-10 check digits.
   Private B2B references can bypass the Leitweg check explicitly.
 - ZUGFeRD/Factur-X CII XML is validated against the Factur-X EN16931 XSD bundled
-  with the `factur-x` library. The default PDF is a blank base document; a real
-  PDF/A-3 renderer/template should be supplied via `base_pdf` for production.
+  with the `factur-x` library. The default carrier is now the branded PDF/A-3
+  template from `src/generators/pdf_template.py`; `base_pdf` remains available
+  for an externally certified carrier (see P4.4).
 - VAT is grouped per rate; the invoice model enforces line, net, VAT and gross
   reconciliation.
 

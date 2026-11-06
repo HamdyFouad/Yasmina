@@ -27,6 +27,10 @@ class InvoiceParty(BaseModel):
     country_code: str = Field(default="DE", min_length=2, max_length=2)
     vat_id: str | None = Field(default=None, max_length=32)
     email: EmailStr | None = None
+    contact_name: str | None = Field(default=None, max_length=256)
+    telephone: str | None = Field(default=None, max_length=64)
+    endpoint_id: str | None = Field(default=None, max_length=256)
+    endpoint_scheme: str = Field(default="EM", min_length=2, max_length=8)
 
 
 class InvoiceLine(BaseModel):

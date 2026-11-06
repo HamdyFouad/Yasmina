@@ -308,6 +308,7 @@ def price_offer(state: AgentState, context: AgentContext) -> dict[str, Any]:
                 margin_rate=priced.margin_rate,
                 unit_price_net=priced.unit_price_net,
                 total_net=priced.total_net,
+                vat_rate=request.vat_rate,
             )
         )
 
@@ -315,7 +316,12 @@ def price_offer(state: AgentState, context: AgentContext) -> dict[str, Any]:
         return {"status": AgentStatus.FAILED, "errors": errors, "warnings": warnings}
 
     total_net = q2(sum((line.total_net for line in offer_lines), start=Decimal("0.00")))
-    total_vat = q2(total_net * request.vat_rate)
+    by_rate: dict[Decimal, Decimal] = {}
+    for line in offer_lines:
+        by_rate[line.vat_rate] = by_rate.get(line.vat_rate, Decimal("0.00")) + line.total_net
+    total_vat = q2(
+        sum((q2(base * rate) for rate, base in by_rate.items()), start=Decimal("0.00"))
+    )
     total_gross = q2(total_net + total_vat)
     try:
         offer = CustomerOffer(

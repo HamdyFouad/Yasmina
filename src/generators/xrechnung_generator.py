@@ -9,6 +9,12 @@ from lxml import etree
 
 from src.generators.invoice_models import Invoice, InvoiceParty
 from src.generators.leitweg import LeitwegIdError, validate_leitweg_id
+from src.generators.schematron import (
+    KoSITSchematronError,
+    KoSITSchematronValidator,
+    SchematronExecutionError,
+    SchematronUnavailableError,
+)
 from src.models.enums import UnitOfMeasure
 from src.models.schemas import q2
 
@@ -59,13 +65,26 @@ def _rate_percent(value: Decimal) -> str:
     return format(percent.normalize(), "f")
 
 
+def _tax_category(rate: Decimal) -> str:
+    return "Z" if rate == 0 else "S"
+
+
 def _check_party(party: InvoiceParty, role: str) -> None:
     if not party.street or not party.city or not party.postal_code:
         raise InvoiceGenerationError(f"{role} address requires street, city and postal code")
 
 
-def _party(parent: etree._Element, party: InvoiceParty) -> None:
+def _party(parent: etree._Element, party: InvoiceParty, *, role: str) -> None:
     party_el = _sub(parent, UBL_CAC, "Party")
+    endpoint = party.endpoint_id or (str(party.email) if party.email is not None else None)
+    if endpoint:
+        _sub(
+            party_el,
+            UBL_CBC,
+            "EndpointID",
+            endpoint,
+            schemeID=party.endpoint_scheme,
+        )
     _sub(_sub(party_el, UBL_CAC, "PartyName"), UBL_CBC, "Name", party.name)
     address = _sub(party_el, UBL_CAC, "PostalAddress")
     _sub(address, UBL_CBC, "StreetName", party.street)
@@ -80,12 +99,26 @@ def _party(parent: etree._Element, party: InvoiceParty) -> None:
         _sub(tax_scheme, UBL_CBC, "ID", "VAT")
     legal = _sub(party_el, UBL_CAC, "PartyLegalEntity")
     _sub(legal, UBL_CBC, "RegistrationName", party.name)
+    if role == "seller" or party.contact_name or party.telephone or party.email:
+        contact = _sub(party_el, UBL_CAC, "Contact")
+        _sub(contact, UBL_CBC, "Name", party.contact_name or party.name)
+        if party.telephone:
+            _sub(contact, UBL_CBC, "Telephone", party.telephone)
+        if party.email:
+            _sub(contact, UBL_CBC, "ElectronicMail", str(party.email))
 
 
 class XRechnungGenerator:
     """Generate a standalone XRechnung 3.0 UBL invoice."""
 
-    def build(self, invoice: Invoice, *, require_leitweg: bool = True) -> bytes:
+    def build(
+        self,
+        invoice: Invoice,
+        *,
+        require_leitweg: bool = True,
+        validate_schematron: bool = True,
+        schematron_validator: KoSITSchematronValidator | None = None,
+    ) -> bytes:
         if invoice.currency.value != "EUR":
             raise InvoiceGenerationError("XRechnung requires EUR")
         if not invoice.buyer_reference:
@@ -116,9 +149,13 @@ class XRechnungGenerator:
             _sub(order, UBL_CBC, "ID", invoice.order_reference)
 
         supplier = _sub(root, UBL_CAC, "AccountingSupplierParty")
-        _party(supplier, invoice.seller)
+        _party(supplier, invoice.seller, role="seller")
         customer = _sub(root, UBL_CAC, "AccountingCustomerParty")
-        _party(customer, invoice.buyer)
+        _party(customer, invoice.buyer, role="buyer")
+
+        if invoice.delivery_date:
+            delivery = _sub(root, UBL_CAC, "Delivery")
+            _sub(delivery, UBL_CBC, "ActualDeliveryDate", invoice.delivery_date.isoformat())
 
         if invoice.iban:
             payment = _sub(root, UBL_CAC, "PaymentMeans")
@@ -140,7 +177,7 @@ class XRechnungGenerator:
             _sub(subtotal, UBL_CBC, "TaxableAmount", _amount(taxable), currencyID=invoice.currency.value)
             _sub(subtotal, UBL_CBC, "TaxAmount", _amount(tax), currencyID=invoice.currency.value)
             category = _sub(subtotal, UBL_CAC, "TaxCategory")
-            _sub(category, UBL_CBC, "ID", "S")
+            _sub(category, UBL_CBC, "ID", _tax_category(rate))
             _sub(category, UBL_CBC, "Percent", _rate_percent(rate))
             scheme = _sub(category, UBL_CAC, "TaxScheme")
             _sub(scheme, UBL_CBC, "ID", "VAT")
@@ -167,17 +204,51 @@ class XRechnungGenerator:
             if line.description:
                 _sub(item, UBL_CBC, "Description", line.description)
             category = _sub(item, UBL_CAC, "ClassifiedTaxCategory")
-            _sub(category, UBL_CBC, "ID", "S")
+            _sub(category, UBL_CBC, "ID", _tax_category(line.vat_rate))
             _sub(category, UBL_CBC, "Percent", _rate_percent(line.vat_rate))
             scheme = _sub(category, UBL_CAC, "TaxScheme")
             _sub(scheme, UBL_CBC, "ID", "VAT")
             price = _sub(line_el, UBL_CAC, "Price")
             _sub(price, UBL_CBC, "PriceAmount", _amount(line.unit_price), currencyID=invoice.currency.value)
 
-        return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+        xml = etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+        if validate_schematron:
+            try:
+                import facturx
+            except ImportError as exc:  # pragma: no cover - optional dependency
+                raise InvoiceGenerationError(
+                    "factur-x is required for UBL XSD validation; install the 'e-invoicing' extra"
+                ) from exc
+            try:
+                facturx.xml_check_xsd(xml, flavor="ubl-2.1-invoice", level="en16931")
+            except Exception as exc:
+                raise InvoiceGenerationError(f"UBL 2.1 XSD validation failed: {exc}") from exc
+            validator = schematron_validator or KoSITSchematronValidator()
+            try:
+                validator.validate_or_raise(xml, syntax="ubl")
+            except KoSITSchematronError as exc:
+                raise InvoiceGenerationError(str(exc)) from exc
+            except (SchematronUnavailableError, SchematronExecutionError) as exc:
+                raise InvoiceGenerationError(f"KoSIT Schematron validation is unavailable: {exc}") from exc
+        return xml
 
-    def generate(self, invoice: Invoice, output_path: str | Path, *, require_leitweg: bool = True) -> Path:
+    def generate(
+        self,
+        invoice: Invoice,
+        output_path: str | Path,
+        *,
+        require_leitweg: bool = True,
+        validate_schematron: bool = True,
+        schematron_validator: KoSITSchematronValidator | None = None,
+    ) -> Path:
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(self.build(invoice, require_leitweg=require_leitweg))
+        path.write_bytes(
+            self.build(
+                invoice,
+                require_leitweg=require_leitweg,
+                validate_schematron=validate_schematron,
+                schematron_validator=schematron_validator,
+            )
+        )
         return path

@@ -1,0 +1,23 @@
+KoSIT XRechnung validator configuration
+========================================
+
+The XSLT files in this directory are unmodified compiled Schematron rule sets
+from the official KoSIT "validator-configuration-xrechnung" project:
+
+  https://github.com/itplr-kosit/validator-configuration-xrechnung
+  Release: v2026-08-31
+  XRechnung version: 3.0.2
+  KoSIT Validator: 1.6.3
+  CEN EN16931 Schematron: 1.3.16
+
+Files:
+  EN16931-UBL-validation.xsl
+  XRechnung-UBL-validation.xsl
+  EN16931-CII-validation.xsl
+  XRechnung-CII-validation.xsl
+
+Copyright (c) KoSIT and the respective contributors.
+Licensed under the Apache License, Version 2.0 (see LICENSE in this directory).
+
+These files are distributed unchanged and are executed locally with
+Saxon-HE; Project Yasmina does not claim authorship of the rule content.

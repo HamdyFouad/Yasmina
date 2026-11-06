@@ -54,6 +54,7 @@ from src.models.enums import (
     Currency,
     CustomerOfferStatus,
     GloveSize,
+    InvoiceStatus,
     MaterialType,
     ProcurementProcedure,
     StandardizedColor,
@@ -70,6 +71,10 @@ __all__ = [
     "CustomerOffer",
     "CustomerOfferLine",
     "IntegrationIdempotency",
+    "Invoice",
+    "InvoiceLine",
+    "InvoiceNumberSequence",
+    "InvoiceVatSplit",
     "Supplier",
     "SupplierQuote",
     "SupplierQuoteLine",
@@ -535,6 +540,9 @@ class CustomerOfferLine(Base, TimestampMixin):
     margin_rate: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False)
     unit_price_net: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     total_net: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    vat_rate: Mapped[Decimal] = mapped_column(
+        Numeric(6, 4), nullable=False, default=Decimal("0.1900"), server_default=text("0.1900")
+    )
 
     offer: Mapped[CustomerOffer] = relationship(back_populates="lines")
 
@@ -542,10 +550,214 @@ class CustomerOfferLine(Base, TimestampMixin):
         UniqueConstraint("offer_id", "position_number", name="uq_offer_position"),
         CheckConstraint("quantity > 0", name="quantity_positive"),
         CheckConstraint("margin_rate >= 0 AND margin_rate <= 5", name="margin_rate_range"),
+        CheckConstraint("vat_rate >= 0 AND vat_rate <= 1", name="vat_rate_range"),
         CheckConstraint(
             "cost_unit_price_net >= 0 AND unit_price_net >= 0 AND total_net >= 0",
             name="prices_non_negative",
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issued invoices, gapless numbering and multi-rate VAT records
+# ---------------------------------------------------------------------------
+
+
+class InvoiceNumberSequence(Base, TimestampMixin):
+    """Transactionally incremented yearly invoice counter.
+
+    A PostgreSQL sequence would leave gaps when an invoice transaction rolls
+    back, so the counter is a locked row updated in the same transaction as the
+    invoice insert.
+    """
+
+    __tablename__ = "invoice_number_sequences"
+
+    year: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_value: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+
+    __table_args__ = (
+        CheckConstraint("year >= 2000 AND year <= 2200", name="year_range"),
+        CheckConstraint("last_value >= 0 AND last_value <= 9999", name="last_value_range"),
+    )
+
+
+class Invoice(Base, TimestampMixin):
+    """Legally relevant issued invoice linked to one approved customer offer."""
+
+    __tablename__ = "invoices"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    offer_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("customer_offers.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    )
+    invoice_number: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    invoice_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    status: Mapped[InvoiceStatus] = mapped_column(
+        _enum(InvoiceStatus, "invoice_status", length=24),
+        nullable=False,
+        default=InvoiceStatus.ISSUED,
+        server_default=text("'ISSUED'"),
+    )
+    currency: Mapped[Currency] = mapped_column(
+        _enum(Currency, "invoice_currency", length=3),
+        nullable=False,
+        default=Currency.EUR,
+        server_default=text("'EUR'"),
+    )
+
+    issue_date: Mapped[date] = mapped_column(Date, nullable=False)
+    due_date: Mapped[date] = mapped_column(Date, nullable=False)
+    delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    seller_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    seller_street: Mapped[str] = mapped_column(String(256), nullable=False)
+    seller_city: Mapped[str] = mapped_column(String(128), nullable=False)
+    seller_postal_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    seller_country_code: Mapped[str] = mapped_column(String(2), nullable=False, default="DE")
+    seller_vat_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    seller_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    seller_phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    seller_contact_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
+    buyer_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    buyer_street: Mapped[str] = mapped_column(String(256), nullable=False)
+    buyer_city: Mapped[str] = mapped_column(String(128), nullable=False)
+    buyer_postal_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    buyer_country_code: Mapped[str] = mapped_column(String(2), nullable=False, default="DE")
+    buyer_vat_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    buyer_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+
+    buyer_reference: Mapped[str | None] = mapped_column(String(46), nullable=True)
+    order_reference: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    payment_terms: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    iban: Mapped[str | None] = mapped_column(String(34), nullable=True)
+
+    total_net: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    total_vat: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    total_gross: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    paid_amount: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2), nullable=False, default=Decimal("0.00"), server_default=text("0.00")
+    )
+    credited_amount: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2), nullable=False, default=Decimal("0.00"), server_default=text("0.00")
+    )
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    credit_note_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    vat_breakdown: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    artifacts: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    offer: Mapped[CustomerOffer] = relationship()
+    lines: Mapped[list["InvoiceLine"]] = relationship(
+        back_populates="invoice",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="InvoiceLine.line_id",
+        lazy="selectin",
+    )
+    vat_splits: Mapped[list["InvoiceVatSplit"]] = relationship(
+        back_populates="invoice",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="InvoiceVatSplit.rate",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("invoice_year", "sequence_number", name="uq_invoice_year_sequence"),
+        CheckConstraint(
+            "invoice_number ~ '^INV-[0-9]{4}-[0-9]{4}$'",
+            name="invoice_number_format",
+        ),
+        CheckConstraint("invoice_year >= 2000 AND invoice_year <= 2200", name="invoice_year_range"),
+        CheckConstraint("sequence_number >= 1 AND sequence_number <= 9999", name="sequence_range"),
+        CheckConstraint(
+            "total_net >= 0 AND total_vat >= 0 AND total_gross >= 0",
+            name="totals_non_negative",
+        ),
+        CheckConstraint("total_gross = total_net + total_vat", name="totals_consistent"),
+        CheckConstraint(
+            "paid_amount >= 0 AND credited_amount >= 0",
+            name="payment_amounts_non_negative",
+        ),
+        CheckConstraint("paid_amount <= total_gross", name="paid_amount_bounded"),
+        CheckConstraint("credited_amount <= total_gross", name="credited_amount_bounded"),
+        CheckConstraint(
+            "paid_amount + credited_amount <= total_gross",
+            name="payment_plus_credit_bounded",
+        ),
+        CheckConstraint("issue_date <= due_date", name="due_date_after_issue"),
+        Index("ix_invoices_status_due", "status", "due_date"),
+        Index("ix_invoices_issue_date", "issue_date"),
+    )
+
+
+class InvoiceLine(Base, TimestampMixin):
+    __tablename__ = "invoice_lines"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    invoice_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("invoices.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    line_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    description: Mapped[str] = mapped_column(String(512), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    unit: Mapped[UnitOfMeasure] = mapped_column(
+        _enum(UnitOfMeasure, "invoice_line_unit_of_measure"), nullable=False
+    )
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    line_total: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    vat_rate: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
+
+    invoice: Mapped[Invoice] = relationship(back_populates="lines")
+
+    __table_args__ = (
+        UniqueConstraint("invoice_id", "line_id", name="uq_invoice_line"),
+        CheckConstraint("line_id >= 1", name="line_id_positive"),
+        CheckConstraint("quantity > 0", name="quantity_positive"),
+        CheckConstraint("unit_price >= 0 AND line_total >= 0", name="prices_non_negative"),
+        CheckConstraint("vat_rate >= 0 AND vat_rate <= 1", name="vat_rate_range"),
+    )
+
+
+class InvoiceVatSplit(Base, TimestampMixin):
+    """One persisted VAT bucket (e.g. 19 %, 7 %, 0 %) for an invoice."""
+
+    __tablename__ = "invoice_vat_splits"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    invoice_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("invoices.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    rate: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
+    taxable_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    tax_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+
+    invoice: Mapped[Invoice] = relationship(back_populates="vat_splits")
+
+    __table_args__ = (
+        UniqueConstraint("invoice_id", "rate", name="uq_invoice_vat_rate"),
+        CheckConstraint("rate >= 0 AND rate <= 1", name="rate_range"),
+        CheckConstraint("taxable_amount >= 0 AND tax_amount >= 0", name="amounts_non_negative"),
     )
 
 

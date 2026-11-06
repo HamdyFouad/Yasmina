@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from src.api.deps import (
     get_audit_service,
     get_erpnext_client,
+    get_invoice_repository,
     get_object_storage,
     get_offer_repository,
     get_session,
@@ -46,6 +47,8 @@ def make_settings() -> Settings:
         company_postal_code="10115",
         company_vat_id="DE123456789",
         company_iban="DE89370400440532013000",
+        company_email="rechnung@bayerclean.de",
+        company_phone="+49 941 123456",
     )
 
 
@@ -111,6 +114,23 @@ class FakeSession:
         return None
 
     async def rollback(self) -> None:
+        return None
+
+
+class FakeInvoiceRepository:
+    def __init__(self) -> None:
+        self.records: dict[UUID, Any] = {}
+
+    async def get_by_offer(self, offer_id: UUID) -> Any | None:
+        return self.records.get(offer_id)
+
+    async def create(self, invoice: Any, *, offer_id: UUID) -> Any:
+        numbered = invoice.model_copy(update={"invoice_number": "INV-2026-0001"})
+        record = SimpleNamespace(id=uuid4(), invoice=numbered)
+        self.records[offer_id] = record
+        return record
+
+    async def attach_artifacts(self, invoice_id: UUID, artifacts: dict[str, Any]) -> Any:
         return None
 
 
@@ -211,6 +231,7 @@ def api() -> Any:
 
     app.dependency_overrides[get_session] = fake_session
     app.dependency_overrides[get_offer_repository] = lambda: repository
+    app.dependency_overrides[get_invoice_repository] = lambda: FakeInvoiceRepository()
     app.dependency_overrides[get_object_storage] = lambda: storage
     app.dependency_overrides[get_erpnext_client] = lambda: erpnext
     app.dependency_overrides[get_audit_service] = lambda: FakeAudit()

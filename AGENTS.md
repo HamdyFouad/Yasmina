@@ -15,14 +15,14 @@
 - **Parsers:** `pygaeb` (`.x83`, `.d83`, `.x84`), `Docling` (PDF tables).
 - **Database & Search:** SQLAlchemy 2.0 Async, `asyncpg`, Alembic migrations, `pgvector` (HNSW index).
 - **Workflow & AI:** LangGraph, PostgreSQL SQLAlchemy checkpoint saver, `langchain-openai` (DeepSeek-Chat / DeepSeek-Reasoner).
-- **E-Invoicing:** `factur-x` (ZUGFeRD 2.2), custom XML generator (XRechnung 3.0 / EN 16931).
+- **E-Invoicing:** `factur-x` (ZUGFeRD 2.2), custom XRechnung 3.0 / EN 16931 UBL generator, official KoSIT CIUS Schematron via `saxonche`, branded PDF/A-3 carrier invoice.
 
 ## 4. Directory Structure Enforcement
 Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 10):
 - `src/config.py` (pydantic-settings)
 - `src/db.py` (async SQLAlchemy session factory)
 - `src/api/` (`security.py`, `deps.py`, `schemas.py`, `routes/tenders.py`, `routes/approvals.py`, `routes/offers.py`, `routes/ops.py`, `routes/auth.py`)
-- `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `ingestion_repository.py`, `worker_run_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`)
+- `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `invoice_repository.py`, `ingestion_repository.py`, `worker_run_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`)
 - `src/models/` (`enums.py`, `schemas.py`, `orm.py`)
 - `src/parsers/` (`normalizers.py`, `pdf_parser.py`, `gaeb_parser.py`, `gaeb_validator.py`)
 - `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `ingestion_processor.py`, `worker_lock.py`, `worker_metrics.py`)
@@ -30,7 +30,7 @@ Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 
 - `src/integrations/` (`clamav_client.py`, `minio_client.py`, `erpnext_client.py`, `n8n_client.py`, `telegram_notifier.py`; Telegram approval bot planned)
 - `src/scrapers/` (`base_scraper.py`, `bayern_vergabe.py`, `oeffentlichevergabe.py`, `ingestion.py`)
 - `src/scheduler.py` and `src/worker.py` (cron scheduler, scrape/ingestion CLI, advisory locks and shutdown signals)
-- `src/generators/` (`invoice_models.py`, `leitweg.py`, `zugferd_generator.py`, `xrechnung_generator.py`)
+- `src/generators/` (`invoice_models.py`, `leitweg.py`, `pdf_template.py`, `schematron/`, `zugferd_generator.py`, `xrechnung_generator.py`)
 - `tests/` (unit, integration, evals with German golden fixtures)
 
 ## 5. Execution Protocol for Coding Agents
@@ -40,13 +40,14 @@ When given an implementation task:
 3. Verify that unit tests pass and that strict mode validation does not encounter un-normalized string errors.
 
 ## 6. Build, Run & Verification Commands
-- Setup: `python -m pip install -e ".[dev,parsing,ai]"`; `.env` is created from `.env.example` on first preflight/API start (copy it manually for other tooling).
+- Setup: `python -m pip install -e ".[dev,parsing,ai,e-invoicing]"`; `.env` is created from `.env.example` on first preflight/API start (copy it manually for other tooling).
 - Tests: `python -m pytest -q` (config lives in `pyproject.toml`).
 - API: `python -m uvicorn src.main:app --host 127.0.0.1 --port 8000 --reload` (startup runs preflight).
 - Lint / types: `ruff check .` and `mypy src`.
 - Infrastructure: `docker compose up -d postgres minio clamav` (add `--profile automation` for n8n).
 - Preflight: `python -m src.preflight` (or `python -m src.preflight --json`).
 - Approval: `yasmina-approval sign|verify` (see `src/services/approval_service.py`).
+- E-invoicing: `XRechnungGenerator` runs KoSIT EN16931 + XRechnung CIUS Schematron via `saxonche`; `ZUGFeRDGenerator` embeds CII XML in the branded PDF/A-3 carrier; `InvoiceRepository` owns gapless `INV-YYYY-XXXX` numbering and multi-rate VAT rows.
 - Scrape worker: `python -m src.worker scrape|schedule` (daily cron via `SCRAPER_SCHEDULE_CRON`).
 - Ingestion worker: `python -m src.worker process [--limit N] [--interval SECONDS]` drains `tender_ingestion_jobs` with `DeepSeek` triage and Docling/GAEB parsing.
 - Worker operations: portal locks use `pg_try_advisory_lock`; SIGINT/SIGTERM finish in-flight work; `GET /healthz/worker` exposes `worker_runs` history and outbox counts; Telegram alerts use `TELEGRAM_BOT_TOKEN` + `TELEGRAM_APPROVAL_CHAT_ID`.

@@ -13,7 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from src.api.deps import (
     get_audit_service,
     get_clamav_scanner,
+    get_invoice_repository,
     get_object_storage,
     get_offer_repository,
     get_session,
@@ -85,6 +86,8 @@ def make_settings() -> Settings:
         company_postal_code="10115",
         company_vat_id="DE123456789",
         company_iban="DE89370400440532013000",
+        company_email="rechnung@bayerclean.de",
+        company_phone="+49 941 123456",
     )
 
 
@@ -139,6 +142,23 @@ class FakeSession:
     async def execute(self, statement: Any) -> FakeResult:
         self.statement = statement
         return FakeResult(self.rows)
+
+
+class FakeInvoiceRepository:
+    def __init__(self) -> None:
+        self.records: dict[Any, Any] = {}
+
+    async def get_by_offer(self, offer_id: Any) -> Any | None:
+        return self.records.get(offer_id)
+
+    async def create(self, invoice: Any, *, offer_id: Any) -> Any:
+        numbered = invoice.model_copy(update={"invoice_number": "INV-2026-0001"})
+        record = SimpleNamespace(id=uuid4(), invoice=numbered)
+        self.records[offer_id] = record
+        return record
+
+    async def attach_artifacts(self, invoice_id: Any, artifacts: dict[str, Any]) -> Any:
+        return None
 
 
 def make_candidate_rows() -> list[SimpleNamespace]:
@@ -257,6 +277,7 @@ def api(workspace_tmp):  # type: ignore[no-untyped-def]
     app.dependency_overrides[get_object_storage] = lambda: storage
     app.dependency_overrides[get_audit_service] = lambda: audit
     app.dependency_overrides[get_offer_repository] = lambda: offers
+    app.dependency_overrides[get_invoice_repository] = lambda: FakeInvoiceRepository()
     app.dependency_overrides[get_workflow_checkpointer] = lambda: None
     app.state.test_audit = audit
     app.state.test_offers = offers
@@ -404,6 +425,7 @@ def test_approval_rbac_and_verification(api, workspace_tmp) -> None:  # type: ig
                     "street": "Rathausstr. 2",
                     "city": "Musterstadt",
                     "postal_code": "12345",
+                    "email": "einkauf@musterstadt.de",
                 },
                 "buyer_reference": "991-03730-19",
                 "due_date": "2026-02-14",

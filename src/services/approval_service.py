@@ -46,8 +46,8 @@ class ApprovalError(ValueError):
     """Raised when approval payloads, keys or signatures are invalid."""
 
 
-def _line_payload(line: Any) -> dict[str, str]:
-    return {
+def _line_payload(line: Any, *, include_vat: bool) -> dict[str, str]:
+    payload = {
         "position_number": line.position_number,
         "description": line.description,
         "quantity": str(line.quantity),
@@ -57,6 +57,9 @@ def _line_payload(line: Any) -> dict[str, str]:
         "unit_price_net": str(line.unit_price_net),
         "total_net": str(line.total_net),
     }
+    if include_vat:
+        payload["vat_rate"] = str(line.vat_rate)
+    return payload
 
 
 def approval_payload(
@@ -90,7 +93,10 @@ def approval_payload(
         "total_gross": str(offer.total_gross),
         "valid_until": offer.valid_until.isoformat(),
         "lines": [
-            _line_payload(line)
+            _line_payload(
+                line,
+                include_vat=len({item.vat_rate for item in offer.lines}) > 1,
+            )
             for line in sorted(offer.lines, key=lambda line: line.position_number)
         ],
         "approved_by": approver_value,

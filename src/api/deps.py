@@ -18,6 +18,7 @@ from src.integrations.minio_client import MinioObjectStorage
 from src.integrations.n8n_client import N8nClient
 from src.repositories.integration_repository import IntegrationRepository
 from src.repositories.ingestion_repository import TenderIngestionJobRepository
+from src.repositories.invoice_repository import InvoiceRepository
 from src.repositories.offer_repository import OfferRepository
 from src.repositories.supplier_quote_repository import SupplierQuoteRepository
 from src.repositories.tender_repository import TenderRepository
@@ -32,6 +33,7 @@ __all__ = [
     "get_clamav_scanner",
     "get_erpnext_client",
     "get_integration_repository",
+    "get_invoice_repository",
     "get_n8n_client",
     "get_object_storage",
     "get_offer_repository",
@@ -147,6 +149,12 @@ def get_offer_repository(
     session: AsyncSession = Depends(get_session),
 ) -> OfferRepository:
     return OfferRepository(session)
+
+
+def get_invoice_repository(
+    session: AsyncSession = Depends(get_session),
+) -> InvoiceRepository:
+    return InvoiceRepository(session)
 
 
 def get_workflow_checkpointer(

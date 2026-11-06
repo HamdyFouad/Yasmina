@@ -1,20 +1,20 @@
 """Factur-X / ZUGFeRD 2.2 hybrid PDF/A-3 invoice generator.
 
 The CII XML is generated locally and embedded with the ``factur-x`` library.
-A caller can supply a real PDF/A-3 base document; when omitted a minimal blank
-PDF is used, which is suitable for tests and archival prototypes but should be
-replaced by the application's PDF/A-3 renderer in production.
+When no explicit base PDF is supplied, :func:`src.generators.pdf_template.build_branded_pdf`
+renders a structured German invoice layout (address blocks, line table,
+multi-rate VAT split, totals) as the PDF/A-3 carrier.
 """
 
 from __future__ import annotations
 
 from decimal import Decimal
-from io import BytesIO
 from pathlib import Path
 
 from lxml import etree
 
 from src.generators.invoice_models import Invoice, InvoiceParty
+from src.generators.pdf_template import build_branded_pdf
 from src.models.enums import UnitOfMeasure
 from src.models.schemas import q2
 
@@ -71,6 +71,10 @@ def _rate(value: Decimal) -> str:
     return format((value * Decimal(100)).normalize(), "f")
 
 
+def _tax_category(rate: Decimal) -> str:
+    return "Z" if rate == 0 else "S"
+
+
 def _date_102(value) -> str:
     return value.strftime("%Y%m%d")
 
@@ -81,11 +85,24 @@ def _party(parent: etree._Element, party: InvoiceParty, *, role: str) -> None:
 
     element = _sub(parent, "ram", "SellerTradeParty" if role == "seller" else "BuyerTradeParty")
     _sub(element, "ram", "Name", party.name)
+    if role == "seller" or party.contact_name or party.telephone or party.email:
+        contact = _sub(element, "ram", "DefinedTradeContact")
+        _sub(contact, "ram", "PersonName", party.contact_name or party.name)
+        if party.telephone:
+            phone = _sub(contact, "ram", "TelephoneUniversalCommunication")
+            _sub(phone, "ram", "CompleteNumber", party.telephone)
+        if party.email:
+            email = _sub(contact, "ram", "EmailURIUniversalCommunication")
+            _sub(email, "ram", "URIID", str(party.email))
     address = _sub(element, "ram", "PostalTradeAddress")
     _sub(address, "ram", "PostcodeCode", party.postal_code)
     _sub(address, "ram", "LineOne", party.street)
     _sub(address, "ram", "CityName", party.city)
     _sub(address, "ram", "CountryID", party.country_code.upper())
+    endpoint = party.endpoint_id or (str(party.email) if party.email is not None else None)
+    if endpoint:
+        universal = _sub(element, "ram", "URIUniversalCommunication")
+        _sub(universal, "ram", "URIID", endpoint, schemeID=party.endpoint_scheme)
     if party.vat_id:
         registration = _sub(element, "ram", "SpecifiedTaxRegistration")
         _sub(registration, "ram", "ID", party.vat_id, schemeID="VA")
@@ -99,6 +116,8 @@ def build_cii_xml(invoice: Invoice) -> bytes:
 
     root = etree.Element(_qn("rsm", "CrossIndustryInvoice"), nsmap=_NSMAP)
     context = _sub(root, "rsm", "ExchangedDocumentContext")
+    process = _sub(context, "ram", "BusinessProcessSpecifiedDocumentContextParameter")
+    _sub(process, "ram", "ID", "urn:fdc:peppol.eu:2017:poacc:billing:01:1.0")
     guideline = _sub(context, "ram", "GuidelineSpecifiedDocumentContextParameter")
     _sub(guideline, "ram", "ID", FACTURX_GUIDELINE)
 
@@ -135,7 +154,7 @@ def build_cii_xml(invoice: Invoice) -> bytes:
         settlement = _sub(line_el, "ram", "SpecifiedLineTradeSettlement")
         tax = _sub(settlement, "ram", "ApplicableTradeTax")
         _sub(tax, "ram", "TypeCode", "VAT")
-        _sub(tax, "ram", "CategoryCode", "S")
+        _sub(tax, "ram", "CategoryCode", _tax_category(line.vat_rate))
         _sub(tax, "ram", "RateApplicablePercent", _rate(line.vat_rate))
         summation = _sub(settlement, "ram", "SpecifiedTradeSettlementLineMonetarySummation")
         _sub(summation, "ram", "LineTotalAmount", _amount(line.line_total))
@@ -172,7 +191,7 @@ def build_cii_xml(invoice: Invoice) -> bytes:
         _sub(tax, "ram", "CalculatedAmount", _amount(q2(taxable * rate)))
         _sub(tax, "ram", "TypeCode", "VAT")
         _sub(tax, "ram", "BasisAmount", _amount(taxable))
-        _sub(tax, "ram", "CategoryCode", "S")
+        _sub(tax, "ram", "CategoryCode", _tax_category(rate))
         _sub(tax, "ram", "RateApplicablePercent", _rate(rate))
 
     if invoice.due_date:
@@ -188,20 +207,6 @@ def build_cii_xml(invoice: Invoice) -> bytes:
     _sub(totals, "ram", "DuePayableAmount", _amount(invoice.total_gross))
 
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
-
-
-def _minimal_pdf() -> bytes:
-    try:
-        from pypdf import PdfWriter
-    except ImportError as exc:  # pragma: no cover - factur-x installs pypdf
-        raise InvoiceGenerationError("pypdf is required to build a base PDF") from exc
-
-    writer = PdfWriter()
-    writer.add_blank_page(width=595, height=842)
-    writer.add_metadata({"/Title": "Yasmina invoice", "/Author": "Project Yasmina"})
-    buffer = BytesIO()
-    writer.write(buffer)
-    return buffer.getvalue()
 
 
 class ZUGFeRDGenerator:
@@ -225,7 +230,7 @@ class ZUGFeRDGenerator:
             raise InvoiceGenerationError("factur-x is not installed; install the 'e-invoicing' extra") from exc
 
         if base_pdf is None:
-            pdf_bytes = _minimal_pdf()
+            pdf_bytes = build_branded_pdf(invoice)
         elif isinstance(base_pdf, (str, Path)):
             pdf_bytes = Path(base_pdf).read_bytes()
         else:
