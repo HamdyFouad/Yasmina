@@ -185,13 +185,24 @@ def test_zugferd_pdf_contains_branded_layout_and_pdfa_metadata() -> None:
     assert "Reithmayr" in text
     assert "93055 Regensburg" in text
     assert "Rechnungsempf" in text
-    assert "Nettobetrag 100,00 EUR" in text
-    assert "Gesamtbetrag 119,00 EUR" in text
+    assert "Nettobetrag" in text
+    assert "100,00 EUR" in text
+    assert "Gesamtbetrag" in text
+    assert "119,00 EUR" in text
     assert "/OutputIntents" in reader.trailer["/Root"]
+    assert reader.trailer.get("/ID")
     assert reader.xmp_metadata is not None
     xmp = reader.xmp_metadata.stream.get_data()
     assert b"<pdfaid:part>3</pdfaid:part>" in xmp
     assert b"<pdfaid:conformance>B</pdfaid:conformance>" in xmp
+
+    fonts = reader.pages[0]["/Resources"]["/Font"]
+    embedded = [reference.get_object() for reference in fonts.values()]
+    assert embedded
+    for font in embedded:
+        assert font["/Subtype"] == "/TrueType"
+        assert "/FontFile2" in font["/FontDescriptor"].get_object()
+        assert font["/BaseFont"] not in {"/Helvetica", "/Helvetica-Bold"}
 
 
 def test_zugferd_pdf_renders_multi_rate_vat_breakdown() -> None:
@@ -240,7 +251,8 @@ def test_zugferd_pdf_renders_multi_rate_vat_breakdown() -> None:
     assert "7,0 %" in text
     assert "0,0 %" in text
     assert "Umsatzsteueraufteilung" in text
-    assert "Gesamtbetrag 276,00 EUR" in text
+    assert "Gesamtbetrag" in text
+    assert "276,00 EUR" in text
 
 
 def test_cii_xml_is_schema_valid() -> None:

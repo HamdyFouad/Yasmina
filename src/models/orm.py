@@ -71,10 +71,13 @@ __all__ = [
     "AuditLog",
     "Base",
     "CatalogArticle",
+    "CreditNote",
+    "CreditNoteNumberSequence",
     "CustomerOffer",
     "CustomerOfferLine",
     "IntegrationIdempotency",
     "Invoice",
+    "InvoiceEvent",
     "InvoiceLine",
     "InvoiceNumberSequence",
     "InvoiceVatSplit",
@@ -785,6 +788,132 @@ class InvoiceVatSplit(Base, TimestampMixin):
         UniqueConstraint("invoice_id", "rate", name="uq_invoice_vat_rate"),
         CheckConstraint("rate >= 0 AND rate <= 1", name="rate_range"),
         CheckConstraint("taxable_amount >= 0 AND tax_amount >= 0", name="amounts_non_negative"),
+    )
+
+
+class CreditNoteNumberSequence(Base, TimestampMixin):
+    """Transactionally incremented yearly ``GS-YYYY-XXXX`` counter."""
+
+    __tablename__ = "credit_note_number_sequences"
+
+    year: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_value: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+
+    __table_args__ = (
+        CheckConstraint("year >= 2000 AND year <= 2200", name="year_range"),
+        CheckConstraint("last_value >= 0 AND last_value <= 9999", name="last_value_range"),
+    )
+
+
+class CreditNote(Base, TimestampMixin):
+    """GoBD-relevant credit note with its own gapless numbering sequence."""
+
+    __tablename__ = "credit_notes"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    invoice_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("invoices.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    credit_note_number: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    credit_note_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="APPLIED", server_default=text("'APPLIED'")
+    )
+    issue_date: Mapped[date] = mapped_column(Date, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    total_net: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    total_vat: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    total_gross: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    vat_breakdown: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    lines: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    artifacts: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    invoice: Mapped[Invoice] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint(
+            "credit_note_year",
+            "sequence_number",
+            name="uq_credit_note_year_sequence",
+        ),
+        CheckConstraint(
+            "credit_note_number ~ '^GS-[0-9]{4}-[0-9]{4}$'",
+            name="credit_note_number_format",
+        ),
+        CheckConstraint(
+            "credit_note_year >= 2000 AND credit_note_year <= 2200",
+            name="credit_note_year_range",
+        ),
+        CheckConstraint(
+            "sequence_number >= 1 AND sequence_number <= 9999",
+            name="sequence_range",
+        ),
+        CheckConstraint(
+            "status IN ('ISSUED', 'APPLIED', 'CANCELLED')",
+            name="status_valid",
+        ),
+        CheckConstraint(
+            "total_net >= 0 AND total_vat >= 0 AND total_gross >= 0",
+            name="totals_non_negative",
+        ),
+        CheckConstraint("total_gross = total_net + total_vat", name="totals_consistent"),
+        Index("ix_credit_notes_invoice_date", "invoice_id", "issue_date"),
+    )
+
+
+class InvoiceEvent(Base):
+    """Append-only, hash-chained invoice lifecycle event (GoBD retention)."""
+
+    __tablename__ = "invoice_events"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    invoice_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("invoices.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    actor: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    reference: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    prev_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    entry_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+
+    invoice: Mapped[Invoice] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("invoice_id", "sequence", name="uq_invoice_event_sequence"),
+        CheckConstraint("sequence >= 1", name="sequence_positive"),
+        CheckConstraint(
+            "event_type IN ('ISSUED', 'PAYMENT_RECORDED', 'CREDIT_ISSUED', 'STATUS_CHANGED', 'CANCELLED')",
+            name="event_type_valid",
+        ),
+        CheckConstraint(
+            "prev_hash ~ '^[0-9a-f]{64}$' AND entry_hash ~ '^[0-9a-f]{64}$'",
+            name="hash_format",
+        ),
+        CheckConstraint("amount IS NULL OR amount >= 0", name="amount_non_negative"),
+        Index("ix_invoice_events_invoice_sequence", "invoice_id", "sequence"),
     )
 
 

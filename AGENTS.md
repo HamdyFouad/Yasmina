@@ -24,8 +24,8 @@ Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 
 - `src/db.py` (async SQLAlchemy session factory)
 - `src/admin.py` (`yasmina-admin` catalogue seeding CLI)
 - `src/main.py` (FastAPI app + startup preflight lifespan)
-- `src/api/` (`security.py`, `rate_limit.py`, `deps.py`, `schemas.py`, `routes/tenders.py`, `routes/approvals.py`, `routes/offers.py`, `routes/ops.py`, `routes/auth.py`)
-- `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `invoice_repository.py`, `user_repository.py`, `catalog_repository.py`, `ingestion_repository.py`, `worker_run_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`)
+- `src/api/` (`security.py`, `rate_limit.py`, `deps.py`, `schemas.py`, `routes/tenders.py`, `routes/approvals.py`, `routes/offers.py`, `routes/invoices.py`, `routes/ops.py`, `routes/auth.py`)
+- `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `invoice_repository.py`, `credit_note_repository.py`, `invoice_event_repository.py`, `user_repository.py`, `catalog_repository.py`, `ingestion_repository.py`, `worker_run_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`)
 - `src/models/` (`enums.py`, `schemas.py`, `orm.py`)
 - `src/parsers/` (`normalizers.py`, `pdf_parser.py`, `gaeb_parser.py`, `gaeb_validator.py`)
 - `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `password_service.py`, `embedding_service.py`, `ingestion_processor.py`, `worker_lock.py`, `worker_metrics.py`)
@@ -33,7 +33,7 @@ Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 
 - `src/integrations/` (`clamav_client.py`, `minio_client.py`, `erpnext_client.py`, `n8n_client.py`, `telegram_notifier.py`; Telegram approval bot planned)
 - `src/scrapers/` (`base_scraper.py`, `bayern_vergabe.py`, `oeffentlichevergabe.py`, `ingestion.py`)
 - `src/scheduler.py` and `src/worker.py` (cron scheduler, scrape/ingestion CLI, advisory locks and shutdown signals)
-- `src/generators/` (`invoice_models.py`, `leitweg.py`, `pdf_template.py`, `schematron/`, `zugferd_generator.py`, `xrechnung_generator.py`)
+- `src/generators/` (`invoice_models.py`, `leitweg.py`, `pdf_template.py`, `fonts/`, `schematron/`, `zugferd_generator.py`, `xrechnung_generator.py`)
 - `tests/` (unit, integration, evals with German golden fixtures)
 
 ## 5. Execution Protocol for Coding Agents
@@ -55,6 +55,9 @@ When given an implementation task:
 - Auth: `POST /api/v1/auth/token` (access + refresh), `/auth/refresh` (rotating), `/auth/logout` (JTI blocklist), `/auth/users` (admin). Four-eyes rejects self-approval by owner/tender creator.
 - Rate limits: `/auth` 20/min, `/upload` 30/min, other `/api/v1` 300/min by default; adjust `RATE_LIMIT_*` settings.
 - E-invoicing: `XRechnungGenerator` runs KoSIT EN16931 + XRechnung CIUS Schematron via `saxonche`; `ZUGFeRDGenerator` embeds CII XML in the branded PDF/A-3 carrier; `InvoiceRepository` owns gapless `INV-YYYY-XXXX` numbering and multi-rate VAT rows.
+- Billing: `GET /api/v1/invoices[/{id}]` (owner-scoped for sales), `POST /invoices/{id}/payments` and `POST /invoices/{id}/credits` (admin-only); `CreditNoteRepository` allocates a gapless `GS-YYYY-XXXX` credit number across the invoice VAT buckets and applies it atomically.
+- GoBD event log: `InvoiceEventRepository` appends hash-chained `invoice_events` for issuance/payment/credit/status changes; PostgreSQL triggers block UPDATE/DELETE/TRUNCATE, and `verify_chain()` re-derives every hash.
+- PDF/A-3 gate: `python scripts/generate_sample_invoice.py sample-invoice.pdf` then `docker run --rm -v "$PWD:/data" verapdf/cli:latest -f 3b /data/sample-invoice.pdf`; the report must contain `isCompliant="true"`. The carrier embeds DejaVu TrueType faces from `src/generators/fonts/`.
 - Scrape worker: `python -m src.worker scrape|schedule` (daily cron via `SCRAPER_SCHEDULE_CRON`).
 - Ingestion worker: `python -m src.worker process [--limit N] [--interval SECONDS]` drains `tender_ingestion_jobs` with `DeepSeek` triage and Docling/GAEB parsing.
 - Worker operations: portal locks use `pg_try_advisory_lock`; SIGINT/SIGTERM finish in-flight work; `GET /healthz/worker` exposes `worker_runs` history and outbox counts; Telegram alerts use `TELEGRAM_BOT_TOKEN` + `TELEGRAM_APPROVAL_CHAT_ID`.

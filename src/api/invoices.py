@@ -102,6 +102,7 @@ async def generate_invoice_artifacts(
     storage: MinioObjectStorage,
     *,
     invoice_repository: InvoiceRepository | None = None,
+    actor: str | None = None,
 ) -> dict[str, Any]:
     """Generate XML/PDF and persist both in MinIO under the invoice prefix."""
 
@@ -111,7 +112,11 @@ async def generate_invoice_artifacts(
         try:
             stored_invoice = await invoice_repository.get_by_offer(offer.id)
             if stored_invoice is None:
-                stored_invoice = await invoice_repository.create(invoice, offer_id=offer.id)
+                stored_invoice = await invoice_repository.create(
+                    invoice,
+                    offer_id=offer.id,
+                    actor=actor,
+                )
             invoice = stored_invoice.invoice
         except InvoiceRepositoryError as exc:
             raise InvoiceWiringError(f"invoice persistence failed: {exc}") from exc

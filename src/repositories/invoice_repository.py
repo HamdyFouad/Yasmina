@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import builtins
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import Select, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.generators.invoice_models import Invoice, InvoiceLine, InvoiceParty
 from src.models.enums import InvoiceStatus
+from src.models.orm import (
+    CustomerOffer as CustomerOfferORM,
+)
 from src.models.orm import (
     Invoice as InvoiceORM,
 )
@@ -26,6 +30,7 @@ from src.models.orm import (
     InvoiceVatSplit,
 )
 from src.models.schemas import q2
+from src.repositories.invoice_event_repository import InvoiceEventRepository
 
 __all__ = [
     "InvoiceNumberExhaustedError",
@@ -193,7 +198,78 @@ class InvoiceRepository:
         )
         return _stored(row) if row is not None else None
 
-    async def create(self, invoice: Invoice, *, offer_id: UUID) -> StoredInvoice:
+    async def get_by_id(self, invoice_id: UUID) -> StoredInvoice | None:
+        row = (
+            (await self.session.execute(select(InvoiceORM).where(InvoiceORM.id == invoice_id)))
+            .scalars()
+            .first()
+        )
+        return _stored(row) if row is not None else None
+
+    def _list_statement(
+        self,
+        *,
+        owner: str | None = None,
+        status: InvoiceStatus | None = None,
+    ) -> Select[Any]:
+        statement = select(InvoiceORM)
+        if owner is not None:
+            statement = statement.join(
+                CustomerOfferORM,
+                InvoiceORM.offer_id == CustomerOfferORM.id,
+            ).where(CustomerOfferORM.owner == owner)
+        if status is not None:
+            statement = statement.where(InvoiceORM.status == status)
+        return statement
+
+    async def list(
+        self,
+        *,
+        owner: str | None = None,
+        status: InvoiceStatus | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> builtins.list[StoredInvoice]:
+        rows = (
+            (
+                await self.session.execute(
+                    self._list_statement(owner=owner, status=status)
+                    .order_by(InvoiceORM.issue_date.desc(), InvoiceORM.invoice_number.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [_stored(row) for row in rows]
+
+    async def count(
+        self,
+        *,
+        owner: str | None = None,
+        status: InvoiceStatus | None = None,
+    ) -> int:
+        statement = self._list_statement(owner=owner, status=status)
+        count_statement = select(func.count()).select_from(statement.subquery())
+        return int((await self.session.execute(count_statement)).scalar_one())
+
+    async def events(self, invoice_id: UUID) -> builtins.list[dict[str, Any]]:
+        return [
+            event.as_dict()
+            for event in await InvoiceEventRepository(self.session).list_for_invoice(invoice_id)
+        ]
+
+    async def verify_event_chain(self, invoice_id: UUID) -> bool:
+        return await InvoiceEventRepository(self.session).verify_chain(invoice_id)
+
+    async def create(
+        self,
+        invoice: Invoice,
+        *,
+        offer_id: UUID,
+        actor: str | None = None,
+    ) -> StoredInvoice:
         """Allocate the next number and persist the invoice in one transaction.
 
         The counter row is locked until commit, so a rollback also rolls back
@@ -212,6 +288,21 @@ class InvoiceRepository:
             row = self._to_orm(numbered, offer_id=offer_id, sequence=sequence)
             self.session.add(row)
             await self.session.flush()
+            await InvoiceEventRepository(self.session).append(
+                row.id,
+                "ISSUED",
+                actor=actor,
+                amount=row.total_gross,
+                reference=row.invoice_number,
+                payload={
+                    "offer_id": str(offer_id),
+                    "invoice_year": row.invoice_year,
+                    "sequence_number": row.sequence_number,
+                    "total_net": format(row.total_net, "f"),
+                    "total_vat": format(row.total_vat, "f"),
+                    "total_gross": format(row.total_gross, "f"),
+                },
+            )
             await self.session.commit()
         except IntegrityError as exc:
             await self.session.rollback()
@@ -315,10 +406,17 @@ class InvoiceRepository:
         await self.session.commit()
         return _stored(row)
 
-    async def record_payment(self, invoice_id: UUID, amount: Decimal) -> StoredInvoice:
-        """Add a payment and derive PAID/PARTIALLY_PAID from the outstanding amount."""
+    async def record_payment(
+        self,
+        invoice_id: UUID,
+        amount: Decimal,
+        *,
+        actor: str | None = None,
+        reference: str | None = None,
+    ) -> StoredInvoice:
+        """Add a payment, append its event and derive the payment status."""
 
-        row = await self._get_row(invoice_id)
+        row = await self._get_row(invoice_id, lock=True)
         value = q2(amount)
         if value <= 0:
             raise InvoiceRepositoryError("payment amount must be positive")
@@ -329,6 +427,19 @@ class InvoiceRepository:
         row.status = InvoiceStatus.PAID if outstanding <= 0 else InvoiceStatus.PARTIALLY_PAID
         if row.status == InvoiceStatus.PAID:
             row.paid_at = datetime.now(UTC)
+        await InvoiceEventRepository(self.session).append(
+            invoice_id,
+            "PAYMENT_RECORDED",
+            actor=actor,
+            amount=value,
+            reference=reference,
+            payload={
+                "invoice_number": row.invoice_number,
+                "paid_amount": format(row.paid_amount, "f"),
+                "outstanding_amount": format(outstanding, "f"),
+                "status": row.status.value,
+            },
+        )
         await self.session.commit()
         return _stored(row)
 
@@ -338,10 +449,14 @@ class InvoiceRepository:
         amount: Decimal,
         *,
         credit_note_number: str,
+        credit_note_id: UUID | None = None,
+        actor: str | None = None,
+        reference: str | None = None,
+        commit: bool = True,
     ) -> StoredInvoice:
         """Record a credit note against the invoice without reusing the number."""
 
-        row = await self._get_row(invoice_id)
+        row = await self._get_row(invoice_id, lock=True)
         value = q2(amount)
         if value <= 0:
             raise InvoiceRepositoryError("credit amount must be positive")
@@ -351,19 +466,58 @@ class InvoiceRepository:
         row.credit_note_number = credit_note_number[:64]
         outstanding = q2(row.total_gross - row.credited_amount - row.paid_amount)
         row.status = InvoiceStatus.CREDITED if outstanding <= 0 else InvoiceStatus.PARTIALLY_CREDITED
-        await self.session.commit()
+        await InvoiceEventRepository(self.session).append(
+            invoice_id,
+            "CREDIT_ISSUED",
+            actor=actor,
+            amount=value,
+            reference=reference or credit_note_number,
+            payload={
+                "invoice_number": row.invoice_number,
+                "credit_note_number": credit_note_number,
+                "credit_note_id": str(credit_note_id) if credit_note_id is not None else None,
+                "credited_amount": format(row.credited_amount, "f"),
+                "outstanding_amount": format(outstanding, "f"),
+                "status": row.status.value,
+            },
+        )
+        if commit:
+            await self.session.commit()
+        else:
+            await self.session.flush()
         return _stored(row)
 
     async def mark_overdue(self, invoice_id: UUID, *, today: date | None = None) -> StoredInvoice:
-        row = await self._get_row(invoice_id)
+        row = await self._get_row(invoice_id, lock=True)
         current = today or datetime.now(UTC).date()
         if row.status in {InvoiceStatus.ISSUED, InvoiceStatus.PARTIALLY_PAID} and row.due_date < current:
+            previous = row.status
             row.status = InvoiceStatus.OVERDUE
+            await InvoiceEventRepository(self.session).append(
+                invoice_id,
+                "STATUS_CHANGED",
+                reference=row.invoice_number,
+                payload={
+                    "previous_status": previous.value,
+                    "status": row.status.value,
+                },
+            )
             await self.session.commit()
         return _stored(row)
 
-    async def _get_row(self, invoice_id: UUID) -> InvoiceORM:
-        row = await self.session.get(InvoiceORM, invoice_id)
+    async def _get_row(self, invoice_id: UUID, *, lock: bool = False) -> InvoiceORM:
+        if lock:
+            row = (
+                (
+                    await self.session.execute(
+                        select(InvoiceORM).where(InvoiceORM.id == invoice_id).with_for_update()
+                    )
+                )
+                .scalars()
+                .first()
+            )
+        else:
+            row = await self.session.get(InvoiceORM, invoice_id)
         if row is None:
             raise InvoiceRepositoryError(f"invoice {invoice_id} does not exist")
         return row

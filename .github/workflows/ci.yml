@@ -64,6 +64,15 @@ jobs:
       - name: Mypy strict
         run: python -m mypy src
 
+      - name: Generate PDF/A-3 carrier sample
+        run: python scripts/generate_sample_invoice.py sample-invoice.pdf
+
+      - name: veraPDF PDF/A-3 conformance
+        run: |
+          docker run --rm -v "$PWD:/data" verapdf/cli:latest -f 3b /data/sample-invoice.pdf > verapdf-report.xml
+          grep -q 'isCompliant="true"' verapdf-report.xml
+          echo "PDF/A-3b conformance verified."
+
       - name: Compile sources
         run: python -m compileall -q src alembic tests
 
@@ -74,6 +83,10 @@ jobs:
           grep -q "USING hnsw (embedding vector_cosine_ops)" migration.sql
           grep -q "CREATE TRIGGER trg_audit_logs_append_only" migration.sql
           grep -q "CREATE TRIGGER trg_audit_logs_no_truncate" migration.sql
+          grep -q "CREATE TABLE invoice_events" migration.sql
+          grep -q "CREATE TABLE credit_notes" migration.sql
+          grep -q "CREATE TRIGGER trg_invoice_events_append_only" migration.sql
+          grep -q "CREATE TRIGGER trg_invoice_events_no_truncate" migration.sql
           grep -q "INSERT INTO alembic_version" migration.sql
 
       - name: Ensure .env is not tracked

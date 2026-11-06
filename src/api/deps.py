@@ -16,6 +16,7 @@ from src.integrations.clamav_client import ClamAVScanner
 from src.integrations.erpnext_client import ERPNextClient
 from src.integrations.minio_client import MinioObjectStorage
 from src.integrations.n8n_client import N8nClient
+from src.repositories.credit_note_repository import CreditNoteRepository
 from src.repositories.ingestion_repository import TenderIngestionJobRepository
 from src.repositories.integration_repository import IntegrationRepository
 from src.repositories.invoice_repository import InvoiceRepository
@@ -36,6 +37,7 @@ __all__ = [
     "get_app_settings",
     "get_audit_service",
     "get_clamav_scanner",
+    "get_credit_note_repository",
     "get_erpnext_client",
     "get_integration_repository",
     "get_invoice_repository",
@@ -171,6 +173,12 @@ def get_invoice_repository(
     session: AsyncSession = Depends(get_session),
 ) -> InvoiceRepository:
     return InvoiceRepository(session)
+
+
+def get_credit_note_repository(
+    session: AsyncSession = Depends(get_session),
+) -> CreditNoteRepository:
+    return CreditNoteRepository(session)
 
 
 def get_workflow_checkpointer(

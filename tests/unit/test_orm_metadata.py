@@ -32,6 +32,9 @@ EXPECTED_TABLES = {
     "users",
     "refresh_tokens",
     "token_blocklist",
+    "credit_note_number_sequences",
+    "credit_notes",
+    "invoice_events",
 }
 
 
@@ -222,3 +225,19 @@ def test_identity_and_refresh_token_tables_shape() -> None:
     assert "ix_token_blocklist_expires" in {index.name for index in blocklist.indexes}
     assert tenders.c.owner.nullable is True
     assert "ix_tenders_owner" in {index.name for index in tenders.indexes}
+
+
+def test_billing_event_and_credit_note_shape() -> None:
+    events = Base.metadata.tables["invoice_events"]
+    notes = Base.metadata.tables["credit_notes"]
+    sequences = Base.metadata.tables["credit_note_number_sequences"]
+
+    assert events.c.prev_hash.type.length == 64
+    assert events.c.entry_hash.unique is True
+    assert "ck_invoice_events_event_type_valid" in {constraint.name for constraint in events.constraints}
+    assert notes.c.credit_note_number.unique is True
+    assert "ck_credit_notes_credit_note_number_format" in {
+        constraint.name for constraint in notes.constraints
+    }
+    assert "uq_credit_note_year_sequence" in {constraint.name for constraint in notes.constraints}
+    assert sequences.c.year.primary_key is True

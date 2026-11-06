@@ -7,6 +7,12 @@ from src.repositories.catalog_repository import (
     CatalogSeedItem,
     CatalogSeedResult,
 )
+from src.repositories.credit_note_repository import (
+    CreditNoteNumberExhaustedError,
+    CreditNoteRepository,
+    CreditNoteRepositoryError,
+    StoredCreditNote,
+)
 from src.repositories.ingestion_repository import (
     IngestionJobView,
     ScraperStateRepository,
@@ -54,6 +60,9 @@ __all__ = [
     "CatalogRepository",
     "CatalogSeedItem",
     "CatalogSeedResult",
+    "CreditNoteNumberExhaustedError",
+    "CreditNoteRepository",
+    "CreditNoteRepositoryError",
     "IngestionJobView",
     "InvoiceNumberExhaustedError",
     "InvoiceRepository",
@@ -68,6 +77,7 @@ __all__ = [
     "StoredInvoice",
     "StoredOffer",
     "StoredTender",
+    "StoredCreditNote",
     "TenderIngestionJobRepository",
     "TenderRepository",
     "TenderRepositoryError",

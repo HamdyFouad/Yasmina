@@ -39,6 +39,11 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert "CREATE TABLE users" in sql
     assert "CREATE TABLE refresh_tokens" in sql
     assert "CREATE TABLE token_blocklist" in sql
+    assert "CREATE TABLE credit_note_number_sequences" in sql
+    assert "CREATE TABLE credit_notes" in sql
+    assert "CREATE TABLE invoice_events" in sql
+    assert "CREATE TRIGGER trg_invoice_events_append_only" in sql
+    assert "CREATE TRIGGER trg_invoice_events_no_truncate" in sql
     assert "ALTER TABLE tenders ADD COLUMN owner" in sql
     assert "invoice_artifacts" in sql
     assert "USING hnsw (embedding vector_cosine_ops)" in sql
@@ -48,6 +53,6 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert sql.rstrip().endswith("COMMIT;")
 
     # Every domain table is created exactly once.
-    assert sql.count("CREATE TABLE ") == 25  # 24 domain tables + alembic_version
+    assert sql.count("CREATE TABLE ") == 28  # 27 domain tables + alembic_version
 
     reset_settings_cache()

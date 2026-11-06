@@ -25,11 +25,12 @@ from src.models.orm import (
     Invoice as InvoiceORM,
 )
 from src.models.orm import (
-    InvoiceLine as InvoiceLineORM,
-)
-from src.models.orm import (
+    InvoiceEvent,
     InvoiceNumberSequence,
     InvoiceVatSplit,
+)
+from src.models.orm import (
+    InvoiceLine as InvoiceLineORM,
 )
 from src.models.schemas import CustomerOffer, CustomerOfferLine, q2, q4
 from src.repositories.invoice_repository import InvoiceRepository, InvoiceRepositoryError
@@ -195,6 +196,13 @@ async def _cleanup(session) -> None:  # type: ignore[no-untyped-def]
             .all()
         )
         for invoice_id in invoice_ids:
+            await session.execute(
+                text("ALTER TABLE invoice_events DISABLE TRIGGER trg_invoice_events_append_only")
+            )
+            await session.execute(delete(InvoiceEvent).where(InvoiceEvent.invoice_id == invoice_id))
+            await session.execute(
+                text("ALTER TABLE invoice_events ENABLE TRIGGER trg_invoice_events_append_only")
+            )
             await session.execute(delete(InvoiceVatSplit).where(InvoiceVatSplit.invoice_id == invoice_id))
             await session.execute(delete(InvoiceLineORM).where(InvoiceLineORM.invoice_id == invoice_id))
             await session.execute(delete(InvoiceORM).where(InvoiceORM.id == invoice_id))

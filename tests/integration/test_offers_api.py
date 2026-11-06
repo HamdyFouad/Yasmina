@@ -127,7 +127,7 @@ class FakeInvoiceRepository:
     async def get_by_offer(self, offer_id: UUID) -> Any | None:
         return self.records.get(offer_id)
 
-    async def create(self, invoice: Any, *, offer_id: UUID) -> Any:
+    async def create(self, invoice: Any, *, offer_id: UUID, actor: str | None = None) -> Any:
         numbered = invoice.model_copy(update={"invoice_number": "INV-2026-0001"})
         record = SimpleNamespace(id=uuid4(), invoice=numbered)
         self.records[offer_id] = record

@@ -16,9 +16,11 @@ waste bags across all thicknesses, volumes and colour standards.
 > pgvector catalogue seeding, AI extraction evals, ERPNext quotation sync,
 > HMAC-authenticated n8n RFQ/quote flows, compliant portal scrapers with
 > attachment harvesting and durable ingestion outbox, live DeepSeek/Docling
-> paths, deterministic unit conversion, PostgreSQL LangGraph checkpoints and
+> paths, deterministic unit conversion, PostgreSQL LangGraph checkpoints,
 > the production-hardened scrape/ingestion worker (advisory locks, graceful
-> shutdown, run metrics and Telegram alerts) are complete.
+> shutdown, run metrics and Telegram alerts), a billing REST API with payments
+> and credit notes, embedded-font PDF/A-3 output gated by veraPDF, and a
+> GoBD-compliant append-only invoice event log are complete.
 
 ---
 
@@ -79,12 +81,15 @@ src/
       tenders.py         # upload (scanned), owner-scoped match/price/workflow
       approvals.py       # four-eyes approval, offer persistence, ERPNext + invoices
       offers.py          # owner-aware offer retrieval
+      invoices.py        # invoice list/detail, payments, credit notes, event chain
       integrations.py    # n8n RFQ dispatch + signed quote callback
       ops.py             # /healthz/worker run history + outbox metrics
   repositories/
     tender_repository.py # PostgreSQL tender/position persistence + owner
     offer_repository.py  # offer lines, artifacts and ERPNext names
     invoice_repository.py # gapless invoice numbers, VAT splits, payment/credit status
+    credit_note_repository.py # gapless GS-YYYY-XXXX credit notes + VAT allocation
+    invoice_event_repository.py # GoBD append-only hash-chained invoice events
     user_repository.py   # users, Argon2id auth, refresh rotation, JTI blocklist
     catalog_repository.py # supplier catalogue + embedding upserts
     ingestion_repository.py # outbox jobs + scraper watermarks
@@ -129,15 +134,18 @@ src/
   generators/
     invoice_models.py    # shared invoice/party/line models
     leitweg.py           # Leitweg-ID format + MOD-97-10 validation
-    pdf_template.py      # branded PDF/A-3 carrier invoice layout
+    pdf_template.py      # branded PDF/A-3 carrier with embedded TrueType fonts
+    fonts/               # DejaVu Sans/Bold TrueType faces + license
     schematron/          # vendored KoSIT EN16931 + XRechnung CIUS rules
     zugferd_generator.py # Factur-X/ZUGFeRD 2.2 CII + PDF embedding
     xrechnung_generator.py # XRechnung 3.0 UBL XML + KoSIT validation
-alembic/                 # async migrations (… 0007 invoices/VAT, 0008 identity/security)
+alembic/                 # async migrations (… 0008 identity/security, 0009 billing events)
 docker/                  # PostgreSQL bootstrap (pgvector, n8n database)
 docs/
   DETAILED_SPEC.md       # authoritative engineering specification
   ASSUMPTIONS.md         # inferred fields / open spec questions
+scripts/
+  generate_sample_invoice.py # representative invoice PDF for the veraPDF CI gate
 tests/                   # unit tests (no database required)
   integration/           # live PostgreSQL/MinIO/identity/catalogue tests
   evals/                 # DeepSeek extraction golden dataset + accuracy gate
@@ -257,6 +265,12 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | GET | `/approvals/{offer_number}/documents/{format}` | viewer/approver/admin |
 | GET | `/offers` | sales (own), viewer/admin (all) |
 | GET | `/offers/{id}` | sales (own), viewer/admin (all) |
+| GET | `/invoices` | sales (own), viewer/admin (all) |
+| GET | `/invoices/{id}` | sales (own), viewer/admin (all) |
+| GET | `/invoices/{id}/events` | sales (own), viewer/admin (all) |
+| GET | `/invoices/{id}/credit-notes` | sales (own), viewer/admin (all) |
+| POST | `/invoices/{id}/payments` | admin only |
+| POST | `/invoices/{id}/credits` | admin only |
 | POST | `/integrations/rfq/dispatch` | sales/admin |
 | POST | `/integrations/n8n/supplier-quotes` | n8n HMAC signature |
 
@@ -308,6 +322,27 @@ limited to their own `owner`, while viewers and admins can read all. LangGraph
 checkpoints are stored in PostgreSQL (`workflow_checkpoint*`) with the workflow
 thread key `tender:<id>:<offer_number>`, so a worker restart can resume the
 state machine.
+
+#### Billing, credit notes and GoBD events
+
+- `GET /invoices` pages and filters issued invoices; `GET /invoices/{id}` returns
+  the invoice with its lifecycle events and an `event_chain_valid` flag. Sales
+  users only see invoices they own; viewers and admins see everything.
+- `POST /invoices/{id}/payments` records a payment against the invoice. The
+  invoice row is locked with `SELECT … FOR UPDATE`, the amount is validated
+  against the outstanding balance, and the status moves to `PARTIALLY_PAID` or
+  `PAID` in the same transaction.
+- `POST /invoices/{id}/credits` issues a credit note with its own gapless
+  `GS-YYYY-XXXX` sequence (a separate row-locked yearly counter, not the invoice
+  `INV-` series) and applies it to the invoice: the credited amount is allocated
+  across the invoice VAT buckets and the status moves to `PARTIALLY_CREDITED` or
+  `CREDITED`. `GET /invoices/{id}/credit-notes` lists the issued notes.
+- Every issuance, payment, credit, status change and cancellation appends a row
+  to `invoice_events`. Rows carry a sequence number, event type, actor, amount,
+  reference and payload, and are chained with SHA-256 over canonical JSON
+  (`prev_hash` → `entry_hash`), mirroring the `audit_logs` design. PostgreSQL
+  triggers reject `UPDATE`, `DELETE` and `TRUNCATE`, so the log is append-only
+  and GoBD-compliant; `GET /invoices/{id}` re-verifies the chain on read.
 
 #### ERPNext and n8n integration
 
@@ -443,17 +478,19 @@ cron entry keeps both discovery and parsing moving.
 python -m pytest -q
 ```
 
-The current 320 tests pass (plus sixteen optional tests — thirteen live
+The current 323 tests pass (plus seventeen optional tests — fourteen live
 PostgreSQL tests, two MinIO/ClamAV smoke tests and the DeepSeek eval — that are
 skipped unless their environment variables are set) and cover normalizers, settings, strict schemas,
 ORM metadata, pgvector/HNSW configuration, GAEB parsing/validation, PDF table
 extraction, pricing, unit conversion, hybrid matching, LangGraph
 triage/enrichment and checkpointing, Ed25519 approval, offer
-persistence/idempotency, gapless invoice numbering, multi-rate VAT, KoSIT
-Schematron validation, branded PDF/A-3 invoices, Argon2id users, refresh-token
-rotation/reuse detection, JWT blocklisting, four-eyes approval, tender/offer
-ownership, rate limiting, catalogue CSV/JSON seeding and vector upserts,
-deepseek extraction evals, durable ingestion outbox claiming/retry,
+persistence/idempotency, gapless invoice and credit-note numbering, multi-rate
+VAT, KoSIT Schematron validation, embedded-font PDF/A-3 invoices, the
+append-only invoice event chain, billing/payment/credit API routes, Argon2id
+users, refresh-token rotation/reuse detection, JWT blocklisting, four-eyes
+approval, tender/offer ownership, rate limiting, catalogue CSV/JSON seeding and
+vector upserts, deepseek extraction evals, durable ingestion outbox
+claiming/retry,
 attachment harvesting and watermarking, advisory locking, signal-driven
 shutdown, worker run metrics, Telegram delivery, ClamAV scanning and audit
 chaining, MinIO object flows, ERPNext retries/payload mapping, n8n HMAC
@@ -462,10 +499,10 @@ CPV-filtered HTML extraction, cron scheduling, FastAPI business routes, RBAC,
 tender persistence, e-invoicing and offline migration rendering.
 
 ```powershell
-# optional live PostgreSQL offer/checkpoint, outbox/lock, invoice, identity and catalogue tests
-# (after alembic upgrade head)
+# optional live PostgreSQL offer/checkpoint, outbox/lock, invoice, identity,
+# catalogue and billing tests (after alembic upgrade head)
 $env:YASMINA_TEST_DATABASE_URL = "postgresql+asyncpg://yasmina:yasmina@localhost:5432/yasmina"
-python -m pytest -q tests/integration/test_offer_workflow_db.py tests/integration/test_ingestion_outbox_db.py tests/integration/test_invoices_db.py tests/integration/test_identity_db.py tests/integration/test_catalog_seed_db.py
+python -m pytest -q tests/integration/test_offer_workflow_db.py tests/integration/test_ingestion_outbox_db.py tests/integration/test_invoices_db.py tests/integration/test_identity_db.py tests/integration/test_catalog_seed_db.py tests/integration/test_billing_db.py
 # with local MinIO/ClamAV:
 $env:YASMINA_TEST_SERVICES = "1"
 python -m pytest -q tests/integration/test_services_smoke.py
@@ -595,11 +632,18 @@ ZUGFeRDGenerator().generate(invoice, "invoice.pdf")
   splits (19 %, 7 %, 0 %), `paid_amount`, `credited_amount`, credit-note number
   and status (`ISSUED`, `PARTIALLY_PAID`, `PAID`, `OVERDUE`,
   `PARTIALLY_CREDITED`, `CREDITED`, `CANCELLED`).
+- Credit notes are issued by `CreditNoteRepository` from their own gapless
+  `GS-YYYY-XXXX` counter. A credit note stores its reason, net/VAT/gross totals
+  and per-rate VAT allocation, and is applied to the invoice in the same
+  transaction.
 - ZUGFeRD/Factur-X embeds valid EN 16931 CII XML in a dynamically rendered
   branded PDF/A-3 carrier. The layout uses BayerClean, Reithmayrstraße 52,
-  93055 Regensburg, an address block, line table, VAT split and totals; it adds
-  PDF/A XMP identification and an sRGB output intent before Factur-X embedding.
-  Pass `base_pdf=` to supply an externally certified PDF/A-3 carrier instead.
+  93055 Regensburg, an address block, line table, VAT split and totals.
+  `pdf_template.py` draws with ReportLab and embeds the DejaVu Sans/Bold TrueType
+  faces from `src/generators/fonts/`, so no Base-14 font is referenced; pypdf
+  then adds `/Lang`, `/MarkInfo`, an sRGB output intent, PDF/A-3 XMP
+  identification and trailer file identifiers. Pass `base_pdf=` to supply an
+  externally certified PDF/A-3 carrier instead.
 - The CII XML is XSD-validated by the `factur-x` package; the UBL invoice is
   checked against UBL 2.1 plus KoSIT Schematron in the test suite.
 - `saxonche` is required for production XRechnung validation and is part of the
@@ -647,7 +691,10 @@ GitHub Actions (`.github/workflows/ci.yml`) has two gates:
 
 - **quality** — `ruff check .`, `ruff format --check .`, `mypy src` (strict),
   byte compilation, offline migration rendering and the `.env` tracked-file
-  guard.
+  guard. The same job renders `scripts/generate_sample_invoice.py` to a PDF and
+  runs the [veraPDF](https://verapdf.org/) CLI (`verapdf/cli:latest -f 3b`)
+  against it, failing the build unless the report contains
+  `isCompliant="true"` for the PDF/A-3b profile.
 - **tests** — Python 3.11 and 3.12 jobs with `pgvector/pgvector:pg16` and
   ClamAV services plus a MinIO server container. The workflow applies Alembic,
   creates the MinIO bucket, runs the real-service preflight, then runs the full
@@ -705,6 +752,11 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - **Invoice / InvoiceLine / InvoiceVatSplit** — legally issued invoice linked to
   one offer, gapless yearly `INV-YYYY-XXXX` number, line-level VAT rates,
   persisted VAT buckets, payment/credit amounts and artifact keys.
+- **CreditNote** — gapless `GS-YYYY-XXXX` correction document with reason,
+  totals, per-rate VAT allocation and JSONB line snapshot.
+- **InvoiceEvent** — append-only, hash-chained lifecycle log (`ISSUED`,
+  `PAYMENT_RECORDED`, `CREDIT_ISSUED`, `STATUS_CHANGED`, `CANCELLED`) with
+  sequence, actor, amount, reference and payload.
 - **User / RefreshToken / TokenBlocklist** — Argon2id identities, hashed rotating
   refresh sessions and revoked access-token JTIs.
 - **AuditLog** — append-only, hash-chained compliance trail.
@@ -722,7 +774,10 @@ secrets in production, and verifies that Argon2id password hashing is available.
 | Portal serialisation | PostgreSQL session-level advisory locks per portal |
 | Worker observability | `worker_runs` history + `/healthz/worker` snapshot |
 | Invoice numbering | row-locked yearly counter updated in the invoice transaction |
+| Credit-note numbering | separate row-locked `GS-YYYY-XXXX` yearly counter |
 | Multi-rate VAT | per-line rate + `invoice_vat_splits` rows and JSONB snapshot |
+| Billing event log | append-only `invoice_events` + SHA-256 `prev_hash` chain |
+| Event immutability | `BEFORE UPDATE/DELETE/TRUNCATE` triggers raising an exception |
 | Identity | unique username/email + Argon2id password hashes |
 | Refresh sessions | SHA-256 token hashes, rotation families, reuse detection |
 | Access revocation | `token_blocklist` JTI rows checked on every authenticated request |
@@ -776,7 +831,8 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P4.4 — invoice ORM with gapless `INV-YYYY-XXXX` numbering, KoSIT Schematron validation, branded PDF/A-3 carrier invoices and multi-rate VAT records
 - [x] P4.5 — Argon2id users, short-lived JWTs, rotating refresh-token families, JTI blocklist, four-eyes approval, ownership-scoped APIs and token-bucket rate limiting
 - [x] P4.6 — CI real-service containers (PostgreSQL/pgvector, MinIO, ClamAV), ruff/mypy quality gates, pgvector catalogue seeding CLI and DeepSeek extraction evals
-- [ ] P2 — Telegram notifier and production ERPNext/n8n workflow templates
+- [x] P4.7 — embedded-font PDF/A-3 with a veraPDF CI gate, `GET /invoices` + payment and credit-note REST endpoints, gapless `GS-YYYY-XXXX` credit notes and a GoBD append-only hash-chained invoice event log
+- [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and
 `docs/ASSUMPTIONS.md` for fields inferred while Sections 5–8 are still being

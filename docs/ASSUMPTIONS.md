@@ -379,6 +379,48 @@ reconciled with the authoritative spec later.
   thirteen tests; the two service smoke tests run in CI with
   `YASMINA_TEST_SERVICES=1` and the live eval remains key-gated.
 
+## Billing completion & PDF/A-3 conformance assumptions (P4.7)
+
+- `pdf_template.build_branded_pdf` draws the carrier with ReportLab and embeds
+  the DejaVu Sans/Bold TrueType faces vendored in `src/generators/fonts/`
+  (Bitstream Vera / public-domain license, see `LICENSE_DEJAVU`). Base-14 fonts
+  are never referenced, so the document renders identically on every host and
+  the PDF/A-3 validator finds a `/FontFile2` for every font resource.
+- pypdf post-processing adds `/Lang`, `/MarkInfo`, an sRGB output intent, PDF/A-3
+  XMP (`pdfaid:part=3`, `pdfaid:conformance=B`) and trailer file identifiers,
+  which veraPDF requires. The CI quality job renders
+  `scripts/generate_sample_invoice.py` and runs `verapdf/cli:latest -f 3b`; the
+  build fails unless the report's `isCompliant` attribute is `"true"`. This is a
+  hard conformance gate, not a warning.
+- Invoice lifecycle events live in `invoice_events` and are appended by the
+  repositories, never by callers: `ISSUED`, `PAYMENT_RECORDED`, `CREDIT_ISSUED`,
+  `STATUS_CHANGED` and `CANCELLED`. Each row carries `(invoice_id, sequence)` as
+  a unique key, an optional `amount`, `reference` and JSONB `payload`.
+- The event chain hashes canonical JSON of the event fields plus `prev_hash`
+  with SHA-256, starting from 64 zeros. `InvoiceEventRepository.verify_chain`
+  re-derives every hash, and `GET /invoices/{id}` exposes the resulting
+  `event_chain_valid` flag. PostgreSQL triggers block `UPDATE`, `DELETE` and
+  `TRUNCATE`, so the log is append-only in the GoBD sense; deletion for tests
+  must disable `trg_invoice_events_append_only` explicitly.
+- Credit notes have their own gapless `GS-YYYY-XXXX` sequence
+  (`credit_note_number_sequences`, yearly, capped at `9999`). They are separate
+  from the `INV-` invoice series so a credit note never consumes an invoice
+  number, and they reuse the invoice's VAT buckets: the credited amount is
+  allocated across rates, and the resulting per-rate corrections are stored on
+  the credit note.
+- The billing API is intentionally narrow: `GET /invoices` and invoice detail /
+  events / credit-note reads are owner-scoped for `sales` and global for
+  `viewer`/`admin`; `POST /invoices/{id}/payments` and
+  `POST /invoices/{id}/credits` are admin-only because they mutate legal
+  payment/credit state. Credit notes currently produce a persisted document
+  record and number; a dedicated ZUGFeRD credit-note PDF is out of scope for
+  P4.7.
+- The billing tests create records under the isolated year 2099, disable the
+  append-only triggers only for teardown and re-enable them before returning, so
+  a failed test cannot leave the compliance guard off.
+- P4.7 brings the default suite to 323 tests and the live PostgreSQL suite to
+  fourteen tests.
+
 ## E-invoicing assumptions (P2.1)
 
 - Invoice lines use the shared `UnitOfMeasure`; UBL/CII unit codes are mapped to

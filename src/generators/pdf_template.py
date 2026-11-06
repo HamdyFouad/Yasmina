@@ -1,29 +1,32 @@
 """Generated German invoice layout for the PDF/A-3 ZUGFeRD carrier document.
 
-The template deliberately uses only pypdf primitives so invoice generation does
-not need a browser, Java runtime or office stack. It renders the seller/buyer
-address blocks, line table, multi-rate VAT split and totals, adds PDF/A-3 XMP
-identification and an sRGB output intent, and is then used as the base PDF for
-the Factur-X attachment.
+The layout is rendered with ReportLab using bundled, embedded DejaVu TrueType
+fonts, then augmented with PDF/A-3 XMP identification and an sRGB output intent.
+That keeps the generated carrier independent of the office/browser stack while
+satisfying the font-embedding requirement of PDF/A.
 """
 
 from __future__ import annotations
 
 import base64
 from decimal import Decimal
+from functools import lru_cache
 from io import BytesIO
+from pathlib import Path
 
-from pypdf import PdfWriter
+from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (
     ArrayObject,
     BooleanObject,
-    DecodedStreamObject,
     DictionaryObject,
     NameObject,
     NumberObject,
     StreamObject,
     TextStringObject,
 )
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas
 
 from src.generators.invoice_models import Invoice
 from src.models.schemas import q2
@@ -35,8 +38,13 @@ _A4_HEIGHT = 842
 _LEFT = 48
 _RIGHT = _A4_WIDTH - 48
 _BOTTOM = 58
-_BRAND_BLUE = "0.05 0.32 0.52"
-_BRAND_LIGHT = "0.91 0.95 0.98"
+_BRAND_BLUE = (0.05, 0.32, 0.52)
+_BRAND_LIGHT = (0.91, 0.95, 0.98)
+_WHITE = (1.0, 1.0, 1.0)
+_BLACK = (0.0, 0.0, 0.0)
+_FONT_DIR = Path(__file__).resolve().parent / "fonts"
+_REGULAR_FONT = "YasminaDejaVu"
+_BOLD_FONT = "YasminaDejaVu-Bold"
 
 # A compact, freely redistributable sRGB ICC profile (littleCMS sRGB).
 _SRGB_ICC = base64.b64decode(
@@ -63,39 +71,26 @@ def _rate(value: Decimal) -> str:
     return f"{percent.normalize():.1f}".replace(".", ",") + " %"
 
 
-def _pdf_text(value: str) -> str:
-    """Escape a string for a WinAnsi PDF text object."""
-
-    return (
-        value.encode("cp1252", errors="replace")
-        .decode("cp1252")
-        .replace("\\", "\\\\")
-        .replace("(", "\\(")
-        .replace(")", "\\)")
-    )
+@lru_cache(maxsize=1)
+def _register_fonts() -> None:
+    pdfmetrics.registerFont(TTFont(_REGULAR_FONT, str(_FONT_DIR / "DejaVuSans.ttf")))
+    pdfmetrics.registerFont(TTFont(_BOLD_FONT, str(_FONT_DIR / "DejaVuSans-Bold.ttf")))
 
 
 class _Page:
-    def __init__(self, writer: PdfWriter) -> None:
-        self.writer = writer
+    def __init__(self, document_canvas: canvas.Canvas) -> None:
+        self.canvas = document_canvas
+        self._has_page = False
         self.reset()
 
     def reset(self) -> None:
-        self.page = self.writer.add_blank_page(width=_A4_WIDTH, height=_A4_HEIGHT)
-        font = DictionaryObject(
-            {
-                NameObject("/Type"): NameObject("/Font"),
-                NameObject("/Subtype"): NameObject("/Type1"),
-                NameObject("/BaseFont"): NameObject("/Helvetica"),
-                NameObject("/Encoding"): NameObject("/WinAnsiEncoding"),
-            }
-        )
-        font_ref = self.writer._add_object(font)
-        self.page[NameObject("/Resources")] = DictionaryObject(
-            {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
-        )
-        self.ops: list[str] = []
+        if self._has_page:
+            self.canvas.showPage()
+        self._has_page = True
         self.y = _A4_HEIGHT - 54
+        self.canvas.setFillColorRGB(*_BLACK)
+        self.canvas.setStrokeColorRGB(*_BLACK)
+        self.canvas.setFont(_REGULAR_FONT, 9)
 
     def text(
         self,
@@ -105,27 +100,22 @@ class _Page:
         value: str,
         *,
         bold: bool = False,
-        color: str = "0 0 0",
+        color: tuple[float, float, float] = _BLACK,
     ) -> None:
-        self.ops.append(f"{color} rg")
-        self.ops.append("BT")
-        if bold:
-            self.ops.append("2 Tr 1 w")
-        self.ops.append(f"/F1 {size:.1f} Tf")
-        self.ops.append(f"1 0 0 1 {x:.1f} {y:.1f} Tm")
-        self.ops.append(f"({_pdf_text(value)}) Tj")
-        if bold:
-            self.ops.append("0 Tr")
-        self.ops.append("ET")
+        self.canvas.setFillColorRGB(*color)
+        self.canvas.setFont(_BOLD_FONT if bold else _REGULAR_FONT, size)
+        self.canvas.drawString(x, y, value)
 
-    def rect(self, x: float, y: float, width: float, height: float, color: str) -> None:
-        self.ops.append(f"{color} rg")
-        self.ops.append(f"{x:.1f} {y:.1f} {width:.1f} {height:.1f} re f")
-
-    def finish(self) -> None:
-        stream = DecodedStreamObject()
-        stream.set_data("\n".join(self.ops).encode("cp1252", errors="replace"))
-        self.page[NameObject("/Contents")] = self.writer._add_object(stream)
+    def rect(
+        self,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        color: tuple[float, float, float],
+    ) -> None:
+        self.canvas.setFillColorRGB(*color)
+        self.canvas.rect(x, y, width, height, stroke=0, fill=1)
 
 
 def _wrap(value: str, width: int) -> list[str]:
@@ -146,20 +136,20 @@ def _wrap(value: str, width: int) -> list[str]:
 
 def _draw_header(page: _Page, invoice: Invoice) -> None:
     page.rect(0, _A4_HEIGHT - 92, _A4_WIDTH, 92, _BRAND_BLUE)
-    page.text(_LEFT, _A4_HEIGHT - 49, 20, invoice.seller.name, bold=True, color="1 1 1")
+    page.text(_LEFT, _A4_HEIGHT - 49, 20, invoice.seller.name, bold=True, color=_WHITE)
     if invoice.seller.street:
-        page.text(_LEFT, _A4_HEIGHT - 65, 9, invoice.seller.street, color="1 1 1")
+        page.text(_LEFT, _A4_HEIGHT - 65, 9, invoice.seller.street, color=_WHITE)
     if invoice.seller.city:
         line = f"{invoice.seller.postal_code or ''} {invoice.seller.city}".strip()
-        page.text(_LEFT, _A4_HEIGHT - 77, 9, line, color="1 1 1")
-    page.text(_RIGHT - 170, _A4_HEIGHT - 49, 15, "Rechnung", bold=True, color="1 1 1")
-    page.text(_RIGHT - 170, _A4_HEIGHT - 65, 9, invoice.invoice_number, color="1 1 1")
+        page.text(_LEFT, _A4_HEIGHT - 77, 9, line, color=_WHITE)
+    page.text(_RIGHT - 170, _A4_HEIGHT - 49, 15, "Rechnung", bold=True, color=_WHITE)
+    page.text(_RIGHT - 170, _A4_HEIGHT - 65, 9, invoice.invoice_number, color=_WHITE)
     page.text(
         _RIGHT - 170,
         _A4_HEIGHT - 77,
         9,
         invoice.issue_date.strftime("%d.%m.%Y"),
-        color="1 1 1",
+        color=_WHITE,
     )
 
 
@@ -222,7 +212,6 @@ def _draw_lines(page: _Page, invoice: Invoice) -> None:
         wrapped = _wrap(line.name, 48)
         needed = 12 * len(wrapped) + 6
         if page.y - needed < _BOTTOM + 90:
-            page.finish()
             page.reset()
             page.text(
                 _LEFT,
@@ -246,7 +235,6 @@ def _draw_lines(page: _Page, invoice: Invoice) -> None:
 
 def _draw_totals(page: _Page, invoice: Invoice) -> None:
     if page.y < _BOTTOM + 170:
-        page.finish()
         page.reset()
         page.text(
             _LEFT,
@@ -271,10 +259,10 @@ def _draw_totals(page: _Page, invoice: Invoice) -> None:
         page.y -= 13
 
     page.y -= 4
-    page.text(_LEFT + 300, page.y, 9, "Nettobetrag", bold=False)
+    page.text(_LEFT + 300, page.y, 9, "Nettobetrag")
     page.text(_RIGHT - 90, page.y, 9, _money(invoice.total_net) + " EUR", bold=True)
     page.y -= 14
-    page.text(_LEFT + 300, page.y, 9, "Umsatzsteuer", bold=False)
+    page.text(_LEFT + 300, page.y, 9, "Umsatzsteuer")
     page.text(_RIGHT - 90, page.y, 9, _money(invoice.total_vat) + " EUR", bold=True)
     page.y -= 14
     page.text(_LEFT + 300, page.y, 10, "Gesamtbetrag", bold=True)
@@ -314,7 +302,39 @@ def _xmp(invoice: Invoice) -> bytes:
     return packet.encode("utf-8")
 
 
-def _add_pdfa_metadata(writer: PdfWriter, invoice: Invoice) -> None:
+def _replace_base14_fonts(reader: PdfReader) -> None:
+    """Point ReportLab's default font resource at an embedded TrueType font."""
+
+    base14 = {"/Helvetica", "/Helvetica-Bold", "/Times-Roman", "/Courier"}
+    for page in reader.pages:
+        resources = page.get("/Resources")
+        if resources is None:
+            continue
+        fonts = resources.get_object().get("/Font")
+        if fonts is None:
+            continue
+        font_dict = fonts.get_object()
+        embedded = next(
+            (
+                reference
+                for reference in font_dict.values()
+                if reference.get_object().get("/Subtype") == "/TrueType"
+            ),
+            None,
+        )
+        if embedded is None:
+            continue
+        for key, reference in list(font_dict.items()):
+            if reference.get_object().get("/BaseFont") in base14:
+                font_dict[key] = embedded
+
+
+def _add_pdfa_metadata(pdf_bytes: bytes, invoice: Invoice) -> bytes:
+    reader = PdfReader(BytesIO(pdf_bytes))
+    _replace_base14_fonts(reader)
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
     writer.pdf_header = b"%PDF-1.7"
     writer.root_object[NameObject("/Lang")] = TextStringObject("de-DE")
     writer.root_object[NameObject("/MarkInfo")] = DictionaryObject(
@@ -335,6 +355,7 @@ def _add_pdfa_metadata(writer: PdfWriter, invoice: Invoice) -> None:
         }
     )
     writer.root_object[NameObject("/OutputIntents")] = ArrayObject([writer._add_object(output_intent)])
+    writer.generate_file_identifiers()
     writer.add_metadata(
         {
             "/Title": f"Rechnung {invoice.invoice_number}",
@@ -344,19 +365,26 @@ def _add_pdfa_metadata(writer: PdfWriter, invoice: Invoice) -> None:
             "/Producer": "Project Yasmina",
         }
     )
+    buffer = BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
 
 
 def build_branded_pdf(invoice: Invoice) -> bytes:
-    """Render the branded PDF/A-3 carrier invoice and return its bytes."""
+    """Render the branded PDF/A-3 carrier with embedded fonts."""
 
-    writer = PdfWriter()
-    page = _Page(writer)
+    _register_fonts()
+    buffer = BytesIO()
+    document = canvas.Canvas(buffer, pagesize=(_A4_WIDTH, _A4_HEIGHT), pageCompression=1)
+    document.setTitle(f"Rechnung {invoice.invoice_number}")
+    document.setAuthor(invoice.seller.name)
+    document.setSubject(f"Rechnung vom {invoice.issue_date.isoformat()}")
+    document.setCreator("Project Yasmina invoice template")
+    document.setProducer("Project Yasmina")
+    page = _Page(document)
     _draw_header(page, invoice)
     _draw_address_and_meta(page, invoice)
     _draw_lines(page, invoice)
     _draw_totals(page, invoice)
-    page.finish()
-    _add_pdfa_metadata(writer, invoice)
-    buffer = BytesIO()
-    writer.write(buffer)
-    return buffer.getvalue()
+    document.save()
+    return _add_pdfa_metadata(buffer.getvalue(), invoice)

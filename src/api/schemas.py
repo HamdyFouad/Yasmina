@@ -17,6 +17,8 @@ from src.models.schemas import CustomerOffer, SupplierQuote
 __all__ = [
     "ApprovalPayload",
     "InvoiceBuyerPayload",
+    "InvoiceCreditPayload",
+    "InvoicePaymentPayload",
     "InvoiceRequestPayload",
     "LogoutRequest",
     "MatchPayload",
@@ -128,6 +130,17 @@ class InvoiceRequestPayload(BaseModel):
     delivery_date: date | None = None
     iban: str | None = Field(default=None, max_length=34)
     payment_terms: str | None = Field(default=None, max_length=512)
+
+
+class InvoicePaymentPayload(BaseModel):
+    amount: Decimal = Field(gt=0, decimal_places=2)
+    reference: str | None = Field(default=None, max_length=128)
+
+
+class InvoiceCreditPayload(BaseModel):
+    amount: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+    reason: str = Field(min_length=3, max_length=4000)
+    issue_date: date | None = None
 
 
 class ApprovalPayload(BaseModel):

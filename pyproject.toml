@@ -31,6 +31,7 @@ dependencies = [
     "argon2-cffi>=23.1",
     "langgraph>=0.2",
     "pypdf>=5.0",
+    "reportlab>=4.2",
 ]
 
 [project.optional-dependencies]
@@ -100,6 +101,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 # FastAPI deliberately uses function calls (Depends/File/Query) in defaults.
 ignore = ["E501", "B008"]
 
+[tool.ruff.lint.per-file-ignores]
+# Standalone scripts bootstrap the repository root on sys.path before importing src.
+"scripts/*.py" = ["E402"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["src"]
 
@@ -126,6 +131,8 @@ module = [
     "facturx.*",
     "sentence_transformers",
     "sentence_transformers.*",
+    "reportlab",
+    "reportlab.*",
 ]
 ignore_missing_imports = true
 

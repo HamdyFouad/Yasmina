@@ -209,6 +209,7 @@ async def approve_offer_endpoint(
                 payload.invoice,
                 storage,
                 invoice_repository=invoices,
+                actor=principal.sub,
             )
         except (InvoiceWiringError, ObjectStorageError) as exc:
             raise HTTPException(
