@@ -473,7 +473,7 @@ reconciled with the authoritative spec later.
   `token_blocklist` rows and used/expired password reset tokens. `--dry-run`
   counts the same predicates without deleting. Each real run appends a
   `SYSTEM_TOKEN_CLEANUP` audit entry with the counts.
-- P4.8 brings the default suite to 337 tests and the live PostgreSQL suite to
+- P4.8 brings the default suite to 339 tests and the live PostgreSQL suite to
   twenty tests.
 
 ## E-invoicing assumptions (P2.1)

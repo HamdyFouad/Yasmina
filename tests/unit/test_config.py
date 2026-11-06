@@ -115,6 +115,25 @@ def test_scraper_defaults() -> None:
     assert settings.scraper_schedule_cron == "0 2 * * *"
 
 
+def test_mfa_totp_settings_accept_env_style_values(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MFA_TOTP_DIGITS", "8")
+    monkeypatch.setenv("MFA_TOTP_INTERVAL_SECONDS", "30")
+    monkeypatch.setenv("MFA_TOTP_WINDOW", "1")
+    monkeypatch.setenv("AUTH_TOKEN_RETENTION_DAYS", "14")
+
+    settings = make_settings()
+
+    assert settings.mfa_totp_digits == 8
+    assert settings.mfa_totp_interval_seconds == 30
+    assert settings.mfa_totp_window == 1
+    assert settings.auth_token_retention_days == 14
+
+
+def test_mfa_totp_digits_rejects_unsupported_values() -> None:
+    with pytest.raises(ValidationError, match="must be 6 or 8"):
+        make_settings(mfa_totp_digits=7)
+
+
 def test_ensure_env_file_copies_template_once(workspace_tmp, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.delenv("APP_ENV", raising=False)
     template = workspace_tmp / "example.env"

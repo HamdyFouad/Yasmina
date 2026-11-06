@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     # --- MFA / TOTP --------------------------------------------------------
     mfa_issuer: str = Field(default="Yasmina", min_length=1, max_length=64)
     mfa_totp_interval_seconds: int = Field(default=30, ge=10, le=300)
-    mfa_totp_digits: Literal[6, 8] = 6
+    mfa_totp_digits: int = Field(default=6, ge=6, le=8)
     mfa_totp_window: int = Field(default=1, ge=0, le=10)
 
     # --- Token maintenance -------------------------------------------------
@@ -186,6 +186,13 @@ class Settings(BaseSettings):
     def _empty_to_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("mfa_totp_digits")
+    @classmethod
+    def _validate_totp_digits(cls, value: int) -> int:
+        if value not in (6, 8):
+            raise ValueError("MFA_TOTP_DIGITS must be 6 or 8")
         return value
 
     @field_validator("database_url")

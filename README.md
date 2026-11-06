@@ -527,7 +527,7 @@ cron entry keeps both discovery and parsing moving.
 python -m pytest -q
 ```
 
-The current 337 tests pass (plus twenty-three optional tests — twenty live
+The current 339 tests pass (plus twenty-three optional tests — twenty live
 PostgreSQL tests, two MinIO/ClamAV smoke tests and the DeepSeek eval — that are
 skipped unless their environment variables are set) and cover normalizers, settings, strict schemas,
 ORM metadata, pgvector/HNSW configuration, GAEB parsing/validation, PDF table
