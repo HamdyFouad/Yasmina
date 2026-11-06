@@ -18,6 +18,7 @@ __all__ = [
     "InvoiceStatus",
     "MaterialType",
     "ProcurementProcedure",
+    "Role",
     "StandardizedColor",
     "SupplierQuoteStatus",
     "TenderSourceFormat",
@@ -40,6 +41,15 @@ class GloveSize(StrEnum):
     XL = "XL"
     XXL = "XXL"
     NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+class Role(StrEnum):
+    """API authorization roles."""
+
+    ADMIN = "admin"
+    SALES = "sales"
+    APPROVER = "approver"
+    VIEWER = "viewer"
 
 
 class StandardizedColor(StrEnum):

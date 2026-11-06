@@ -164,6 +164,9 @@ class FakeSession:
     async def flush(self) -> None:
         return None
 
+    async def get(self, model: Any, key: Any) -> None:
+        return None
+
 
 class FakeTenderRepository:
     def __init__(self, tender: Tender) -> None:

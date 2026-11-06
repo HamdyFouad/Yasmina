@@ -116,6 +116,9 @@ class FakeSession:
     async def rollback(self) -> None:
         return None
 
+    async def get(self, model: Any, key: Any) -> None:
+        return None
+
 
 class FakeInvoiceRepository:
     def __init__(self) -> None:
@@ -263,6 +266,25 @@ def approval_body(offer: CustomerOffer, *, owner: str = "sales-a") -> dict[str, 
             "due_date": "2026-02-14",
         },
     }
+
+
+def test_four_eyes_rejects_sales_owner_as_approver(api: Any) -> None:
+    offer = signed_offer()
+    owner_approver = create_access_token(
+        SETTINGS,
+        "sales-a",
+        [Role.SALES, Role.APPROVER],
+    )
+
+    response = api.client.post(
+        "/api/v1/approvals/approve",
+        json=approval_body(offer, owner="sales-a"),
+        headers=auth(owner_approver),
+    )
+
+    assert response.status_code == 403
+    assert "four-eyes" in response.text
+    assert offer.offer_number not in api.repository.offers
 
 
 def test_approval_persists_and_replays_idempotently(api: Any) -> None:

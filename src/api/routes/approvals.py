@@ -17,6 +17,7 @@ from src.api.deps import (
     get_object_storage,
     get_offer_repository,
     get_session,
+    get_tender_repository,
     require_roles,
 )
 from src.api.invoices import InvoiceWiringError, generate_invoice_artifacts
@@ -38,6 +39,7 @@ from src.repositories.offer_repository import (
     OfferRepositoryError,
     StoredOffer,
 )
+from src.repositories.tender_repository import TenderRepository
 from src.services.approval_service import ApprovalError, ApprovalService
 from src.services.audit_service import AuditService, AuditServiceError
 
@@ -54,6 +56,31 @@ def _service(settings: Settings) -> ApprovalService:
             detail="ED25519_APPROVAL_PUBLIC_KEY is not configured",
         )
     return service
+
+
+def _assert_four_eyes(
+    principal: Principal,
+    approved: CustomerOffer,
+    *,
+    owner: str | None,
+) -> None:
+    """Prevent the creator/owner (or a sales owner) from approving the offer."""
+
+    if not owner:
+        return
+    owner_key = owner.strip().casefold()
+    principal_key = principal.sub.strip().casefold()
+    approver_key = (approved.approved_by or "").strip().casefold()
+    if principal_key == owner_key:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="four-eyes principle: the offer owner cannot approve their own offer",
+        )
+    if approver_key and approver_key == owner_key:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="four-eyes principle: the approver must differ from the offer owner",
+        )
 
 
 @router.post("/verify")
@@ -85,6 +112,7 @@ async def approve_offer_endpoint(
     erpnext: ERPNextClient = Depends(get_erpnext_client),
     repository: OfferRepository = Depends(get_offer_repository),
     invoices: InvoiceRepository = Depends(get_invoice_repository),
+    tenders: TenderRepository = Depends(get_tender_repository),
     audit: AuditService = Depends(get_audit_service),
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_roles(Role.APPROVER, Role.ADMIN)),
@@ -108,6 +136,19 @@ async def approve_offer_endpoint(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     existing = await repository.get_by_number(approved.offer_number)
+    tender_owner: str | None = None
+    if approved.tender_id is not None:
+        tender = await tenders.get(approved.tender_id)
+        if tender is not None:
+            tender_owner = tender.tender.owner
+    effective_owner = (
+        (existing.offer.owner if existing is not None else None)
+        or payload.owner
+        or approved.owner
+        or tender_owner
+    )
+    _assert_four_eyes(principal, approved, owner=effective_owner)
+
     if existing is not None:
         current = existing.offer
         if current.id != approved.id:
@@ -134,7 +175,7 @@ async def approve_offer_endpoint(
         approved = approved.model_copy(
             update={
                 "id": current.id,
-                "owner": current.owner or payload.owner or approved.owner or principal.sub,
+                "owner": current.owner or effective_owner or principal.sub,
                 "created_at": current.created_at,
                 "invoice_artifacts": dict(current.invoice_artifacts),
                 "erpnext_quotation_name": current.erpnext_quotation_name,
@@ -142,7 +183,7 @@ async def approve_offer_endpoint(
         )
     else:
         approved = approved.model_copy(
-            update={"owner": payload.owner or approved.owner or principal.sub}
+            update={"owner": effective_owner or principal.sub}
         )
 
     # Persist the cryptographically approved state before external side effects,

@@ -16,16 +16,17 @@
 - **Database & Search:** SQLAlchemy 2.0 Async, `asyncpg`, Alembic migrations, `pgvector` (HNSW index).
 - **Workflow & AI:** LangGraph, PostgreSQL SQLAlchemy checkpoint saver, `langchain-openai` (DeepSeek-Chat / DeepSeek-Reasoner).
 - **E-Invoicing:** `factur-x` (ZUGFeRD 2.2), custom XRechnung 3.0 / EN 16931 UBL generator, official KoSIT CIUS Schematron via `saxonche`, branded PDF/A-3 carrier invoice.
+- **Identity & Security:** Argon2id password hashing, short-lived JWT access tokens with `jti`, rotating hashed refresh-token families, PostgreSQL JTI blocklist, four-eyes approval and in-memory token-bucket rate limits.
 
 ## 4. Directory Structure Enforcement
 Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 10):
 - `src/config.py` (pydantic-settings)
 - `src/db.py` (async SQLAlchemy session factory)
-- `src/api/` (`security.py`, `deps.py`, `schemas.py`, `routes/tenders.py`, `routes/approvals.py`, `routes/offers.py`, `routes/ops.py`, `routes/auth.py`)
-- `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `invoice_repository.py`, `ingestion_repository.py`, `worker_run_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`)
+- `src/api/` (`security.py`, `rate_limit.py`, `deps.py`, `schemas.py`, `routes/tenders.py`, `routes/approvals.py`, `routes/offers.py`, `routes/ops.py`, `routes/auth.py`)
+- `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `invoice_repository.py`, `user_repository.py`, `ingestion_repository.py`, `worker_run_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`)
 - `src/models/` (`enums.py`, `schemas.py`, `orm.py`)
 - `src/parsers/` (`normalizers.py`, `pdf_parser.py`, `gaeb_parser.py`, `gaeb_validator.py`)
-- `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `ingestion_processor.py`, `worker_lock.py`, `worker_metrics.py`)
+- `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `password_service.py`, `ingestion_processor.py`, `worker_lock.py`, `worker_metrics.py`)
 - `src/agents/` (`graph.py`, `checkpoint.py`, `nodes.py`, `state.py`, `deepseek.py`)
 - `src/integrations/` (`clamav_client.py`, `minio_client.py`, `erpnext_client.py`, `n8n_client.py`, `telegram_notifier.py`; Telegram approval bot planned)
 - `src/scrapers/` (`base_scraper.py`, `bayern_vergabe.py`, `oeffentlichevergabe.py`, `ingestion.py`)
@@ -47,6 +48,8 @@ When given an implementation task:
 - Infrastructure: `docker compose up -d postgres minio clamav` (add `--profile automation` for n8n).
 - Preflight: `python -m src.preflight` (or `python -m src.preflight --json`).
 - Approval: `yasmina-approval sign|verify` (see `src/services/approval_service.py`).
+- Auth: `POST /api/v1/auth/token` (access + refresh), `/auth/refresh` (rotating), `/auth/logout` (JTI blocklist), `/auth/users` (admin). Four-eyes rejects self-approval by owner/tender creator.
+- Rate limits: `/auth` 20/min, `/upload` 30/min, other `/api/v1` 300/min by default; adjust `RATE_LIMIT_*` settings.
 - E-invoicing: `XRechnungGenerator` runs KoSIT EN16931 + XRechnung CIUS Schematron via `saxonche`; `ZUGFeRDGenerator` embeds CII XML in the branded PDF/A-3 carrier; `InvoiceRepository` owns gapless `INV-YYYY-XXXX` numbering and multi-rate VAT rows.
 - Scrape worker: `python -m src.worker scrape|schedule` (daily cron via `SCRAPER_SCHEDULE_CRON`).
 - Ingestion worker: `python -m src.worker process [--limit N] [--interval SECONDS]` drains `tender_ingestion_jobs` with `DeepSeek` triage and Docling/GAEB parsing.

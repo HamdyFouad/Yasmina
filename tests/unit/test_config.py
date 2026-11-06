@@ -65,7 +65,7 @@ def test_production_requires_changed_secrets() -> None:
         make_settings(
             app_env="production",
             app_secret_key="a-real-secret",
-            jwt_secret_key="a-real-jwt-secret-with-32-bytes",
+            jwt_secret_key="a-real-jwt-secret-with-32-bytes-ok",
             api_admin_password="change-me-admin-password",
         )
 
@@ -73,7 +73,7 @@ def test_production_requires_changed_secrets() -> None:
         make_settings(
             app_env="production",
             app_secret_key="a-real-secret",
-            jwt_secret_key="a-real-jwt-secret-with-32-bytes",
+            jwt_secret_key="a-real-jwt-secret-with-32-bytes-ok",
             api_admin_password="a-real-admin-password",
             n8n_webhook_hmac_secret="change-me-n8n-hmac",
         )
@@ -81,7 +81,7 @@ def test_production_requires_changed_secrets() -> None:
     settings = make_settings(
         app_env="production",
         app_secret_key="a-real-secret",
-        jwt_secret_key="a-real-jwt-secret-with-32-bytes",
+        jwt_secret_key="a-real-jwt-secret-with-32-bytes-ok",
         api_admin_password="a-real-admin-password",
     )
     assert settings.is_production is True

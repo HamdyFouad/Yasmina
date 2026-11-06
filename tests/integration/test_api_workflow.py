@@ -50,6 +50,11 @@ SALES_TOKEN = create_access_token(
     "sales-user",
     [Role.SALES],
 )
+SALES_B_TOKEN = create_access_token(
+    Settings(_env_file=None, database_url=None, jwt_secret_key=TEST_JWT_SECRET),
+    "sales-b",
+    [Role.SALES],
+)
 APPROVER_TOKEN = create_access_token(
     Settings(_env_file=None, database_url=None, jwt_secret_key=TEST_JWT_SECRET),
     "approver-user",
@@ -142,6 +147,9 @@ class FakeSession:
     async def execute(self, statement: Any) -> FakeResult:
         self.statement = statement
         return FakeResult(self.rows)
+
+    async def get(self, model: Any, key: Any) -> None:
+        return None
 
 
 class FakeInvoiceRepository:
@@ -344,6 +352,20 @@ def test_end_to_end_langgraph_transition(api, workspace_tmp) -> None:  # type: i
     assert approved.status_code == 200, approved.text
     assert approved.json()["status"] == "approved"
     assert approved.json()["offer"]["status"] == "APPROVED"
+
+
+def test_sales_cannot_access_another_sales_tender(api, workspace_tmp) -> None:  # type: ignore[no-untyped-def]
+    client, _, _ = api
+    uploaded = upload_gaeb(client, workspace_tmp)
+
+    response = client.post(
+        f"/api/v1/tenders/{uploaded['tender_id']}/match",
+        json={"query_embedding": [0.0] * 1024, "limit": 1},
+        headers=auth(SALES_B_TOKEN),
+    )
+
+    assert response.status_code == 403
+    assert "own" in response.json()["detail"]
 
 
 def test_match_uses_pgvector_route(api, workspace_tmp) -> None:  # type: ignore[no-untyped-def]

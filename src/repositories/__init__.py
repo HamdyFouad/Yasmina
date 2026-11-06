@@ -29,6 +29,15 @@ from src.repositories.tender_repository import (
     orm_to_tender,
     tender_to_orm,
 )
+from src.repositories.user_repository import (
+    AuthenticationError,
+    RefreshTokenRepository,
+    RefreshTokenReuseError,
+    TokenBlocklistRepository,
+    UserRepository,
+    UserRepositoryError,
+    UserView,
+)
 from src.repositories.worker_run_repository import (
     WorkerRunRepository,
     WorkerRunRepositoryError,
@@ -36,6 +45,7 @@ from src.repositories.worker_run_repository import (
 )
 
 __all__ = [
+    "AuthenticationError",
     "IngestionJobView",
     "InvoiceNumberExhaustedError",
     "InvoiceRepository",
@@ -44,6 +54,8 @@ __all__ = [
     "OfferRepository",
     "OfferRepositoryConflict",
     "OfferRepositoryError",
+    "RefreshTokenRepository",
+    "RefreshTokenReuseError",
     "ScraperStateRepository",
     "StoredInvoice",
     "StoredOffer",
@@ -51,6 +63,10 @@ __all__ = [
     "TenderIngestionJobRepository",
     "TenderRepository",
     "TenderRepositoryError",
+    "TokenBlocklistRepository",
+    "UserRepository",
+    "UserRepositoryError",
+    "UserView",
     "WorkerRunRepository",
     "WorkerRunRepositoryError",
     "WorkerRunView",

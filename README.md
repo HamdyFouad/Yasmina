@@ -10,7 +10,9 @@ waste bags across all thicknesses, volumes and colour standards.
 > persistence, MinIO object storage, ClamAV-scanned/audited uploads, Ed25519
 > approval with automatic XRechnung/ZUGFeRD generation, KoSIT Schematron
 > validation, gapless `INV-YYYY-XXXX` numbering, branded PDF/A-3 carrier
-> invoices with multi-rate VAT, ERPNext quotation sync, HMAC-authenticated n8n
+> invoices with multi-rate VAT, user identity with Argon2id, short-lived access
+> tokens, rotating refresh sessions, token revocation, four-eyes approval,
+> API rate limiting, ERPNext quotation sync, HMAC-authenticated n8n
 > RFQ/quote flows, compliant portal scrapers with attachment harvesting and
 > durable ingestion outbox, live DeepSeek/Docling paths, deterministic unit
 > conversion, PostgreSQL LangGraph checkpoints and the production-hardened
@@ -66,20 +68,22 @@ src/
   main.py                # FastAPI app + startup preflight lifespan
   preflight.py           # startup checks (config, DB, MinIO, ClamAV, n8n)
   api/
-    security.py          # JWT issuance/validation + RBAC roles
+    security.py          # JWT jti issuance/validation + RBAC roles
+    rate_limit.py        # token-bucket auth/upload/business rate limiter
     deps.py              # auth, DB, ClamAV and repository dependencies
     schemas.py           # API request DTOs and payload parsers
     routes/
-      auth.py            # POST /auth/token
-      tenders.py         # upload (scanned), match, price, workflow
-      approvals.py       # idempotent approval, offer persistence, ERPNext + invoices
+      auth.py            # login, refresh, logout, users
+      tenders.py         # upload (scanned), owner-scoped match/price/workflow
+      approvals.py       # four-eyes approval, offer persistence, ERPNext + invoices
       offers.py          # owner-aware offer retrieval
       integrations.py    # n8n RFQ dispatch + signed quote callback
       ops.py             # /healthz/worker run history + outbox metrics
   repositories/
-    tender_repository.py # PostgreSQL tender/position persistence
+    tender_repository.py # PostgreSQL tender/position persistence + owner
     offer_repository.py  # offer lines, artifacts and ERPNext names
     invoice_repository.py # gapless invoice numbers, VAT splits, payment/credit status
+    user_repository.py   # users, Argon2id auth, refresh rotation, JTI blocklist
     ingestion_repository.py # outbox jobs + scraper watermarks
     worker_run_repository.py # run history for scrapes and ingestion batches
     integration_repository.py # durable idempotency-key ledger
@@ -96,6 +100,7 @@ src/
   services/
     pricing_service.py   # pure-Decimal tiers, MOQ, margin, VAT
     unit_converter.py    # auditable CARTON/PACK/PIECE/ROLL conversions
+    password_service.py  # Argon2id hashing and password policy
     ingestion_processor.py # PDF/GAEB parsing + triage worker
     worker_lock.py       # PostgreSQL advisory locks per portal
     worker_metrics.py    # worker health snapshot aggregation
@@ -124,7 +129,7 @@ src/
     schematron/          # vendored KoSIT EN16931 + XRechnung CIUS rules
     zugferd_generator.py # Factur-X/ZUGFeRD 2.2 CII + PDF embedding
     xrechnung_generator.py # XRechnung 3.0 UBL XML + KoSIT validation
-alembic/                 # async migrations (0001 schema, 0002 audit guard, 0003 idempotency, 0004 offers/checkpoints, 0005 ingestion outbox, 0006 worker runs, 0007 invoices/VAT)
+alembic/                 # async migrations (… 0007 invoices/VAT, 0008 identity/security)
 docker/                  # PostgreSQL bootstrap (pgvector, n8n database)
 docs/
   DETAILED_SPEC.md       # authoritative engineering specification
@@ -232,13 +237,17 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 
 | Method | Path | Role |
 |---|---|---|
-| POST | `/auth/token` | admin credentials |
-| POST | `/tenders/upload` | sales/admin |
-| POST | `/tenders/{id}/match` | sales/admin |
-| POST | `/tenders/{id}/price` | sales/admin |
-| POST | `/tenders/{id}/workflow` | sales/admin |
+| POST | `/auth/token` | username/password login (admin bootstrap allowed) |
+| POST | `/auth/refresh` | rotating refresh token |
+| POST | `/auth/logout` | authenticated user; revokes access JTI and refresh token |
+| GET | `/auth/me` | any authenticated role |
+| POST | `/auth/users` | admin only |
+| POST | `/tenders/upload` | sales/admin; sets tender owner |
+| POST | `/tenders/{id}/match` | sales (own), admin |
+| POST | `/tenders/{id}/price` | sales (own), admin |
+| POST | `/tenders/{id}/workflow` | sales (own), admin |
 | POST | `/approvals/verify` | viewer/approver/admin |
-| POST | `/approvals/approve` | approver/admin |
+| POST | `/approvals/approve` | approver/admin, four-eyes enforced |
 | GET | `/approvals/{offer_number}/documents/{format}` | viewer/approver/admin |
 | GET | `/offers` | sales (own), viewer/admin (all) |
 | GET | `/offers/{id}` | sales (own), viewer/admin (all) |
@@ -246,14 +255,24 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | POST | `/integrations/n8n/supplier-quotes` | n8n HMAC signature |
 
 ```powershell
-$token = (Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/auth/token `
+$login = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/auth/token `
   -ContentType "application/json" `
-  -Body '{"username":"admin","password":"change-me-admin-password"}').access_token
+  -Body '{"username":"admin","password":"change-me-admin-password"}'
+$token = $login.access_token
+$refresh = $login.refresh_token
 
 $headers = @{ Authorization = "Bearer $token" }
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/tenders/upload `
   -Headers $headers -Form @{ file = Get-Item .\tender.x83 }
 ```
+
+`/auth/refresh` rotates the refresh token and invalidates the previous one. Reusing
+a rotated token revokes the entire token family. `/auth/logout` adds the current
+access-token `jti` to `token_blocklist` and optionally revokes the supplied
+refresh token. Approval of an offer whose owner is the authenticated principal
+(or whose signed `approved_by` equals the owner) is rejected with `403` by the
+four-eyes rule. Rate limits return `429` with `Retry-After` for `/auth` (20/min),
+`/tenders/upload` (30/min) and other `/api/v1` routes (300/min) by default.
 
 The matching route retrieves candidates directly from `catalog_articles` using
 pgvector cosine distance. The workflow route runs the LangGraph state machine;
@@ -418,25 +437,27 @@ cron entry keeps both discovery and parsing moving.
 python -m pytest -q
 ```
 
-The current 306 tests pass (plus nine optional PostgreSQL-only tests that are
+The current 315 tests pass (plus twelve optional PostgreSQL-only tests that are
 skipped unless `YASMINA_TEST_DATABASE_URL` is set) and cover normalizers,
 settings, strict schemas, ORM metadata, pgvector/HNSW configuration, GAEB
 parsing/validation, PDF table extraction, pricing, unit conversion, hybrid
 matching, LangGraph triage/enrichment and checkpointing, Ed25519 approval,
 offer persistence/idempotency, gapless invoice numbering, multi-rate VAT,
-KoSIT Schematron validation, branded PDF/A-3 invoices, durable ingestion
-outbox claiming/retry, attachment harvesting and watermarking, advisory
-locking, signal-driven shutdown, worker run metrics, Telegram delivery, ClamAV
-scanning and audit chaining, MinIO object flows, ERPNext retries/payload
-mapping, n8n HMAC callbacks and idempotency, portal robots/rate/UA/artifact
-handling, CPV-filtered HTML extraction, cron scheduling, FastAPI business
-routes, RBAC, tender persistence, e-invoicing and offline migration rendering.
+KoSIT Schematron validation, branded PDF/A-3 invoices, Argon2id users,
+refresh-token rotation/reuse detection, JWT blocklisting, four-eyes approval,
+tender/offer ownership, rate limiting, durable ingestion outbox
+claiming/retry, attachment harvesting and watermarking, advisory locking,
+signal-driven shutdown, worker run metrics, Telegram delivery, ClamAV scanning
+and audit chaining, MinIO object flows, ERPNext retries/payload mapping, n8n
+HMAC callbacks and idempotency, portal robots/rate/UA/artifact handling,
+CPV-filtered HTML extraction, cron scheduling, FastAPI business routes, RBAC,
+tender persistence, e-invoicing and offline migration rendering.
 
 ```powershell
-# optional live PostgreSQL offer/checkpoint, outbox/lock, run-history and invoice tests
+# optional live PostgreSQL offer/checkpoint, outbox/lock, run-history, invoice and identity tests
 # (after alembic upgrade head)
 $env:YASMINA_TEST_DATABASE_URL = "postgresql+asyncpg://yasmina:yasmina@localhost:5432/yasmina"
-python -m pytest -q tests/integration/test_offer_workflow_db.py tests/integration/test_ingestion_outbox_db.py tests/integration/test_invoices_db.py
+python -m pytest -q tests/integration/test_offer_workflow_db.py tests/integration/test_ingestion_outbox_db.py tests/integration/test_invoices_db.py tests/integration/test_identity_db.py
 ```
 
 ### Parsing, pricing and matching
@@ -587,7 +608,8 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | Group | Examples |
 |---|---|
 | Application | `APP_ENV`, `APP_DEBUG`, `APP_SECRET_KEY`, `APP_TIMEZONE` |
-| API / JWT | `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `JWT_EXPIRY_MINUTES`, `API_ADMIN_*`, `MAX_UPLOAD_SIZE_MB` |
+| API / JWT | `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `JWT_EXPIRY_MINUTES`, `REFRESH_TOKEN_EXPIRY_DAYS`, `API_ADMIN_*`, `PASSWORD_MIN_LENGTH`, `PASSWORD_HASH_ALGORITHM`, `MAX_UPLOAD_SIZE_MB` |
+| Rate limiting | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_AUTH_PER_MINUTE`, `RATE_LIMIT_UPLOAD_PER_MINUTE`, `RATE_LIMIT_BUSINESS_PER_MINUTE` |
 | Invoice seller | `COMPANY_NAME`, `COMPANY_STREET`, `COMPANY_CITY`, `COMPANY_POSTAL_CODE`, `COMPANY_VAT_ID`, `COMPANY_IBAN`, `COMPANY_EMAIL`, `COMPANY_PHONE` |
 | PostgreSQL | `POSTGRES_*`, optional `DATABASE_URL`, `DATABASE_ECHO` |
 | MinIO | `MINIO_*` |
@@ -602,8 +624,9 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | HITL | `ED25519_APPROVAL_PUBLIC_KEY`, `APPROVAL_SIGNATURE_REQUIRED` |
 | Pricing | `DEFAULT_VAT_RATE`, `DEFAULT_MARGIN_RATE`, `OFFER_VALIDITY_DAYS` |
 
-Secrets use `SecretStr` and are masked in logs; production refuses to start with
-the default application, JWT, API-admin or n8n HMAC secrets.
+Secrets use `SecretStr` and are masked in logs. Startup validates the JWT secret
+(minimum 32 characters), rejects default application/JWT/API-admin/n8n HMAC
+secrets in production, and verifies that Argon2id password hashing is available.
 
 ---
 
@@ -623,6 +646,8 @@ the default application, JWT, API-admin or n8n HMAC secrets.
 - **Invoice / InvoiceLine / InvoiceVatSplit** — legally issued invoice linked to
   one offer, gapless yearly `INV-YYYY-XXXX` number, line-level VAT rates,
   persisted VAT buckets, payment/credit amounts and artifact keys.
+- **User / RefreshToken / TokenBlocklist** — Argon2id identities, hashed rotating
+  refresh sessions and revoked access-token JTIs.
 - **AuditLog** — append-only, hash-chained compliance trail.
 
 ### Database guarantees
@@ -639,6 +664,9 @@ the default application, JWT, API-admin or n8n HMAC secrets.
 | Worker observability | `worker_runs` history + `/healthz/worker` snapshot |
 | Invoice numbering | row-locked yearly counter updated in the invoice transaction |
 | Multi-rate VAT | per-line rate + `invoice_vat_splits` rows and JSONB snapshot |
+| Identity | unique username/email + Argon2id password hashes |
+| Refresh sessions | SHA-256 token hashes, rotation families, reuse detection |
+| Access revocation | `token_blocklist` JTI rows checked on every authenticated request |
 | Vector search | `vector(1024)` + HNSW `vector_cosine_ops` (`m=16`, `ef_construction=64`) |
 
 ---
@@ -648,6 +676,21 @@ the default application, JWT, API-admin or n8n HMAC secrets.
 - Never commit `.env`, API keys, private keys or exported customer documents.
 - The Ed25519 **private** key belongs to the human approver, not the server; the
   application only stores the public key for verification.
+- Database users are hashed with Argon2id. Raw passwords never enter logs or
+  database columns; the password minimum length is 12 by default.
+- JWT secrets are validated at startup (minimum 32 characters, no `change-me`
+  values in staging/production). Access tokens live 15 minutes by default and
+  carry a `jti`; logout adds that JTI to `token_blocklist`.
+- Refresh tokens are opaque random values stored only as SHA-256 hashes. Every
+  refresh rotates the token within a family; reuse of a rotated token revokes
+  the complete family.
+- The four-eyes rule blocks the offer/tender owner (or signed `approved_by`
+  matching the owner) from approving the offer. Sales users can only access
+  tenders and offers they own; admins and viewers retain the documented wider
+  read access.
+- Rate limits protect `/auth` (brute force), `/tenders/upload` and the wider
+  business API. The limiter is in-memory per process; horizontally scaled
+  deployments should switch the bucket store to Redis.
 - Rotate all `change-me` values before any non-local deployment.
 - `audit_logs` entries are chained with SHA-256 over canonical JSON; changing a
   historical row requires rewriting the entire chain.
@@ -672,7 +715,7 @@ the default application, JWT, API-admin or n8n HMAC secrets.
 - [x] P4.2 — portal attachment download to MinIO, durable ingestion outbox, watermark-based incremental scraping and queued DeepSeek/Docling processing
 - [x] P4.3 — PostgreSQL advisory portal locks, SIGINT/SIGTERM graceful shutdown, persisted worker run history, `/healthz/worker` metrics and Telegram failure/dead-letter alerts
 - [x] P4.4 — invoice ORM with gapless `INV-YYYY-XXXX` numbering, KoSIT Schematron validation, branded PDF/A-3 carrier invoices and multi-rate VAT records
-- [ ] P1 — refresh tokens and advanced RBAC
+- [x] P4.5 — Argon2id users, short-lived JWTs, rotating refresh-token families, JTI blocklist, four-eyes approval, ownership-scoped APIs and token-bucket rate limiting
 - [ ] P2 — Telegram notifier and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

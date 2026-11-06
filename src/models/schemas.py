@@ -183,6 +183,7 @@ class Tender(YasminaSchema):
     procedure: ProcurementProcedure
     source_format: TenderSourceFormat
     source_reference: Annotated[str, Field(max_length=512)] | None = None
+    owner: Annotated[str, Field(max_length=128)] | None = None
     cpv_codes: list[CpvCode] = Field(default_factory=list)
 
     publication_date: date | None = None

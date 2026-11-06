@@ -261,8 +261,8 @@ reconciled with the authoritative spec later.
   is best-effort, retries transient HTTP failures, and never changes the job or
   run status.
 - Worker locking, run history and Telegram tests add two live PostgreSQL tests
-  alongside the existing outbox/offer checks; with the three invoice tests the
-  live PostgreSQL suite is nine tests, all skipped unless
+  alongside the existing outbox/offer checks; the identity task adds three more,
+  for a live PostgreSQL suite of twelve tests, all skipped unless
   `YASMINA_TEST_DATABASE_URL` is set.
 
 ## Production invoice & billing assumptions (P4.4)
@@ -303,6 +303,47 @@ reconciled with the authoritative spec later.
   payment account (IBAN) must therefore be configured in production.
 - Invoice integration tests create records under the isolated year 2099 and
   clean them up, so they never consume production invoice numbers.
+
+## Identity, RBAC & security assumptions (P4.5)
+
+- `users.roles` is a JSONB list of canonical role values (`admin`, `sales`,
+  `approver`, `viewer`). Passwords are hashed with Argon2id (time cost 3,
+  64 MiB, parallelism 4) and must contain at least 12 characters by default.
+  Raw passwords are never stored or logged. Five failed logins lock the account
+  for 15 minutes; the counter resets on success or lock.
+- Access tokens are short-lived (15 minutes by default), carry `sub`, `roles`,
+  `jti`, `iat`, `exp`, `iss` and `type=access`. Every authenticated request
+  checks the `token_blocklist` for the token's `jti`; logout inserts the JTI
+  with its expiry so the token cannot be replayed even before `exp`.
+- Refresh tokens are opaque 48-byte URL-safe random values. Only their SHA-256
+  hex digest is stored. Each refresh rotates the token in the same
+  `family_id`; the prior token is marked revoked and linked to its replacement.
+  Presenting an already-rotated token is treated as reuse and revokes the whole
+  family. Logout can revoke the supplied refresh token. The configured admin
+  bootstrap login remains available for local/emergency access and receives an
+  access token only; database users receive both tokens.
+- The ownership rule is: a sales user may only read/use tenders and offers they
+  own. `tenders.owner` is set from the authenticated uploader; `offers.owner` is
+  set from the authenticated workflow creator. Admins bypass ownership checks;
+  viewers retain documented read access. An existing persisted/tender owner
+  takes precedence over client-supplied `owner` fields for the four-eyes check.
+- Four-eyes: an approval is rejected when the authenticated subject equals the
+  effective owner, or when the signed `approved_by` equals the owner. This is
+  enforced in the approval endpoint and in the workflow persistence path; it
+  applies even to a user holding both `sales` and `approver` roles.
+- Rate limiting uses an in-process token bucket keyed by client IP and scope:
+  `/api/v1/auth` (20/min), `/api/v1/tenders/upload` (30/min) and other
+  `/api/v1` routes (300/min). A denied request returns `429` with `Retry-After`
+  and rate-limit headers. This is intentionally dependency-free; horizontal
+  deployments should move the bucket store to Redis for a shared budget.
+- Startup calls `validate_security_configuration` before serving: the JWT secret
+  must have at least 32 characters, staging/production reject placeholder
+  secrets and short admin passwords, Argon2 must be importable, and only
+  `argon2id` is accepted. The same check is part of `python -m src.preflight`.
+- Three live PostgreSQL identity tests cover user auth, refresh rotation/reuse
+  and JTI blocklisting, bringing the live suite to twelve tests; the default
+  suite is 315 tests (identity, four-eyes, ownership and rate-limit coverage
+  included).
 
 ## E-invoicing assumptions (P2.1)
 

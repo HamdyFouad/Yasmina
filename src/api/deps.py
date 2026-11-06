@@ -22,6 +22,11 @@ from src.repositories.invoice_repository import InvoiceRepository
 from src.repositories.offer_repository import OfferRepository
 from src.repositories.supplier_quote_repository import SupplierQuoteRepository
 from src.repositories.tender_repository import TenderRepository
+from src.repositories.user_repository import (
+    RefreshTokenRepository,
+    TokenBlocklistRepository,
+    UserRepository,
+)
 from src.repositories.worker_run_repository import WorkerRunRepository
 from src.services.audit_service import AuditService
 from src.services.worker_metrics import WorkerHealthService
@@ -38,9 +43,12 @@ __all__ = [
     "get_object_storage",
     "get_offer_repository",
     "get_principal",
+    "get_refresh_token_repository",
     "get_session",
     "get_supplier_quote_repository",
     "get_tender_repository",
+    "get_token_blocklist_repository",
+    "get_user_repository",
     "get_worker_health_service",
     "get_workflow_checkpointer",
     "require_roles",
@@ -54,9 +62,17 @@ def get_app_settings(request: Request) -> Settings:
     return settings if settings is not None else get_settings()
 
 
+async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
+    settings = get_app_settings(request)
+    factory = get_session_factory(settings)
+    async with factory() as session:
+        yield session
+
+
 async def get_principal(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     settings: Settings = Depends(get_app_settings),
+    session: AsyncSession = Depends(get_session),
 ) -> Principal:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
@@ -65,13 +81,20 @@ async def get_principal(
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        return decode_access_token(credentials.credentials, settings)
+        principal = decode_access_token(credentials.credentials, settings)
     except AuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(exc),
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+    if await TokenBlocklistRepository(session).is_revoked(principal.jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="bearer token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return principal
 
 
 def require_roles(*required: Role):  # type: ignore[no-untyped-def]
@@ -84,13 +107,6 @@ def require_roles(*required: Role):  # type: ignore[no-untyped-def]
         return principal
 
     return dependency
-
-
-async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
-    settings = get_app_settings(request)
-    factory = get_session_factory(settings)
-    async with factory() as session:
-        yield session
 
 
 def get_tender_repository(
@@ -170,3 +186,22 @@ def get_worker_health_service(
         WorkerRunRepository(session),
         TenderIngestionJobRepository(session),
     )
+
+
+def get_user_repository(
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_app_settings),
+) -> UserRepository:
+    return UserRepository(session, password_min_length=settings.password_min_length)
+
+
+def get_refresh_token_repository(
+    session: AsyncSession = Depends(get_session),
+) -> RefreshTokenRepository:
+    return RefreshTokenRepository(session)
+
+
+def get_token_blocklist_repository(
+    session: AsyncSession = Depends(get_session),
+) -> TokenBlocklistRepository:
+    return TokenBlocklistRepository(session)

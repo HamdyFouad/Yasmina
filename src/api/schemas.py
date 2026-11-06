@@ -11,19 +11,23 @@ from uuid import UUID
 from pydantic import AwareDatetime, BaseModel, EmailStr, Field
 
 from src.agents.state import OfferRequest
+from src.api.security import Role
 from src.models.schemas import CustomerOffer, SupplierQuote
 
 __all__ = [
     "ApprovalPayload",
     "InvoiceBuyerPayload",
     "InvoiceRequestPayload",
+    "LogoutRequest",
     "MatchPayload",
     "OfferRequestPayload",
     "PricePayload",
     "RFQDispatchPayload",
     "RFQSupplier",
+    "RefreshTokenRequest",
     "SupplierQuoteCallbackPayload",
     "TokenRequest",
+    "UserCreatePayload",
     "VerifyPayload",
     "WorkflowPayload",
     "parse_customer_offer",
@@ -34,6 +38,21 @@ __all__ = [
 class TokenRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=256)
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(min_length=20, max_length=512)
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str | None = Field(default=None, max_length=512)
+
+
+class UserCreatePayload(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=256)
+    email: EmailStr | None = None
+    roles: list[Role] = Field(min_length=1)
 
 
 class OfferRequestPayload(BaseModel):

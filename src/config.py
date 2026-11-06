@@ -12,7 +12,7 @@ import re
 import shutil
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, Self
+from typing import Any, Literal, Self
 from urllib.parse import quote_plus, urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -45,11 +45,20 @@ class Settings(BaseSettings):
     # --- API / JWT ---------------------------------------------------------
     jwt_secret_key: SecretStr = SecretStr("change-me-jwt-secret-change-me-now")
     jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"
-    jwt_expiry_minutes: int = Field(default=60, ge=1, le=1440)
+    jwt_expiry_minutes: int = Field(default=15, ge=1, le=1440)
+    refresh_token_expiry_days: int = Field(default=30, ge=1, le=365)
     jwt_issuer: str = "yasmina"
     api_admin_username: str = "admin"
     api_admin_password: SecretStr = SecretStr("change-me-admin-password")
+    password_min_length: int = Field(default=12, ge=8, le=128)
+    password_hash_algorithm: Literal["argon2id"] = "argon2id"
     max_upload_size_mb: int = Field(default=25, ge=1, le=200)
+
+    # --- API rate limiting -------------------------------------------------
+    rate_limit_enabled: bool = True
+    rate_limit_auth_per_minute: int = Field(default=20, ge=1, le=10000)
+    rate_limit_upload_per_minute: int = Field(default=30, ge=1, le=10000)
+    rate_limit_business_per_minute: int = Field(default=300, ge=1, le=100000)
 
     # --- Company / invoice seller -----------------------------------------
     company_name: str = "BayerClean"
@@ -188,6 +197,19 @@ class Settings(BaseSettings):
         if not _HEX64_RE.fullmatch(normalized):
             raise ValueError("ed25519 public key must be 32 bytes encoded as 64 lowercase hex characters")
         return normalized
+
+    @field_validator("jwt_secret_key")
+    @classmethod
+    def _validate_jwt_secret(cls, value: SecretStr, info: Any) -> SecretStr:
+        secret = value.get_secret_value()
+        if not secret.strip():
+            raise ValueError("JWT_SECRET_KEY must not be empty")
+        environment = info.data.get("app_env", "local")
+        if environment in {"staging", "production"} and len(secret) < 32:
+            raise ValueError(
+                "JWT_SECRET_KEY must contain at least 32 characters in staging/production"
+            )
+        return value
 
     @field_validator("default_currency")
     @classmethod

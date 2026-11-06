@@ -29,6 +29,9 @@ EXPECTED_TABLES = {
     "invoices",
     "invoice_lines",
     "invoice_vat_splits",
+    "users",
+    "refresh_tokens",
+    "token_blocklist",
 }
 
 
@@ -201,3 +204,27 @@ def test_customer_offer_line_has_vat_rate() -> None:
     assert "ck_customer_offer_lines_vat_rate_range" in {
         constraint.name for constraint in lines.constraints
     }
+
+
+def test_identity_and_refresh_token_tables_shape() -> None:
+    users = Base.metadata.tables["users"]
+    refresh_tokens = Base.metadata.tables["refresh_tokens"]
+    blocklist = Base.metadata.tables["token_blocklist"]
+    tenders = Base.metadata.tables["tenders"]
+
+    assert users.c.username.unique is True
+    assert users.c.email.unique is True
+    assert users.c.roles.nullable is False
+    assert users.c.password_hash.type.length == 512
+    assert "ck_users_failed_attempts_non_negative" in {
+        constraint.name for constraint in users.constraints
+    }
+    assert refresh_tokens.c.token_hash.unique is True
+    assert refresh_tokens.c.token_hash.type.length == 64
+    assert "ck_refresh_tokens_token_hash_format" in {
+        constraint.name for constraint in refresh_tokens.constraints
+    }
+    assert blocklist.c.jti.primary_key is True
+    assert "ix_token_blocklist_expires" in {index.name for index in blocklist.indexes}
+    assert tenders.c.owner.nullable is True
+    assert "ix_tenders_owner" in {index.name for index in tenders.indexes}

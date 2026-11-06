@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from src.api.security import SecurityConfigurationError, validate_security_configuration
 from src.config import Settings, ensure_env_file, get_settings, reset_settings_cache
 
 __all__ = [
@@ -107,6 +108,11 @@ def check_configuration(settings: Settings) -> list[CheckResult]:
 
     problems: list[str] = []
     warnings: list[str] = []
+
+    try:
+        validate_security_configuration(settings)
+    except SecurityConfigurationError as exc:
+        problems.append(str(exc))
 
     if settings.app_env == "production":
         if not settings.ed25519_approval_public_key:

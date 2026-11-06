@@ -50,7 +50,7 @@ def test_report_failure_detection() -> None:
 def test_production_requires_hitl_guardrails() -> None:
     production_secrets = {
         "app_secret_key": "a-real-secret",
-        "jwt_secret_key": "a-real-jwt-secret-with-32-bytes",
+        "jwt_secret_key": "a-real-jwt-secret-with-32-bytes-ok",
         "api_admin_password": "a-real-admin-password",
     }
     settings = make_settings(app_env="production", **production_secrets)

@@ -4,38 +4,40 @@ from __future__ import annotations
 
 import hmac
 from datetime import datetime, timedelta, timezone
-from enum import StrEnum
 from typing import Any
+from uuid import UUID, uuid4
 
 import jwt
 from pydantic import BaseModel, Field
 
 from src.config import Settings
+from src.models.enums import Role
 
 __all__ = [
     "AuthError",
     "Principal",
     "Role",
+    "SecurityConfigurationError",
     "authenticate_admin",
     "create_access_token",
     "decode_access_token",
+    "validate_security_configuration",
 ]
-
-
-class Role(StrEnum):
-    ADMIN = "admin"
-    SALES = "sales"
-    APPROVER = "approver"
-    VIEWER = "viewer"
 
 
 class AuthError(ValueError):
     """Raised when a token or credential is invalid."""
 
 
+class SecurityConfigurationError(AuthError):
+    """Raised when startup security configuration is unsafe."""
+
+
 class Principal(BaseModel):
     sub: str = Field(min_length=1)
     roles: list[Role] = Field(min_length=1)
+    jti: UUID | None = None
+    exp: int | None = None
 
     def has_any(self, required: tuple[Role, ...]) -> bool:
         return Role.ADMIN in self.roles or bool(set(required) & set(self.roles))
@@ -53,6 +55,8 @@ def create_access_token(
     payload: dict[str, Any] = {
         "sub": subject,
         "roles": [role.value for role in roles],
+        "jti": str(uuid4()),
+        "type": "access",
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=minutes)).timestamp()),
         "iss": settings.jwt_issuer,
@@ -88,3 +92,30 @@ def authenticate_admin(username: str, password: str, settings: Settings) -> Prin
     if not (valid_user and valid_password):
         raise AuthError("invalid username or password")
     return Principal(sub=username, roles=[Role.ADMIN])
+
+
+def validate_security_configuration(settings: Settings) -> None:
+    """Fail closed when production secrets or password hashing are unsafe."""
+
+    secret = settings.jwt_secret_key.get_secret_value()
+    if not secret.strip():
+        raise SecurityConfigurationError("JWT_SECRET_KEY must not be empty")
+    if len(secret) < 32:
+        raise SecurityConfigurationError(
+            "JWT_SECRET_KEY must contain at least 32 characters"
+        )
+    if settings.app_env in {"staging", "production"}:
+        if "change-me" in secret.lower():
+            raise SecurityConfigurationError("JWT_SECRET_KEY still contains a placeholder value")
+        if len(settings.api_admin_password.get_secret_value()) < 12:
+            raise SecurityConfigurationError(
+                "API_ADMIN_PASSWORD must contain at least 12 characters in staging/production"
+            )
+    try:
+        import argon2  # noqa: F401
+    except ImportError as exc:  # pragma: no cover - mandatory dependency
+        raise SecurityConfigurationError(
+            "argon2-cffi is required for password hashing"
+        ) from exc
+    if settings.password_hash_algorithm != "argon2id":
+        raise SecurityConfigurationError("only Argon2id password hashing is supported")

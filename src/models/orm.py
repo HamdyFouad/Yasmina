@@ -75,6 +75,7 @@ __all__ = [
     "InvoiceLine",
     "InvoiceNumberSequence",
     "InvoiceVatSplit",
+    "RefreshToken",
     "Supplier",
     "SupplierQuote",
     "SupplierQuoteLine",
@@ -83,6 +84,8 @@ __all__ = [
     "TenderIngestionJob",
     "TenderItem",
     "ScraperState",
+    "TokenBlocklist",
+    "User",
     "WorkerRun",
     "WorkflowCheckpoint",
     "WorkflowCheckpointBlob",
@@ -171,6 +174,7 @@ class Tender(Base, TimestampMixin):
         _enum(TenderSourceFormat, "tender_source_format"), nullable=False
     )
     source_reference: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
     cpv_codes: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"))
 
     publication_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -202,6 +206,7 @@ class Tender(Base, TimestampMixin):
         CheckConstraint("vat_rate >= 0 AND vat_rate <= 1", name="vat_rate_range"),
         Index("ix_tenders_submission_deadline", "submission_deadline"),
         Index("ix_tenders_status", "status"),
+        Index("ix_tenders_owner", "owner"),
     )
 
 
@@ -759,6 +764,83 @@ class InvoiceVatSplit(Base, TimestampMixin):
         CheckConstraint("rate >= 0 AND rate <= 1", name="rate_range"),
         CheckConstraint("taxable_amount >= 0 AND tax_amount >= 0", name="amounts_non_negative"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Identity, refresh sessions and revoked access-token JTIs
+# ---------------------------------------------------------------------------
+
+
+class User(Base, TimestampMixin):
+    __tablename__ = "users"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    username: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True, unique=True)
+    password_hash: Mapped[str] = mapped_column(String(512), nullable=False)
+    roles: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_login_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint("failed_login_attempts >= 0", name="failed_attempts_non_negative"),
+        Index("ix_users_active", "is_active"),
+    )
+
+
+class RefreshToken(Base, TimestampMixin):
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    family_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    replaced_by_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="refresh_tokens")
+
+    __table_args__ = (
+        CheckConstraint("token_hash ~ '^[0-9a-f]{64}$'", name="token_hash_format"),
+        Index("ix_refresh_tokens_expires", "expires_at"),
+    )
+
+
+class TokenBlocklist(Base):
+    __tablename__ = "token_blocklist"
+
+    jti: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    revoked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("ix_token_blocklist_expires", "expires_at"),)
 
 
 # ---------------------------------------------------------------------------

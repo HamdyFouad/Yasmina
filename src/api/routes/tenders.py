@@ -125,6 +125,16 @@ def _tender_or_404(tender_id: UUID, stored: StoredTender | None) -> StoredTender
     return stored
 
 
+def _ensure_tender_access(tender: Tender, principal: Principal) -> None:
+    if Role.ADMIN in principal.roles:
+        return
+    if Role.SALES in principal.roles and tender.owner is not None and tender.owner != principal.sub:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="sales users may only access tenders they own",
+        )
+
+
 def _pdf_tender(filename: str, items: list[Any], warnings: list[str]) -> Tender:
     tender_id = uuid4()
     updated_items = [item.model_copy(update={"tender_id": tender_id}) for item in items]
@@ -237,7 +247,9 @@ async def upload_tender(
     finally:
         tmp.unlink(missing_ok=True)
 
-    tender = tender.model_copy(update={"source_reference": object_name})
+    tender = tender.model_copy(
+        update={"source_reference": object_name, "owner": principal.sub}
+    )
     content_type = "application/pdf" if suffix == ".pdf" else "application/xml"
     try:
         await storage.put_bytes(object_name, data, content_type)
@@ -278,11 +290,12 @@ async def match_tender(
     session: AsyncSession = Depends(get_session),
     repository: TenderRepository = Depends(get_tender_repository),
     settings: Settings = Depends(get_app_settings),
-    _: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
+    principal: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
 ) -> dict[str, Any]:
     """Query catalogue embeddings from PostgreSQL and rank matches."""
 
     stored = _tender_or_404(tender_id, await repository.get(tender_id))
+    _ensure_tender_access(stored.tender, principal)
     if payload.query_embedding is not None and len(payload.query_embedding) != settings.embedding_dimensions:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -319,11 +332,12 @@ async def price_tender(
     repository: TenderRepository = Depends(get_tender_repository),
     storage: MinioObjectStorage = Depends(get_object_storage),
     settings: Settings = Depends(get_app_settings),
-    _: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
+    principal: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
 ) -> dict[str, Any]:
     """Price stored tender positions against supplied supplier quotes."""
 
     stored = _tender_or_404(tender_id, await repository.get(tender_id))
+    _ensure_tender_access(stored.tender, principal)
     stored = await _stored_with_document(stored, storage)
     try:
         quotes = parse_supplier_quotes(payload.supplier_quotes)
@@ -364,6 +378,7 @@ async def run_tender_workflow(
     """Run the LangGraph workflow; pending/approved status is returned as data."""
 
     stored = _tender_or_404(tender_id, await repository.get(tender_id))
+    _ensure_tender_access(stored.tender, principal)
     stored = await _stored_with_document(stored, storage)
     try:
         quotes = parse_supplier_quotes(payload.supplier_quotes)
@@ -393,9 +408,18 @@ async def run_tender_workflow(
     )
     result_offer: CustomerOffer | None = result.get("offer")
     if result_offer is not None:
-        result_offer = result_offer.model_copy(
-            update={"owner": result_offer.owner or principal.sub}
-        )
+        effective_owner = result_offer.owner or principal.sub
+        if result_offer.approved_by:
+            approver_key = result_offer.approved_by.strip().casefold()
+            if approver_key in {
+                effective_owner.strip().casefold(),
+                principal.sub.strip().casefold(),
+            }:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="four-eyes principle: the offer owner cannot approve their own offer",
+                )
+        result_offer = result_offer.model_copy(update={"owner": principal.sub})
         try:
             await offer_repository.save(result_offer)
         except OfferRepositoryConflict as exc:

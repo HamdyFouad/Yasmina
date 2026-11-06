@@ -15,7 +15,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from src.api.rate_limit import RateLimitMiddleware
 from src.api.routes import approvals, auth, integrations, offers, ops, tenders
+from src.api.security import validate_security_configuration
 from src.config import Settings, ensure_env_file, get_settings, reset_settings_cache
 from src.db import dispose_engine
 from src.preflight import CheckResult, PreflightOptions, run_preflight
@@ -47,6 +49,7 @@ def create_app(settings: Settings | None = None, *, run_startup_checks: bool = T
             current = get_settings()
 
         app.state.settings = current
+        validate_security_configuration(current)
         if run_startup_checks:
             checks = await run_preflight(
                 current,
@@ -71,6 +74,9 @@ def create_app(settings: Settings | None = None, *, run_startup_checks: bool = T
         version="0.1.0",
         lifespan=app_lifespan,
     )
+    middleware_settings = settings if settings is not None else get_settings()
+    if middleware_settings.rate_limit_enabled:
+        application.add_middleware(RateLimitMiddleware, settings=middleware_settings)
     application.include_router(auth.router, prefix="/api/v1")
     application.include_router(tenders.router, prefix="/api/v1")
     application.include_router(approvals.router, prefix="/api/v1")
