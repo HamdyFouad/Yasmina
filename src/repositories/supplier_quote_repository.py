@@ -50,9 +50,7 @@ class SupplierQuoteRepository:
             return supplier
 
         supplier = (
-            await self.session.execute(
-                select(SupplierORM).where(SupplierORM.name == quote.supplier_name)
-            )
+            await self.session.execute(select(SupplierORM).where(SupplierORM.name == quote.supplier_name))
         ).scalar_one_or_none()
         if supplier is not None:
             return supplier
@@ -79,19 +77,13 @@ class SupplierQuoteRepository:
         item_ids = [line.tender_item_id for line in quote.lines if line.tender_item_id is not None]
         if item_ids:
             found = set(
-                (
-                    await self.session.execute(
-                        select(TenderItemORM.id).where(TenderItemORM.id.in_(item_ids))
-                    )
-                )
+                (await self.session.execute(select(TenderItemORM.id).where(TenderItemORM.id.in_(item_ids))))
                 .scalars()
                 .all()
             )
             missing = [str(item_id) for item_id in item_ids if item_id not in found]
             if missing:
-                raise SupplierQuoteRepositoryError(
-                    "unknown tender item(s): " + ", ".join(sorted(missing))
-                )
+                raise SupplierQuoteRepositoryError("unknown tender item(s): " + ", ".join(sorted(missing)))
 
     def _orm(self, quote: SupplierQuote, supplier: SupplierORM) -> SupplierQuoteORM:
         orm = SupplierQuoteORM(

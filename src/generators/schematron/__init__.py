@@ -35,11 +35,9 @@ _ERROR_LEVELS = frozenset({"fatal", "error"})
 class KoSITSchematronError(ValueError):
     """Raised when an e-invoice fails the KoSIT Schematron rules."""
 
-    def __init__(self, report: "KoSITValidationReport") -> None:
+    def __init__(self, report: KoSITValidationReport) -> None:
         self.report = report
-        details = "; ".join(
-            f"[{issue.rule_id}] {issue.message}" for issue in report.errors[:10]
-        )
+        details = "; ".join(f"[{issue.rule_id}] {issue.message}" for issue in report.errors[:10])
         super().__init__(f"KoSIT XRechnung Schematron validation failed: {details}")
 
 
@@ -106,16 +104,13 @@ class KoSITSchematronValidator:
             from saxonche import PySaxonProcessor
         except ImportError as exc:  # pragma: no cover - depends on installation
             raise SchematronUnavailableError(
-                "saxonche is required for KoSIT Schematron validation; "
-                "install the 'e-invoicing' extra"
+                "saxonche is required for KoSIT Schematron validation; install the 'e-invoicing' extra"
             ) from exc
 
         rulesets = _ASSETS[syntax]
         missing = [name for name in rulesets if not (self.assets_dir / name).is_file()]
         if missing:
-            raise SchematronExecutionError(
-                f"KoSIT Schematron assets are missing: {', '.join(missing)}"
-            )
+            raise SchematronExecutionError(f"KoSIT Schematron assets are missing: {', '.join(missing)}")
 
         issues: list[SchematronIssue] = []
         temp_path: Path | None = None

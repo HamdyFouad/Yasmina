@@ -35,7 +35,7 @@ class FakeGridTable:
             self.text = text
 
     class Data:
-        def __init__(self, grid: list[list["FakeGridTable.Cell"]]) -> None:
+        def __init__(self, grid: list[list[FakeGridTable.Cell]]) -> None:
             self.grid = grid
 
     def __init__(self, rows: list[list[str]]) -> None:
@@ -139,13 +139,9 @@ def test_no_items_is_an_error(workspace_tmp) -> None:  # type: ignore[no-untyped
         parse_pdf(pdf, converter=FakeConverter([table]))
 
 
-def test_production_path_invokes_the_default_docling_converter(
-    workspace_tmp, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+def test_production_path_invokes_the_default_docling_converter(workspace_tmp, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     pdf = make_pdf(workspace_tmp)
-    table = FakeTable(
-        [{"Pos.": "1.1", "Menge": "1", "Einheit": "Stk.", "Kurztext": "Handschuhe"}]
-    )
+    table = FakeTable([{"Pos.": "1.1", "Menge": "1", "Einheit": "Stk.", "Kurztext": "Handschuhe"}])
     converter = FakeConverter([table])
     calls: list[Path] = []
 

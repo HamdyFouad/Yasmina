@@ -55,7 +55,9 @@ def make_transport(
         requests.append(request)
         if request.url.path.endswith("/robots.txt"):
             return httpx.Response(robots_status, text=robots_body)
-        return httpx.Response(page_status, text=page_body, headers={"Content-Type": "text/html; charset=utf-8"})
+        return httpx.Response(
+            page_status, text=page_body, headers={"Content-Type": "text/html; charset=utf-8"}
+        )
 
     return httpx.MockTransport(handler), requests
 
@@ -177,7 +179,9 @@ async def test_rate_limit_and_user_agent_rotation() -> None:
         await scraper.fetch("https://portal.example/one")
         await scraper.fetch("https://portal.example/two")
 
-    page_agents = [request.headers["User-Agent"] for request in requests if not request.url.path.endswith("/robots.txt")]
+    page_agents = [
+        request.headers["User-Agent"] for request in requests if not request.url.path.endswith("/robots.txt")
+    ]
     assert page_agents == ["Agent-A/1.0", "Agent-B/1.0"]
     assert sleeps == [5, 5, 5]  # page A, robots B, page B; robots A was first
 

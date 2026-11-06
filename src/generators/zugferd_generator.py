@@ -8,12 +8,14 @@ multi-rate VAT split, totals) as the PDF/A-3 carrier.
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import cast
 
 from lxml import etree
 
-from src.generators.invoice_models import Invoice, InvoiceParty
+from src.generators.invoice_models import Invoice, InvoiceLine, InvoiceParty
 from src.generators.pdf_template import build_branded_pdf
 from src.models.enums import UnitOfMeasure
 from src.models.schemas import q2
@@ -52,7 +54,9 @@ def _qn(prefix: str, local: str) -> str:
     return f"{{{_NSMAP[prefix]}}}{local}"
 
 
-def _sub(parent: etree._Element, prefix: str, local: str, text: str | None = None, **attrs: str) -> etree._Element:
+def _sub(
+    parent: etree._Element, prefix: str, local: str, text: str | None = None, **attrs: str
+) -> etree._Element:
     element = etree.SubElement(parent, _qn(prefix, local), **attrs)
     if text is not None:
         element.text = text
@@ -75,7 +79,7 @@ def _tax_category(rate: Decimal) -> str:
     return "Z" if rate == 0 else "S"
 
 
-def _date_102(value) -> str:
+def _date_102(value: date) -> str:
     return value.strftime("%Y%m%d")
 
 
@@ -182,7 +186,7 @@ def build_cii_xml(invoice: Invoice) -> bytes:
         account = _sub(payment, "ram", "PayeePartyCreditorFinancialAccount")
         _sub(account, "ram", "IBANID", invoice.iban)
 
-    groups: dict[Decimal, list] = {}
+    groups: dict[Decimal, list[InvoiceLine]] = {}
     for line in invoice.lines:
         groups.setdefault(line.vat_rate, []).append(line)
     for rate, lines in sorted(groups.items()):
@@ -206,7 +210,10 @@ def build_cii_xml(invoice: Invoice) -> bytes:
     _sub(totals, "ram", "GrandTotalAmount", _amount(invoice.total_gross))
     _sub(totals, "ram", "DuePayableAmount", _amount(invoice.total_gross))
 
-    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+    return cast(
+        bytes,
+        etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True),
+    )
 
 
 class ZUGFeRDGenerator:
@@ -227,7 +234,9 @@ class ZUGFeRDGenerator:
         try:
             from facturx import generate_from_binary
         except ImportError as exc:  # pragma: no cover - optional dependency
-            raise InvoiceGenerationError("factur-x is not installed; install the 'e-invoicing' extra") from exc
+            raise InvoiceGenerationError(
+                "factur-x is not installed; install the 'e-invoicing' extra"
+            ) from exc
 
         if base_pdf is None:
             pdf_bytes = build_branded_pdf(invoice)
@@ -238,18 +247,21 @@ class ZUGFeRDGenerator:
 
         xml = self.build_xml(invoice)
         try:
-            return generate_from_binary(
-                pdf_bytes,
-                xml,
-                flavor="factur-x",
-                level=FACTURX_LEVEL,
-                check_xsd=check_xsd,
-                check_schematron=False,
-                pdf_metadata={
-                    "title": f"Invoice {invoice.invoice_number}",
-                    "author": invoice.seller.name,
-                    "subject": "ZUGFeRD 2.2 invoice",
-                },
+            return cast(
+                bytes,
+                generate_from_binary(
+                    pdf_bytes,
+                    xml,
+                    flavor="factur-x",
+                    level=FACTURX_LEVEL,
+                    check_xsd=check_xsd,
+                    check_schematron=False,
+                    pdf_metadata={
+                        "title": f"Invoice {invoice.invoice_number}",
+                        "author": invoice.seller.name,
+                        "subject": "ZUGFeRD 2.2 invoice",
+                    },
+                ),
             )
         except Exception as exc:
             raise InvoiceGenerationError(f"factur-x could not generate the PDF: {exc}") from exc

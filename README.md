@@ -12,12 +12,13 @@ waste bags across all thicknesses, volumes and colour standards.
 > validation, gapless `INV-YYYY-XXXX` numbering, branded PDF/A-3 carrier
 > invoices with multi-rate VAT, user identity with Argon2id, short-lived access
 > tokens, rotating refresh sessions, token revocation, four-eyes approval,
-> API rate limiting, ERPNext quotation sync, HMAC-authenticated n8n
-> RFQ/quote flows, compliant portal scrapers with attachment harvesting and
-> durable ingestion outbox, live DeepSeek/Docling paths, deterministic unit
-> conversion, PostgreSQL LangGraph checkpoints and the production-hardened
-> scrape/ingestion worker (advisory locks, graceful shutdown, run metrics and
-> Telegram alerts) are complete.
+> API rate limiting, CI quality gates with real PostgreSQL/MinIO/ClamAV,
+> pgvector catalogue seeding, AI extraction evals, ERPNext quotation sync,
+> HMAC-authenticated n8n RFQ/quote flows, compliant portal scrapers with
+> attachment harvesting and durable ingestion outbox, live DeepSeek/Docling
+> paths, deterministic unit conversion, PostgreSQL LangGraph checkpoints and
+> the production-hardened scrape/ingestion worker (advisory locks, graceful
+> shutdown, run metrics and Telegram alerts) are complete.
 
 ---
 
@@ -66,6 +67,7 @@ src/
   config.py              # pydantic-settings configuration
   db.py                  # async SQLAlchemy engine/session factory
   main.py                # FastAPI app + startup preflight lifespan
+  admin.py               # yasmina-admin catalogue seeding CLI
   preflight.py           # startup checks (config, DB, MinIO, ClamAV, n8n)
   api/
     security.py          # JWT jti issuance/validation + RBAC roles
@@ -84,6 +86,7 @@ src/
     offer_repository.py  # offer lines, artifacts and ERPNext names
     invoice_repository.py # gapless invoice numbers, VAT splits, payment/credit status
     user_repository.py   # users, Argon2id auth, refresh rotation, JTI blocklist
+    catalog_repository.py # supplier catalogue + embedding upserts
     ingestion_repository.py # outbox jobs + scraper watermarks
     worker_run_repository.py # run history for scrapes and ingestion batches
     integration_repository.py # durable idempotency-key ledger
@@ -101,6 +104,7 @@ src/
     pricing_service.py   # pure-Decimal tiers, MOQ, margin, VAT
     unit_converter.py    # auditable CARTON/PACK/PIECE/ROLL conversions
     password_service.py  # Argon2id hashing and password policy
+    embedding_service.py # OpenAI-compatible / local / hashing embeddings
     ingestion_processor.py # PDF/GAEB parsing + triage worker
     worker_lock.py       # PostgreSQL advisory locks per portal
     worker_metrics.py    # worker health snapshot aggregation
@@ -135,6 +139,8 @@ docs/
   DETAILED_SPEC.md       # authoritative engineering specification
   ASSUMPTIONS.md         # inferred fields / open spec questions
 tests/                   # unit tests (no database required)
+  integration/           # live PostgreSQL/MinIO/identity/catalogue tests
+  evals/                 # DeepSeek extraction golden dataset + accuracy gate
 ```
 
 ---
@@ -437,27 +443,32 @@ cron entry keeps both discovery and parsing moving.
 python -m pytest -q
 ```
 
-The current 315 tests pass (plus twelve optional PostgreSQL-only tests that are
-skipped unless `YASMINA_TEST_DATABASE_URL` is set) and cover normalizers,
-settings, strict schemas, ORM metadata, pgvector/HNSW configuration, GAEB
-parsing/validation, PDF table extraction, pricing, unit conversion, hybrid
-matching, LangGraph triage/enrichment and checkpointing, Ed25519 approval,
-offer persistence/idempotency, gapless invoice numbering, multi-rate VAT,
-KoSIT Schematron validation, branded PDF/A-3 invoices, Argon2id users,
-refresh-token rotation/reuse detection, JWT blocklisting, four-eyes approval,
-tender/offer ownership, rate limiting, durable ingestion outbox
-claiming/retry, attachment harvesting and watermarking, advisory locking,
-signal-driven shutdown, worker run metrics, Telegram delivery, ClamAV scanning
-and audit chaining, MinIO object flows, ERPNext retries/payload mapping, n8n
-HMAC callbacks and idempotency, portal robots/rate/UA/artifact handling,
+The current 320 tests pass (plus sixteen optional tests — thirteen live
+PostgreSQL tests, two MinIO/ClamAV smoke tests and the DeepSeek eval — that are
+skipped unless their environment variables are set) and cover normalizers, settings, strict schemas,
+ORM metadata, pgvector/HNSW configuration, GAEB parsing/validation, PDF table
+extraction, pricing, unit conversion, hybrid matching, LangGraph
+triage/enrichment and checkpointing, Ed25519 approval, offer
+persistence/idempotency, gapless invoice numbering, multi-rate VAT, KoSIT
+Schematron validation, branded PDF/A-3 invoices, Argon2id users, refresh-token
+rotation/reuse detection, JWT blocklisting, four-eyes approval, tender/offer
+ownership, rate limiting, catalogue CSV/JSON seeding and vector upserts,
+deepseek extraction evals, durable ingestion outbox claiming/retry,
+attachment harvesting and watermarking, advisory locking, signal-driven
+shutdown, worker run metrics, Telegram delivery, ClamAV scanning and audit
+chaining, MinIO object flows, ERPNext retries/payload mapping, n8n HMAC
+callbacks and idempotency, portal robots/rate/UA/artifact handling,
 CPV-filtered HTML extraction, cron scheduling, FastAPI business routes, RBAC,
 tender persistence, e-invoicing and offline migration rendering.
 
 ```powershell
-# optional live PostgreSQL offer/checkpoint, outbox/lock, run-history, invoice and identity tests
+# optional live PostgreSQL offer/checkpoint, outbox/lock, invoice, identity and catalogue tests
 # (after alembic upgrade head)
 $env:YASMINA_TEST_DATABASE_URL = "postgresql+asyncpg://yasmina:yasmina@localhost:5432/yasmina"
-python -m pytest -q tests/integration/test_offer_workflow_db.py tests/integration/test_ingestion_outbox_db.py tests/integration/test_invoices_db.py tests/integration/test_identity_db.py
+python -m pytest -q tests/integration/test_offer_workflow_db.py tests/integration/test_ingestion_outbox_db.py tests/integration/test_invoices_db.py tests/integration/test_identity_db.py tests/integration/test_catalog_seed_db.py
+# with local MinIO/ClamAV:
+$env:YASMINA_TEST_SERVICES = "1"
+python -m pytest -q tests/integration/test_services_smoke.py
 ```
 
 ### Parsing, pricing and matching
@@ -506,6 +517,42 @@ converted = UnitConverter().convert_line(quote_line, UnitOfMeasure.STUECK)
 priced = PricingService().price_line(converted, quantity=Decimal("5000"))
 ```
 
+### Catalogue seeding
+
+```powershell
+# CSV: article_number, description, supplier, material, color, glove_size, unit,
+# unit_price_net, pack_size, attributes (JSON)
+python -m src.admin seed-catalog --file catalog.csv
+python -m src.admin seed-catalog --file catalog.json --embedding-provider local
+python -m src.admin seed-catalog --file catalog.csv --dry-run
+```
+
+The CLI (`yasmina-admin seed-catalog`) validates each row, maps German material /
+colour / size / unit text through the normalizers, generates embeddings and
+upserts `catalog_articles` by `(supplier, article_number)`.
+
+- `auto` uses an OpenAI-compatible embeddings endpoint when
+  `EMBEDDING_API_KEY` or `DEEPSEEK_API_KEY` is configured, otherwise hashing
+  vectors are refused unless `--allow-hash-embeddings` is explicit.
+- `--embedding-provider local` uses sentence-transformers / BGE-M3 (install the
+  `catalogue` extra).
+- `--embedding-provider hashing` is deterministic and intended for offline tests
+  and CI only; it is not a semantic model.
+- `--dry-run` validates rows without calling an embedding endpoint or writing the
+  database.
+
+### AI extraction evals
+
+`tests/evals/golden/extraction_cases.json` holds German tender snippets with
+expected material, colour, glove-size and pack-size values. The offline integrity
+test always runs; when `DEEPSEEK_API_KEY` is set, the eval calls the live client
+and fails if field accuracy drops below the 85 % baseline:
+
+```powershell
+$env:DEEPSEEK_API_KEY = "..."
+python -m pytest -q tests/evals/test_extraction_eval.py -s
+```
+
 ### E-invoicing (ZUGFeRD / XRechnung)
 
 ```python
@@ -519,7 +566,8 @@ invoice = Invoice(
     invoice_number="INV-2026-0001",
     issue_date=date(2026, 1, 15),
     due_date=date(2026, 2, 14),
-    seller=seller, buyer=buyer,
+    seller=seller,
+    buyer=buyer,
     buyer_reference="991-03730-19",  # Leitweg-ID
     lines=[line],
     total_net=Decimal("100.00"),
@@ -595,9 +643,19 @@ yasmina-approval sign --offer offer.json --private-key-file approver.key `
 yasmina-approval verify --offer signed.json --public-key $env:ED25519_APPROVAL_PUBLIC_KEY
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) runs the same suite on Python 3.11
-and 3.12, compiles the sources, renders the initial Alembic migration SQL and
-checks that `.env` is never tracked.
+GitHub Actions (`.github/workflows/ci.yml`) has two gates:
+
+- **quality** — `ruff check .`, `ruff format --check .`, `mypy src` (strict),
+  byte compilation, offline migration rendering and the `.env` tracked-file
+  guard.
+- **tests** — Python 3.11 and 3.12 jobs with `pgvector/pgvector:pg16` and
+  ClamAV services plus a MinIO server container. The workflow applies Alembic,
+  creates the MinIO bucket, runs the real-service preflight, then runs the full
+  pytest suite with `YASMINA_TEST_DATABASE_URL` so the live PostgreSQL tests
+  execute.
+
+CI uses `.[dev,e-invoicing]`; local installations may also add
+`.[catalogue]` for local BGE-M3 embeddings.
 
 ---
 
@@ -616,6 +674,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | ClamAV | `CLAMAV_HOST`, `CLAMAV_PORT`, `CLAMAV_TIMEOUT_SECONDS` |
 | Preflight | `PREFLIGHT_TIMEOUT_SECONDS` |
 | DeepSeek | `DEEPSEEK_ENABLED`, `DEEPSEEK_API_KEY`, `DEEPSEEK_CHAT_MODEL`, `DEEPSEEK_REASONER_MODEL` |
+| Embeddings | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_TIMEOUT_SECONDS`, `EMBEDDING_BATCH_SIZE` |
 | Embeddings | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` (BGE-M3, 1024) |
 | n8n | `N8N_WEBHOOK_BASE_URL`, `N8N_WEBHOOK_HMAC_SECRET`, `N8N_RFQ_WEBHOOK_PATH`, `N8N_CALLBACK_URL`, `N8N_CALLBACK_MAX_AGE_SECONDS` |
 | Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_APPROVAL_CHAT_ID`, `TELEGRAM_ALERTS_ENABLED`, `TELEGRAM_TIMEOUT_SECONDS`, `TELEGRAM_MAX_RETRIES`, `TELEGRAM_RETRY_BACKOFF_SECONDS` |
@@ -716,6 +775,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P4.3 — PostgreSQL advisory portal locks, SIGINT/SIGTERM graceful shutdown, persisted worker run history, `/healthz/worker` metrics and Telegram failure/dead-letter alerts
 - [x] P4.4 — invoice ORM with gapless `INV-YYYY-XXXX` numbering, KoSIT Schematron validation, branded PDF/A-3 carrier invoices and multi-rate VAT records
 - [x] P4.5 — Argon2id users, short-lived JWTs, rotating refresh-token families, JTI blocklist, four-eyes approval, ownership-scoped APIs and token-bucket rate limiting
+- [x] P4.6 — CI real-service containers (PostgreSQL/pgvector, MinIO, ClamAV), ruff/mypy quality gates, pgvector catalogue seeding CLI and DeepSeek extraction evals
 - [ ] P2 — Telegram notifier and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

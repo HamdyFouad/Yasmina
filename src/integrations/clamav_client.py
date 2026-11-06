@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,6 +48,7 @@ class ClamAVScanner:
                 asyncio.open_connection(self.host, self.port),
                 timeout=self.timeout,
             )
+            assert writer is not None
             writer.write(b"zINSTREAM\0")
             for offset in range(0, len(data), _MAX_CHUNK):
                 chunk = data[offset : offset + _MAX_CHUNK]
@@ -64,10 +66,8 @@ class ClamAVScanner:
         finally:
             if writer is not None:
                 writer.close()
-                try:
+                with contextlib.suppress(OSError, RuntimeError):
                     await writer.wait_closed()
-                except (OSError, RuntimeError):  # pragma: no cover - best effort
-                    pass
 
         raw = response.rstrip(b"\0\n").decode("utf-8", "replace")
         if raw.endswith("OK"):

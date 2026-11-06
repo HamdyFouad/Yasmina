@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -31,7 +31,7 @@ from src.models.schemas import (
 from src.services.approval_service import ApprovalService, generate_keypair, sign_offer
 from src.services.matching_service import CatalogCandidate
 
-NOW = datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
 
 
 def make_item(**overrides: object) -> TenderItem:

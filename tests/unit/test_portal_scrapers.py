@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -113,7 +113,10 @@ async def test_bayern_scraper_extracts_matches_and_enriches_detail() -> None:
     assert tender.source_format is TenderSourceFormat.PORTAL
     assert tender.status is TenderStatus.PUBLISHED
     assert tender.tender_number == "BY-2026-001"
-    assert tender.source_reference == "https://portal.example/veroeffentlichungen/auftragsbekanntmachungen/ausschreibung/2026-001"
+    assert (
+        tender.source_reference
+        == "https://portal.example/veroeffentlichungen/auftragsbekanntmachungen/ausschreibung/2026-001"
+    )
     assert tender.metadata["portal"] == "vergabe.bayern"
 
 
@@ -177,7 +180,7 @@ async def test_incremental_scrape_skips_old_publication_dates() -> None:
         )
         discovered = await scraper.discover(
             max_pages=1,
-            since=datetime(2026, 1, 16, tzinfo=timezone.utc),
+            since=datetime(2026, 1, 16, tzinfo=UTC),
         )
 
     assert [item.portal_id for item in discovered] == ["2026-003"]
@@ -203,9 +206,13 @@ async def test_bayern_scraper_harvests_pdf_and_gaeb_attachments() -> None:
         if path.endswith("/robots.txt"):
             return httpx.Response(200, text="User-agent: *\nAllow: /\n")
         if path.endswith(".pdf"):
-            return httpx.Response(200, content=b"%PDF-1.7 attachment", headers={"Content-Type": "application/pdf"})
+            return httpx.Response(
+                200, content=b"%PDF-1.7 attachment", headers={"Content-Type": "application/pdf"}
+            )
         if path.endswith(".x83"):
-            return httpx.Response(200, content=b"<GAEB>attachment</GAEB>", headers={"Content-Type": "application/xml"})
+            return httpx.Response(
+                200, content=b"<GAEB>attachment</GAEB>", headers={"Content-Type": "application/xml"}
+            )
         if path.endswith("/2026-att"):
             return httpx.Response(200, text=detail, headers={"Content-Type": "text/html"})
         return httpx.Response(200, text=listing, headers={"Content-Type": "text/html"})
@@ -225,11 +232,12 @@ async def test_bayern_scraper_harvests_pdf_and_gaeb_attachments() -> None:
     assert [attachment.kind for attachment in attachments] == ["pdf", "gaeb"]
     assert attachments[0].filename == "leistungsverzeichnis.pdf"
     assert attachments[1].filename == "leistungsverzeichnis.x83"
-    assert all(attachment.object_name.startswith("scrapers/vergabe.bayern/attachments/") for attachment in attachments)
+    assert all(
+        attachment.object_name.startswith("scrapers/vergabe.bayern/attachments/")
+        for attachment in attachments
+    )
     tender = discovered[0].to_tender()
-    assert tender.metadata["attachment_objects"] == [
-        attachment.object_name for attachment in attachments
-    ]
+    assert tender.metadata["attachment_objects"] == [attachment.object_name for attachment in attachments]
     assert sum(1 for request in requests if request.url.path.endswith((".pdf", ".x83"))) == 2
 
 

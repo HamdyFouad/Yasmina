@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from src.scrapers.base_scraper import (
-    BaseScraper,
     DEFAULT_USER_AGENTS,
+    BaseScraper,
     RobotsDeniedError,
     ScrapedPage,
-    ScrapeReport,
     ScraperArchiveError,
+    ScrapeReport,
     ScraperError,
     ScraperHTTPError,
     ScraperRobotsError,

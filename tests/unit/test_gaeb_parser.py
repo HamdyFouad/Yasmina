@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -53,7 +53,9 @@ def build_x83(workspace_tmp: Path) -> Path:
     return path
 
 
-def make_offer(item_position: str, *, status: CustomerOfferStatus = CustomerOfferStatus.APPROVED) -> CustomerOffer:
+def make_offer(
+    item_position: str, *, status: CustomerOfferStatus = CustomerOfferStatus.APPROVED
+) -> CustomerOffer:
     cost = Decimal("10.0000")
     margin = Decimal("0.10")
     unit_price = q4(cost * (Decimal(1) + margin))
@@ -85,7 +87,7 @@ def make_offer(item_position: str, *, status: CustomerOfferStatus = CustomerOffe
             draft,
             PRIVATE_KEY_HEX,
             approver="C. Mueller",
-            approved_at=datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc),
+            approved_at=datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
         )
     return draft
 

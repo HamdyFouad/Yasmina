@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from src.agents.nodes import enrich_specs
 from src.agents.state import AgentContext
@@ -76,15 +76,16 @@ class TenderIngestionProcessor:
             kind = str(item.get("kind") or "").casefold()
             if not kind:
                 suffix = Path(filename).suffix.casefold()
-                kind = "pdf" if suffix == ".pdf" else "gaeb" if suffix in {".x83", ".d83", ".x84"} else "other"
+                kind = (
+                    "pdf" if suffix == ".pdf" else "gaeb" if suffix in {".x83", ".d83", ".x84"} else "other"
+                )
             specs.append(_AttachmentSpec(object_name, filename, content_type, kind))
         return specs
 
     @staticmethod
     def _triage_text(tender: Tender, items: list[TenderItem]) -> str:
         positions = " ".join(
-            f"{item.position_number} {item.short_text} {item.long_text or ''}".strip()
-            for item in items
+            f"{item.position_number} {item.short_text} {item.long_text or ''}".strip() for item in items
         )
         return (
             f"Title: {tender.title}\n"
@@ -123,7 +124,9 @@ class TenderIngestionProcessor:
             return items, list(result.get("warnings", []))
         return list(enriched_tender.items), list(result.get("warnings", []))
 
-    async def _parse_attachments(self, tender: Tender, job: IngestionJobView) -> tuple[list[TenderItem], list[str]]:
+    async def _parse_attachments(
+        self, tender: Tender, job: IngestionJobView
+    ) -> tuple[list[TenderItem], list[str]]:
         items: list[TenderItem] = []
         warnings: list[str] = []
         seen: set[tuple[str, str]] = set()

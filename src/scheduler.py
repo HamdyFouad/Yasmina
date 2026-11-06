@@ -8,10 +8,11 @@ and uses the application timezone, so ``0 2 * * *`` means 02:00 local time.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 __all__ = [
@@ -99,7 +100,7 @@ class CronExpression:
     dow_wildcard: bool
 
     @classmethod
-    def parse(cls, expression: str, *, timezone: str = "Europe/Berlin") -> "CronExpression":
+    def parse(cls, expression: str, *, timezone: str = "Europe/Berlin") -> CronExpression:
         fields = expression.split()
         if len(fields) != 5:
             raise CronScheduleError("cron expression must contain exactly five fields")
@@ -121,7 +122,11 @@ class CronExpression:
         )
 
     def matches(self, moment: datetime) -> bool:
-        local = moment.replace(tzinfo=self.timezone) if moment.tzinfo is None else moment.astimezone(self.timezone)
+        local = (
+            moment.replace(tzinfo=self.timezone)
+            if moment.tzinfo is None
+            else moment.astimezone(self.timezone)
+        )
         dom_match = local.day in self.day_of_month
         dow_match = ((local.weekday() + 1) % 7) in self.day_of_week
         if self.dom_wildcard or self.dow_wildcard:
@@ -166,10 +171,8 @@ async def wait_for_stop(
     if stop_event is None:
         await (sleep or asyncio.sleep)(delay)
         return
-    try:
+    with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(stop_event.wait(), timeout=delay)
-    except TimeoutError:
-        pass
 
 
 async def run_scheduler(

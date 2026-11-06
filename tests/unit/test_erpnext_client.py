@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -26,7 +26,7 @@ from src.models.schemas import CustomerOffer, CustomerOfferLine, q2, q4
 from src.services.approval_service import generate_keypair, sign_offer
 
 PRIVATE_KEY, PUBLIC_KEY = generate_keypair()
-NOW = datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
 
 
 def make_settings(**overrides: Any) -> Settings:
@@ -155,9 +155,7 @@ async def test_validation_error_is_not_retried() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         client = ERPNextClient(make_settings(), client=http, sleep=_noop_sleep)
         with pytest.raises(ERPNextError, match="400"):
-            await client.sync_item(
-                ERPItem(item_code="ITEM-1", item_name="Gloves", unit=UnitOfMeasure.KARTON)
-            )
+            await client.sync_item(ERPItem(item_code="ITEM-1", item_name="Gloves", unit=UnitOfMeasure.KARTON))
 
     assert calls == 1
 
@@ -258,7 +256,9 @@ async def test_quotation_creation_syncs_customer_and_items() -> None:
 
     assert quotation.created is True
     assert quotation.name == "QTN-0001"
-    quotation_body = next(body for method, path, body in requests if method == "POST" and path.endswith("/Quotation"))
+    quotation_body = next(
+        body for method, path, body in requests if method == "POST" and path.endswith("/Quotation")
+    )
     assert quotation_body["party_name"] == "Stadt Muster"
     assert quotation_body["items"][0]["qty"] == "10.0000"
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from src.models.enums import AuditEventType
 from src.services.audit_service import AuditService, audit_entry_hash
@@ -86,7 +86,7 @@ def test_audit_service_uses_genesis_hash_when_empty() -> None:
 
 def test_audit_hash_is_deterministic_and_order_independent() -> None:
     first = audit_entry_hash(
-        occurred_at=datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
         event_type=AuditEventType.CLAMAV_SCAN_CLEAN,
         actor="sales-user",
         entity_type="tender_upload",
@@ -95,7 +95,7 @@ def test_audit_hash_is_deterministic_and_order_independent() -> None:
         prev_hash=None,
     )
     second = audit_entry_hash(
-        occurred_at=datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
         event_type=AuditEventType.CLAMAV_SCAN_CLEAN,
         actor="sales-user",
         entity_type="tender_upload",
@@ -110,7 +110,7 @@ def test_audit_hash_is_deterministic_and_order_independent() -> None:
 
 def test_audit_hash_changes_with_chain_and_payload() -> None:
     base = dict(
-        occurred_at=datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
         event_type=AuditEventType.CLAMAV_SCAN_REJECTED,
         actor="sales-user",
         entity_type="tender_upload",

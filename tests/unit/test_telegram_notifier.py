@@ -35,9 +35,7 @@ class FakeClient:
 
 
 async def test_send_alert_posts_to_configured_chat() -> None:
-    client = FakeClient(
-        [httpx.Response(200, json={"ok": True, "result": {"message_id": 42}})]
-    )
+    client = FakeClient([httpx.Response(200, json={"ok": True, "result": {"message_id": 42}})])
     notifier = TelegramNotifier(make_settings(), client=client)  # type: ignore[arg-type]
 
     result = await notifier.send_alert("scheduled scrape failed")

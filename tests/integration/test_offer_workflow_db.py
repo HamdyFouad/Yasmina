@@ -9,7 +9,7 @@ provisioned database.
 from __future__ import annotations
 
 import os
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -55,7 +55,7 @@ pytestmark = pytest.mark.skipif(
     reason="set YASMINA_TEST_DATABASE_URL to run PostgreSQL integration tests",
 )
 
-NOW = datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
 
 
 def settings() -> Settings:
@@ -115,18 +115,14 @@ async def test_offer_repository_roundtrip_and_idempotency() -> None:
                 offer.model_copy(
                     update={
                         "owner": "sales-db",
-                        "invoice_artifacts": {
-                            "xrechnung": {"object_name": "offers/db/invoice.xml"}
-                        },
+                        "invoice_artifacts": {"xrechnung": {"object_name": "offers/db/invoice.xml"}},
                     }
                 )
             )
             second = await repository.save(
                 first.offer.model_copy(
                     update={
-                        "invoice_artifacts": {
-                            "zugferd": {"object_name": "offers/db/invoice.pdf"}
-                        },
+                        "invoice_artifacts": {"zugferd": {"object_name": "offers/db/invoice.pdf"}},
                         "erpnext_quotation_name": "QTN-DB-1",
                     }
                 )

@@ -340,10 +340,44 @@ reconciled with the authoritative spec later.
   must have at least 32 characters, staging/production reject placeholder
   secrets and short admin passwords, Argon2 must be importable, and only
   `argon2id` is accepted. The same check is part of `python -m src.preflight`.
-- Three live PostgreSQL identity tests cover user auth, refresh rotation/reuse
-  and JTI blocklisting, bringing the live suite to twelve tests; the default
-  suite is 315 tests (identity, four-eyes, ownership and rate-limit coverage
-  included).
+- The three live PostgreSQL identity tests cover user auth, refresh
+  rotation/reuse and JTI blocklisting. At the P4.5 milestone this brought the
+  live suite to twelve and the default suite to 315; P4.6 adds catalogue and
+  service coverage (320 defaults, thirteen live DB tests).
+
+## CI, catalogue seeding & eval assumptions (P4.6)
+
+- The quality job runs `ruff check .`, `ruff format --check .` and `mypy src`
+  under the strict configuration in `pyproject.toml`. FastAPI's intentional
+  `Depends`/`File`/`Query` calls in argument defaults are exempted from B008;
+  external packages without type metadata (lxml, facturx, saxonche, docling,
+  asyncpg, sentence-transformers) have explicit mypy import overrides rather
+  than broad `Any` suppressions.
+- The test job uses `pgvector/pgvector:pg16` and `clamav/clamav:stable` services
+  plus a MinIO server container. It applies Alembic, creates the MinIO bucket,
+  runs `python -m src.preflight --skip n8n` against the real services and then
+  the full pytest suite with `YASMINA_TEST_DATABASE_URL`, so the live DB tests
+  are mandatory in CI.
+- Catalogue files accept CSV/TSV/JSON with at least `article_number` and
+  `description`; `supplier` may come from a column or `--supplier`. German
+  material/colour/size/unit/package strings pass through the same normalizers as
+  tenders before persistence. Upserts key on `(supplier_id, article_number)`.
+- `auto` embeddings use an OpenAI-compatible `/embeddings` endpoint when
+  `EMBEDDING_API_KEY` or `DEEPSEEK_API_KEY` is configured; otherwise the CLI
+  refuses hashing vectors unless `--allow-hash-embeddings` is explicit. `local`
+  uses sentence-transformers BGE-M3 via the `catalogue` extra. Hashing vectors
+  are deterministic test fixtures, never a semantic production model.
+- The embedding text concatenates description, normalized attributes, pack size
+  and extra catalogue fields. Vectors must match `EMBEDDING_DIMENSIONS` (1024 by
+  default) before any upsert.
+- The DeepSeek eval loads four German golden snippets. It always checks dataset
+  integrity offline and, when `DEEPSEEK_API_KEY` is present, calls the live
+  client and fails below the 85 % field-accuracy baseline. Without a key the
+  live accuracy test is skipped, matching the CI secret policy.
+- P4.6 adds catalogue unit/live tests, the eval and MinIO/ClamAV smoke tests,
+  bringing the default suite to 320 tests and the live PostgreSQL suite to
+  thirteen tests; the two service smoke tests run in CI with
+  `YASMINA_TEST_SERVICES=1` and the live eval remains key-gated.
 
 ## E-invoicing assumptions (P2.1)
 

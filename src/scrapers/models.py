@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
-from typing import Any, Mapping
+from datetime import UTC, date, datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.models.enums import (
@@ -90,7 +91,9 @@ _EN_MONTHS = {
     "december": 12,
     "dec": 12,
 }
-_ISO_RE = re.compile(r"(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})(?:[T ](?P<hour>\d{2}):(?P<minute>\d{2}))?")
+_ISO_RE = re.compile(
+    r"(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})(?:[T ](?P<hour>\d{2}):(?P<minute>\d{2}))?"
+)
 _EU_RE = re.compile(
     r"(?P<day>\d{1,2})\.(?P<month>\d{1,2})\.(?P<year>\d{4})"
     r"(?:\s*[,um ]*\s*(?P<hour>\d{1,2}):(?P<minute>\d{2}))?"
@@ -171,12 +174,7 @@ def parse_portal_datetime(text: str, *, end_of_day: bool = True) -> datetime | N
 
     if not text:
         return None
-    normalized = " ".join(
-        text.replace("\xa0", " ")
-        .replace("Uhr", " ")
-        .replace(",", " ")
-        .split()
-    )
+    normalized = " ".join(text.replace("\xa0", " ").replace("Uhr", " ").replace(",", " ").split())
 
     iso = _ISO_RE.search(normalized)
     if iso is not None:
@@ -329,7 +327,7 @@ class DiscoveredTender:
     def to_tender(self) -> Tender:
         """Map portal metadata onto the strict ``Tender`` schema."""
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         metadata = {
             **_jsonable(dict(self.metadata)),
             "portal": self.portal,
@@ -351,7 +349,7 @@ class DiscoveredTender:
             source_reference=self.detail_url[:512],
             cpv_codes=list(filter_hygiene_cpv(self.cpv_codes)),
             publication_date=self.publication_date,
-            submission_deadline=self.submission_deadline.astimezone(timezone.utc),
+            submission_deadline=self.submission_deadline.astimezone(UTC),
             status=TenderStatus.PUBLISHED,
             metadata=metadata,
             created_at=now,

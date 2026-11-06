@@ -13,15 +13,105 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  APP_ENV: test
+  JWT_SECRET_KEY: ci-jwt-secret-key-with-at-least-32-bytes
+  API_ADMIN_PASSWORD: ci-admin-password
+  POSTGRES_USER: yasmina
+  POSTGRES_PASSWORD: yasmina
+  POSTGRES_DB: yasmina
+  POSTGRES_HOST: localhost
+  POSTGRES_PORT: "5432"
+  DATABASE_URL: postgresql+asyncpg://yasmina:yasmina@localhost:5432/yasmina
+  YASMINA_TEST_DATABASE_URL: postgresql+asyncpg://yasmina:yasmina@localhost:5432/yasmina
+  MINIO_ENDPOINT: localhost:9000
+  MINIO_ACCESS_KEY: yasmina-ci
+  MINIO_SECRET_KEY: yasmina-ci-secret
+  MINIO_BUCKET: yasmina
+  MINIO_SECURE: "false"
+  CLAMAV_HOST: localhost
+  CLAMAV_PORT: "3310"
+  YASMINA_TEST_SERVICES: "1"
+  ED25519_APPROVAL_PUBLIC_KEY: abababababababababababababababababababababababababababababababab
+
 jobs:
+  quality:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,e-invoicing]"
+
+      - name: Ruff lint
+        run: python -m ruff check .
+
+      - name: Ruff format check
+        run: python -m ruff format --check .
+
+      - name: Mypy strict
+        run: python -m mypy src
+
+      - name: Compile sources
+        run: python -m compileall -q src alembic tests
+
+      - name: Render and verify migration SQL
+        run: |
+          python -m alembic upgrade head --sql > migration.sql
+          grep -q "CREATE EXTENSION IF NOT EXISTS vector" migration.sql
+          grep -q "USING hnsw (embedding vector_cosine_ops)" migration.sql
+          grep -q "CREATE TRIGGER trg_audit_logs_append_only" migration.sql
+          grep -q "CREATE TRIGGER trg_audit_logs_no_truncate" migration.sql
+          grep -q "INSERT INTO alembic_version" migration.sql
+
+      - name: Ensure .env is not tracked
+        run: |
+          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+            echo "ERROR: .env must never be committed."
+            exit 1
+          fi
+          echo ".env is not tracked."
+
   tests:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: yasmina
+          POSTGRES_PASSWORD: yasmina
+          POSTGRES_DB: yasmina
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U yasmina -d yasmina"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+      clamav:
+        image: clamav/clamav:stable
+        ports:
+          - 3310:3310
 
     steps:
       - name: Checkout
@@ -34,33 +124,52 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      - name: Start MinIO
+        # GitHub service containers cannot pass a command; MinIO requires
+        # `server /data`, so start the container explicitly.
+        run: |
+          docker run -d --name yasmina-minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER="$MINIO_ACCESS_KEY" \
+            -e MINIO_ROOT_PASSWORD="$MINIO_SECRET_KEY" \
+            minio/minio:latest server /data
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "MinIO did not become healthy" >&2
+          exit 1
+
+      - name: Wait for ClamAV
+        run: |
+          for i in $(seq 1 90); do
+            if timeout 1 bash -c '</dev/tcp/127.0.0.1/3310'; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "ClamAV did not become healthy" >&2
+          exit 1
+
       - name: Install project
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -e ".[dev,e-invoicing]"
 
-      - name: Run unit tests
+      - name: Create MinIO bucket
+        run: |
+          python -c "from minio import Minio; c=Minio('localhost:9000', access_key='$MINIO_ACCESS_KEY', secret_key='$MINIO_SECRET_KEY', secure=False); c.make_bucket('$MINIO_BUCKET') if not c.bucket_exists('$MINIO_BUCKET') else None"
+
+      - name: Apply migrations
+        run: python -m alembic upgrade head
+
+      - name: Preflight against real services
+        run: python -m src.preflight --skip n8n
+
+      - name: Full test suite (live database included)
         run: python -m pytest -q
 
       - name: Compile sources
         run: python -m compileall -q src alembic tests
-
-      - name: Render initial migration SQL
-        run: python -m alembic upgrade head --sql > migration.sql
-
-      - name: Verify migration SQL
-        run: |
-          grep -q "CREATE EXTENSION IF NOT EXISTS vector" migration.sql
-          grep -q "USING hnsw (embedding vector_cosine_ops)" migration.sql
-          grep -q "CREATE TRIGGER trg_audit_logs_append_only" migration.sql
-          grep -q "CREATE TRIGGER trg_audit_logs_no_truncate" migration.sql
-          grep -q "INSERT INTO alembic_version" migration.sql
-          echo "Migration SQL rendered and verified."
-
-      - name: Ensure .env is not tracked
-        run: |
-          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
-            echo "ERROR: .env must never be committed."
-            exit 1
-          fi
-          echo ".env is not tracked."

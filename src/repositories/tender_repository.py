@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -189,11 +189,7 @@ class TenderRepository:
         )
 
     async def get(self, tender_id: UUID) -> StoredTender | None:
-        statement = (
-            select(TenderORM)
-            .where(TenderORM.id == tender_id)
-            .options(selectinload(TenderORM.items))
-        )
+        statement = select(TenderORM).where(TenderORM.id == tender_id).options(selectinload(TenderORM.items))
         orm = (await self.session.execute(statement)).scalars().first()
         return self._stored(orm) if orm is not None else None
 
@@ -241,23 +237,21 @@ class TenderRepository:
     ) -> StoredTender:
         """Replace a tender's parsed positions after attachment processing."""
 
-        statement = (
-            select(TenderORM)
-            .where(TenderORM.id == tender_id)
-            .options(selectinload(TenderORM.items))
-        )
+        statement = select(TenderORM).where(TenderORM.id == tender_id).options(selectinload(TenderORM.items))
         orm = (await self.session.execute(statement)).scalars().first()
         if orm is None:
             raise TenderRepositoryError(f"tender {tender_id} does not exist")
 
         orm.items.clear()
         await self.session.flush()
-        orm.items.extend(_item_to_orm(item.model_copy(update={"tender_id": tender_id}), tender_id) for item in items)
+        orm.items.extend(
+            _item_to_orm(item.model_copy(update={"tender_id": tender_id}), tender_id) for item in items
+        )
         if metadata_updates:
             metadata = dict(orm.metadata_json or {})
             metadata.update(metadata_updates)
             orm.metadata_json = metadata
-        orm.updated_at = datetime.now(timezone.utc)
+        orm.updated_at = datetime.now(UTC)
         try:
             if commit:
                 await self.session.commit()

@@ -15,9 +15,9 @@ from src.services.approval_service import (
 from src.services.matching_service import (
     CatalogCandidate,
     HybridMatchingService,
-    MatchResult,
     MatchingError,
     MatchingService,
+    MatchResult,
     candidate_from_orm,
     cosine_similarity,
     lexical_similarity,

@@ -187,9 +187,7 @@ def test_invoice_and_vat_tables_shape() -> None:
         "ck_invoices_totals_consistent",
         "ck_invoices_payment_plus_credit_bounded",
     } <= {constraint.name for constraint in invoices.constraints}
-    assert {"uq_invoice_year_sequence"} <= {
-        constraint.name for constraint in invoices.constraints
-    }
+    assert {"uq_invoice_year_sequence"} <= {constraint.name for constraint in invoices.constraints}
     assert lines.c.vat_rate.nullable is False
     assert "uq_invoice_line" in {constraint.name for constraint in lines.constraints}
     assert "uq_invoice_vat_rate" in {constraint.name for constraint in splits.constraints}
@@ -201,9 +199,7 @@ def test_customer_offer_line_has_vat_rate() -> None:
     lines = Base.metadata.tables["customer_offer_lines"]
 
     assert lines.c.vat_rate.nullable is False
-    assert "ck_customer_offer_lines_vat_rate_range" in {
-        constraint.name for constraint in lines.constraints
-    }
+    assert "ck_customer_offer_lines_vat_rate_range" in {constraint.name for constraint in lines.constraints}
 
 
 def test_identity_and_refresh_token_tables_shape() -> None:
@@ -216,9 +212,7 @@ def test_identity_and_refresh_token_tables_shape() -> None:
     assert users.c.email.unique is True
     assert users.c.roles.nullable is False
     assert users.c.password_hash.type.length == 512
-    assert "ck_users_failed_attempts_non_negative" in {
-        constraint.name for constraint in users.constraints
-    }
+    assert "ck_users_failed_attempts_non_negative" in {constraint.name for constraint in users.constraints}
     assert refresh_tokens.c.token_hash.unique is True
     assert refresh_tokens.c.token_hash.type.length == 64
     assert "ck_refresh_tokens_token_hash_format" in {

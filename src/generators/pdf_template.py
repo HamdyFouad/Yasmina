@@ -25,7 +25,7 @@ from pypdf.generic import (
     TextStringObject,
 )
 
-from src.generators.invoice_models import Invoice, InvoiceLine
+from src.generators.invoice_models import Invoice
 from src.models.schemas import q2
 
 __all__ = ["build_branded_pdf"]
@@ -334,9 +334,7 @@ def _add_pdfa_metadata(writer: PdfWriter, invoice: Invoice) -> None:
             NameObject("/DestOutputProfile"): profile_ref,
         }
     )
-    writer.root_object[NameObject("/OutputIntents")] = ArrayObject(
-        [writer._add_object(output_intent)]
-    )
+    writer.root_object[NameObject("/OutputIntents")] = ArrayObject([writer._add_object(output_intent)])
     writer.add_metadata(
         {
             "/Title": f"Rechnung {invoice.invoice_number}",

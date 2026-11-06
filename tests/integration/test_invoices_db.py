@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -17,14 +17,22 @@ from src.generators.xrechnung_generator import XRechnungGenerator
 from src.models.enums import CustomerOfferStatus, UnitOfMeasure
 from src.models.orm import (
     CustomerOffer as CustomerOfferORM,
+)
+from src.models.orm import (
     CustomerOfferLine as CustomerOfferLineORM,
+)
+from src.models.orm import (
     Invoice as InvoiceORM,
+)
+from src.models.orm import (
     InvoiceLine as InvoiceLineORM,
+)
+from src.models.orm import (
     InvoiceNumberSequence,
     InvoiceVatSplit,
 )
 from src.models.schemas import CustomerOffer, CustomerOfferLine, q2, q4
-from src.repositories.invoice_repository import InvoiceRepository
+from src.repositories.invoice_repository import InvoiceRepository, InvoiceRepositoryError
 from src.repositories.offer_repository import OfferRepository
 
 DATABASE_URL = os.getenv("YASMINA_TEST_DATABASE_URL")
@@ -35,7 +43,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 YEAR = 2099
-NOW = datetime(2099, 1, 15, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2099, 1, 15, 9, 0, tzinfo=UTC)
 
 
 def settings() -> Settings:
@@ -171,32 +179,28 @@ def make_invoice(*, duplicate_line: bool = False) -> Invoice:
 
 async def _cleanup(session) -> None:  # type: ignore[no-untyped-def]
     offer_ids = (
-        await session.execute(
-            text("select id from customer_offers where offer_number like 'P44-%'")
-        )
-    ).scalars().all()
+        (await session.execute(text("select id from customer_offers where offer_number like 'P44-%'")))
+        .scalars()
+        .all()
+    )
     for offer_id in offer_ids:
         invoice_ids = (
-            await session.execute(
-                text("select id from invoices where offer_id = :offer_id"),
-                {"offer_id": offer_id},
+            (
+                await session.execute(
+                    text("select id from invoices where offer_id = :offer_id"),
+                    {"offer_id": offer_id},
+                )
             )
-        ).scalars().all()
-        for invoice_id in invoice_ids:
-            await session.execute(
-                delete(InvoiceVatSplit).where(InvoiceVatSplit.invoice_id == invoice_id)
-            )
-            await session.execute(
-                delete(InvoiceLineORM).where(InvoiceLineORM.invoice_id == invoice_id)
-            )
-            await session.execute(delete(InvoiceORM).where(InvoiceORM.id == invoice_id))
-        await session.execute(
-            delete(CustomerOfferLineORM).where(CustomerOfferLineORM.offer_id == offer_id)
+            .scalars()
+            .all()
         )
+        for invoice_id in invoice_ids:
+            await session.execute(delete(InvoiceVatSplit).where(InvoiceVatSplit.invoice_id == invoice_id))
+            await session.execute(delete(InvoiceLineORM).where(InvoiceLineORM.invoice_id == invoice_id))
+            await session.execute(delete(InvoiceORM).where(InvoiceORM.id == invoice_id))
+        await session.execute(delete(CustomerOfferLineORM).where(CustomerOfferLineORM.offer_id == offer_id))
         await session.execute(delete(CustomerOfferORM).where(CustomerOfferORM.id == offer_id))
-    await session.execute(
-        delete(InvoiceNumberSequence).where(InvoiceNumberSequence.year == YEAR)
-    )
+    await session.execute(delete(InvoiceNumberSequence).where(InvoiceNumberSequence.year == YEAR))
     await session.commit()
 
 
@@ -213,7 +217,7 @@ async def test_invoice_sequence_is_gapless_after_rolled_back_insert() -> None:
             assert first.invoice.invoice_number == "INV-2099-0001"
 
             second_offer = (await offers.save(make_offer())).offer
-            with pytest.raises(Exception):
+            with pytest.raises(InvoiceRepositoryError):
                 await invoices.create(make_invoice(duplicate_line=True), offer_id=second_offer.id)
 
             retry = await invoices.create(make_invoice(), offer_id=second_offer.id)

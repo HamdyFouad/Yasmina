@@ -24,12 +24,12 @@ from src.repositories.ingestion_repository import (
     TenderIngestionJobRepository,
 )
 from src.repositories.tender_repository import TenderRepository
-from src.repositories.worker_run_repository import WorkerRunRepository
+from src.repositories.worker_run_repository import WorkerRunRepository, WorkerRunView
+from src.scheduler import CronExpression, CronScheduleError, run_scheduler, wait_for_stop
 from src.scrapers.base_scraper import BaseScraper, ObjectWriter
 from src.scrapers.bayern_vergabe import BayernVergabeScraper
 from src.scrapers.ingestion import IngestionPipeline, PortalIngestionBridge, PortalIngestionResult
 from src.scrapers.oeffentlichevergabe import OeffentlicheVergabeScraper
-from src.scheduler import CronExpression, CronScheduleError, run_scheduler, wait_for_stop
 from src.services.audit_service import AuditService
 from src.services.ingestion_processor import TenderIngestionProcessor
 from src.services.worker_lock import DatabasePortalLock, PortalLocker
@@ -253,6 +253,7 @@ async def run_scrape_once(
             logger.info("shutdown requested; skipping remaining portal scrapes")
             break
         acquired = await locks.acquire(name) if locks is not None else True
+        run: WorkerRunView | None = None
         if not acquired:
             if runs is not None:
                 try:
@@ -273,7 +274,6 @@ async def run_scrape_once(
             summaries.append(_locked_summary(name))
             continue
 
-        run = None
         try:
             if runs is not None:
                 run = await runs.start(
@@ -497,9 +497,7 @@ async def process_jobs_once(
                         items_processed=processed,
                         errors_count=errors,
                         error=(
-                            f"{hard_failures} job(s) reached the dead-letter state"
-                            if hard_failures
-                            else None
+                            f"{hard_failures} job(s) reached the dead-letter state" if hard_failures else None
                         ),
                         details={"outcomes": summaries},
                     )

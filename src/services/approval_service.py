@@ -11,9 +11,10 @@ import argparse
 import hashlib
 import json
 import sys
-from datetime import datetime, timezone
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -100,7 +101,7 @@ def approval_payload(
             for line in sorted(offer.lines, key=lambda line: line.position_number)
         ],
         "approved_by": approver_value,
-        "approved_at": approved_at_value.astimezone(timezone.utc).isoformat(),
+        "approved_at": approved_at_value.astimezone(UTC).isoformat(),
     }
 
 
@@ -177,10 +178,14 @@ def generate_keypair() -> tuple[str, str]:
         format=serialization.PrivateFormat.Raw,
         encryption_algorithm=serialization.NoEncryption(),
     ).hex()
-    public_hex = private.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    ).hex()
+    public_hex = (
+        private.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        .hex()
+    )
     return private_hex, public_hex
 
 
@@ -216,7 +221,7 @@ def sign_offer(
 ) -> CustomerOffer:
     """Sign an offer and return the approved model (trusted approver tooling)."""
 
-    timestamp = approved_at or datetime.now(timezone.utc)
+    timestamp = approved_at or datetime.now(UTC)
     payload = approval_payload_bytes(offer, approver=approver, approved_at=timestamp)
     signature = _private_key(private_key).sign(payload).hex()
     return _with_approval(
@@ -275,7 +280,7 @@ def approve_offer(
     except ValueError as exc:
         raise ApprovalError("Ed25519 signature must be hex encoded") from exc
 
-    timestamp = approved_at or datetime.now(timezone.utc)
+    timestamp = approved_at or datetime.now(UTC)
     payload = approval_payload_bytes(offer, approver=approver, approved_at=timestamp)
     try:
         _public_key(public_key).verify(signature_bytes, payload)

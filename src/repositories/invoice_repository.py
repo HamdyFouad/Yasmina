@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -17,7 +17,11 @@ from src.generators.invoice_models import Invoice, InvoiceLine, InvoiceParty
 from src.models.enums import InvoiceStatus
 from src.models.orm import (
     Invoice as InvoiceORM,
+)
+from src.models.orm import (
     InvoiceLine as InvoiceLineORM,
+)
+from src.models.orm import (
     InvoiceNumberSequence,
     InvoiceVatSplit,
 )
@@ -171,16 +175,22 @@ class InvoiceRepository:
 
     async def get_by_offer(self, offer_id: UUID) -> StoredInvoice | None:
         row = (
-            await self.session.execute(select(InvoiceORM).where(InvoiceORM.offer_id == offer_id))
-        ).scalars().first()
+            (await self.session.execute(select(InvoiceORM).where(InvoiceORM.offer_id == offer_id)))
+            .scalars()
+            .first()
+        )
         return _stored(row) if row is not None else None
 
     async def get_by_number(self, invoice_number: str) -> StoredInvoice | None:
         row = (
-            await self.session.execute(
-                select(InvoiceORM).where(InvoiceORM.invoice_number == invoice_number)
+            (
+                await self.session.execute(
+                    select(InvoiceORM).where(InvoiceORM.invoice_number == invoice_number)
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         return _stored(row) if row is not None else None
 
     async def create(self, invoice: Invoice, *, offer_id: UUID) -> StoredInvoice:
@@ -192,7 +202,9 @@ class InvoiceRepository:
 
         existing = await self.get_by_offer(offer_id)
         if existing is not None:
-            raise InvoiceRepositoryConflict(f"offer {offer_id} already has invoice {existing.invoice.invoice_number}")
+            raise InvoiceRepositoryConflict(
+                f"offer {offer_id} already has invoice {existing.invoice.invoice_number}"
+            )
 
         try:
             number, sequence = await self._allocate_number(invoice.issue_date.year)
@@ -221,9 +233,7 @@ class InvoiceRepository:
         )
         row = (
             await self.session.execute(
-                select(InvoiceNumberSequence)
-                .where(InvoiceNumberSequence.year == year)
-                .with_for_update()
+                select(InvoiceNumberSequence).where(InvoiceNumberSequence.year == year).with_for_update()
             )
         ).scalar_one()
         if row.last_value >= _MAX_SEQUENCE:
@@ -318,7 +328,7 @@ class InvoiceRepository:
         outstanding = q2(row.total_gross - row.credited_amount - row.paid_amount)
         row.status = InvoiceStatus.PAID if outstanding <= 0 else InvoiceStatus.PARTIALLY_PAID
         if row.status == InvoiceStatus.PAID:
-            row.paid_at = datetime.now(timezone.utc)
+            row.paid_at = datetime.now(UTC)
         await self.session.commit()
         return _stored(row)
 
@@ -346,7 +356,7 @@ class InvoiceRepository:
 
     async def mark_overdue(self, invoice_id: UUID, *, today: date | None = None) -> StoredInvoice:
         row = await self._get_row(invoice_id)
-        current = today or datetime.now(timezone.utc).date()
+        current = today or datetime.now(UTC).date()
         if row.status in {InvoiceStatus.ISSUED, InvoiceStatus.PARTIALLY_PAID} and row.due_date < current:
             row.status = InvoiceStatus.OVERDUE
             await self.session.commit()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from src.repositories.ingestion_repository import TenderIngestionJobRepository
@@ -33,7 +33,7 @@ class WorkerHealthService:
         )
         return {
             "status": "degraded" if degraded else "ok",
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "runs": {
                 "latest": {run_type: run.as_dict() for run_type, run in latest.items()},
                 "counts": run_counts,

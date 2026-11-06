@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
@@ -166,8 +166,7 @@ async def logout(
         await blocklist.revoke(
             principal.jti,
             user_id=user.id if user is not None else None,
-            expires_at=datetime.now(timezone.utc)
-            + timedelta(minutes=settings.jwt_expiry_minutes),
+            expires_at=datetime.now(UTC) + timedelta(minutes=settings.jwt_expiry_minutes),
             reason="logout",
         )
     refresh_revoked = False

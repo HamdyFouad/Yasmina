@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
-from typing import Any, Final
+from typing import Any, Final, TypeVar
 
 from src.models.enums import (
     GloveSize,
@@ -54,12 +54,35 @@ class NormalizationError(ValueError):
 # ---------------------------------------------------------------------------
 
 GLOVE_SIZE_EN420_MAP: dict[str, GloveSize] = {
-    "5": GloveSize.XS, "5.5": GloveSize.XS, "6": GloveSize.XS, "6.0": GloveSize.XS, "xs": GloveSize.XS,
-    "6.5": GloveSize.S, "7": GloveSize.S, "7.0": GloveSize.S, "s": GloveSize.S, "klein": GloveSize.S,
-    "7.5": GloveSize.M, "8": GloveSize.M, "8.0": GloveSize.M, "m": GloveSize.M, "mittel": GloveSize.M,
-    "8.5": GloveSize.L, "9": GloveSize.L, "9.0": GloveSize.L, "l": GloveSize.L, "groß": GloveSize.L, "gross": GloveSize.L,
-    "9.5": GloveSize.XL, "10": GloveSize.XL, "10.0": GloveSize.XL, "xl": GloveSize.XL,
-    "10.5": GloveSize.XXL, "11": GloveSize.XXL, "11.0": GloveSize.XXL, "xxl": GloveSize.XXL,
+    "5": GloveSize.XS,
+    "5.5": GloveSize.XS,
+    "6": GloveSize.XS,
+    "6.0": GloveSize.XS,
+    "xs": GloveSize.XS,
+    "6.5": GloveSize.S,
+    "7": GloveSize.S,
+    "7.0": GloveSize.S,
+    "s": GloveSize.S,
+    "klein": GloveSize.S,
+    "7.5": GloveSize.M,
+    "8": GloveSize.M,
+    "8.0": GloveSize.M,
+    "m": GloveSize.M,
+    "mittel": GloveSize.M,
+    "8.5": GloveSize.L,
+    "9": GloveSize.L,
+    "9.0": GloveSize.L,
+    "l": GloveSize.L,
+    "groß": GloveSize.L,
+    "gross": GloveSize.L,
+    "9.5": GloveSize.XL,
+    "10": GloveSize.XL,
+    "10.0": GloveSize.XL,
+    "xl": GloveSize.XL,
+    "10.5": GloveSize.XXL,
+    "11": GloveSize.XXL,
+    "11.0": GloveSize.XXL,
+    "xxl": GloveSize.XXL,
 }
 
 GERMAN_COLOR_MAP: dict[str, StandardizedColor] = {
@@ -67,66 +90,92 @@ GERMAN_COLOR_MAP: dict[str, StandardizedColor] = {
     "schwarz": StandardizedColor.BLACK,
     "gelb": StandardizedColor.YELLOW,
     "rot": StandardizedColor.RED,
-    "grün": StandardizedColor.GREEN, "gruen": StandardizedColor.GREEN,
-    "grau": StandardizedColor.GREY, "anthrazit": StandardizedColor.GREY,
+    "grün": StandardizedColor.GREEN,
+    "gruen": StandardizedColor.GREEN,
+    "grau": StandardizedColor.GREY,
+    "anthrazit": StandardizedColor.GREY,
     "braun": StandardizedColor.BROWN,
     "orange": StandardizedColor.ORANGE,
-    "rosa": StandardizedColor.PINK, "pink": StandardizedColor.PINK,
-    "violett": StandardizedColor.PURPLE, "lila": StandardizedColor.PURPLE,
-    "weiß": StandardizedColor.WHITE, "weiss": StandardizedColor.WHITE, "hochweiß": StandardizedColor.WHITE,
-    "transparent": StandardizedColor.TRANSPARENT, "transluzent": StandardizedColor.TRANSPARENT,
-    "klar": StandardizedColor.CLEAR, "glasklar": StandardizedColor.CLEAR,
+    "rosa": StandardizedColor.PINK,
+    "pink": StandardizedColor.PINK,
+    "violett": StandardizedColor.PURPLE,
+    "lila": StandardizedColor.PURPLE,
+    "weiß": StandardizedColor.WHITE,
+    "weiss": StandardizedColor.WHITE,
+    "hochweiß": StandardizedColor.WHITE,
+    "transparent": StandardizedColor.TRANSPARENT,
+    "transluzent": StandardizedColor.TRANSPARENT,
+    "klar": StandardizedColor.CLEAR,
+    "glasklar": StandardizedColor.CLEAR,
     "natur": StandardizedColor.NATURAL,
-    "bedruckt": StandardizedColor.PRINTED_MULTICOLOR, "mehrfarbig": StandardizedColor.PRINTED_MULTICOLOR,
+    "bedruckt": StandardizedColor.PRINTED_MULTICOLOR,
+    "mehrfarbig": StandardizedColor.PRINTED_MULTICOLOR,
 }
 
 GERMAN_MATERIAL_MAP: dict[str, MaterialType] = {
-    "nitril": MaterialType.NITRILE, "nitrile": MaterialType.NITRILE,
-    "nitrilkautschuk": MaterialType.NITRILE, "nbr": MaterialType.NITRILE,
-    "latex": MaterialType.LATEX, "naturlatex": MaterialType.LATEX,
+    "nitril": MaterialType.NITRILE,
+    "nitrile": MaterialType.NITRILE,
+    "nitrilkautschuk": MaterialType.NITRILE,
+    "nbr": MaterialType.NITRILE,
+    "latex": MaterialType.LATEX,
+    "naturlatex": MaterialType.LATEX,
     "naturkautschuk": MaterialType.LATEX,
     "vinyl": MaterialType.VINYL,
-    "neopren": MaterialType.NEOPRENE, "neoprene": MaterialType.NEOPRENE,
+    "neopren": MaterialType.NEOPRENE,
+    "neoprene": MaterialType.NEOPRENE,
     "butyl": MaterialType.BUTYL,
-    "pvc": MaterialType.PVC, "pvc-folie": MaterialType.PVC,
+    "pvc": MaterialType.PVC,
+    "pvc-folie": MaterialType.PVC,
     "polyethylen": MaterialType.POLYETHYLENE,
-    "pe": MaterialType.POLYETHYLENE, "ldpe": MaterialType.POLYETHYLENE,
+    "pe": MaterialType.POLYETHYLENE,
+    "ldpe": MaterialType.POLYETHYLENE,
     "hdpe": MaterialType.POLYETHYLENE,
-    "polypropylen": MaterialType.POLYPROPYLENE, "pp": MaterialType.POLYPROPYLENE,
-    "papier": MaterialType.PAPER, "zellstoff": MaterialType.PAPER,
-    "recyclingpapier": MaterialType.RECYCLED_PAPER, "altpapier": MaterialType.RECYCLED_PAPER,
-    "baumwolle": MaterialType.COTTON, "cotton": MaterialType.COTTON,
-    "mikrofaser": MaterialType.MICROFIBER, "microfaser": MaterialType.MICROFIBER,
+    "polypropylen": MaterialType.POLYPROPYLENE,
+    "pp": MaterialType.POLYPROPYLENE,
+    "papier": MaterialType.PAPER,
+    "zellstoff": MaterialType.PAPER,
+    "recyclingpapier": MaterialType.RECYCLED_PAPER,
+    "altpapier": MaterialType.RECYCLED_PAPER,
+    "baumwolle": MaterialType.COTTON,
+    "cotton": MaterialType.COTTON,
+    "mikrofaser": MaterialType.MICROFIBER,
+    "microfaser": MaterialType.MICROFIBER,
     "gemischt": MaterialType.MIXED,
 }
 
 GERMAN_UNIT_MAP: dict[str, UnitOfMeasure] = {
-    "stück": UnitOfMeasure.STUECK, "stueck": UnitOfMeasure.STUECK,
-    "stk": UnitOfMeasure.STUECK, "stck": UnitOfMeasure.STUECK,
-    "pack": UnitOfMeasure.PACK, "packung": UnitOfMeasure.PACK,
+    "stück": UnitOfMeasure.STUECK,
+    "stueck": UnitOfMeasure.STUECK,
+    "stk": UnitOfMeasure.STUECK,
+    "stck": UnitOfMeasure.STUECK,
+    "pack": UnitOfMeasure.PACK,
+    "packung": UnitOfMeasure.PACK,
     "pkg": UnitOfMeasure.PACK,
-    "karton": UnitOfMeasure.KARTON, "umkarton": UnitOfMeasure.KARTON,
+    "karton": UnitOfMeasure.KARTON,
+    "umkarton": UnitOfMeasure.KARTON,
     "palette": UnitOfMeasure.PALETTE,
-    "rolle": UnitOfMeasure.ROLLE, "rollen": UnitOfMeasure.ROLLE,
-    "kg": UnitOfMeasure.KILOGRAMM, "kilogramm": UnitOfMeasure.KILOGRAMM,
+    "rolle": UnitOfMeasure.ROLLE,
+    "rollen": UnitOfMeasure.ROLLE,
+    "kg": UnitOfMeasure.KILOGRAMM,
+    "kilogramm": UnitOfMeasure.KILOGRAMM,
     "kilo": UnitOfMeasure.KILOGRAMM,
-    "l": UnitOfMeasure.LITER, "liter": UnitOfMeasure.LITER, "lt": UnitOfMeasure.LITER,
-    "m": UnitOfMeasure.METER, "meter": UnitOfMeasure.METER, "lfm": UnitOfMeasure.METER,
-    "m²": UnitOfMeasure.QUADRATMETER, "m2": UnitOfMeasure.QUADRATMETER,
-    "qm": UnitOfMeasure.QUADRATMETER, "quadratmeter": UnitOfMeasure.QUADRATMETER,
+    "l": UnitOfMeasure.LITER,
+    "liter": UnitOfMeasure.LITER,
+    "lt": UnitOfMeasure.LITER,
+    "m": UnitOfMeasure.METER,
+    "meter": UnitOfMeasure.METER,
+    "lfm": UnitOfMeasure.METER,
+    "m²": UnitOfMeasure.QUADRATMETER,
+    "m2": UnitOfMeasure.QUADRATMETER,
+    "qm": UnitOfMeasure.QUADRATMETER,
+    "quadratmeter": UnitOfMeasure.QUADRATMETER,
 }
 
-_FOLD_TRANSLATION: Final = str.maketrans(
-    {"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"}
-)
+_FOLD_TRANSLATION: Final = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
 
-_GLOVE_LABEL_RE: Final = re.compile(
-    r"^(?:handschuh\s*)?(?:gr(?:ö|oe)?(?:ß|ss)?e?\.?|gr\.?|size|sz\.?)\s*"
-)
+_GLOVE_LABEL_RE: Final = re.compile(r"^(?:handschuh\s*)?(?:gr(?:ö|oe)?(?:ß|ss)?e?\.?|gr\.?|size|sz\.?)\s*")
 _LEADING_NUMBER_RE: Final = re.compile(r"\d+(?:[.,]\d+)?")
-_TOKEN_SPLIT_RE: Final = re.compile(
-    r"\s*(?:/|\||,|;|\+|\bund\b|\boder\b|\bmit\b)\s*"
-)
+_TOKEN_SPLIT_RE: Final = re.compile(r"\s*(?:/|\||,|;|\+|\bund\b|\boder\b|\bmit\b)\s*")
 _THOUSANDS_DOT_RE: Final = re.compile(r"-?\d{1,3}(?:\.\d{3})+")
 _THOUSANDS_COMMA_RE: Final = re.compile(r"-?\d{1,3}(?:,\d{3})+")
 _CURRENCY_RE: Final = re.compile(r"[€$£]|\b(?:eur|euro)\b")
@@ -157,7 +206,10 @@ def _clean_text(raw: Any) -> str:
     return text.strip(" .,:;-_")
 
 
-def _folded_table(table: Mapping[str, Any]) -> dict[str, Any]:
+T = TypeVar("T")
+
+
+def _folded_table(table: Mapping[str, T]) -> dict[str, T]:
     """Index a lookup table by its umlaut-folded keys."""
 
     return {_fold(key): value for key, value in table.items()}
@@ -171,9 +223,9 @@ _FOLDED_UNIT_MAP: Final = _folded_table(GERMAN_UNIT_MAP)
 
 def _lookup(
     key: str,
-    table: Mapping[str, Any],
-    folded_table: Mapping[str, Any],
-) -> Any | None:
+    table: Mapping[str, T],
+    folded_table: Mapping[str, T],
+) -> T | None:
     """Exact match first, then umlaut-folded match."""
 
     if not key:
@@ -184,7 +236,7 @@ def _lookup(
     return folded_table.get(_fold(key))
 
 
-def _keyword_scan(text: str, table: Mapping[str, Any]) -> Any | None:
+def _keyword_scan(text: str, table: Mapping[str, T]) -> T | None:
     """Find the longest known keyword that occurs as a whole word."""
 
     for keyword in sorted(table, key=len, reverse=True):
@@ -470,12 +522,8 @@ _GLOVE_KEYS: Final = frozenset(
 )
 _COLOR_KEYS: Final = frozenset({"color", "colour", "farbe"})
 _MATERIAL_KEYS: Final = frozenset({"material", "material_type", "werkstoff"})
-_UNIT_KEYS: Final = frozenset(
-    {"unit", "unit_of_measure", "einheit", "mengeneinheit", "verpackungseinheit"}
-)
-_RATE_KEYS: Final = frozenset(
-    {"vat_rate", "vat", "mwst", "mwst_satz", "steuersatz", "tax_rate"}
-)
+_UNIT_KEYS: Final = frozenset({"unit", "unit_of_measure", "einheit", "mengeneinheit", "verpackungseinheit"})
+_RATE_KEYS: Final = frozenset({"vat_rate", "vat", "mwst", "mwst_satz", "steuersatz", "tax_rate"})
 _PACK_SIZE_KEYS: Final = frozenset(
     {"pack_size", "packungsgroesse", "packungsgröße", "inhalt", "content_per_pack"}
 )

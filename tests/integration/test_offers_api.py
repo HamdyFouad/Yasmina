@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -31,7 +31,7 @@ from src.services.approval_service import generate_keypair, sign_offer
 
 PRIVATE_KEY, PUBLIC_KEY = generate_keypair()
 JWT_SECRET = "test-offer-jwt-secret-with-at-least-32-bytes"
-NOW = datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
 
 
 def make_settings() -> Settings:
@@ -325,7 +325,9 @@ def test_same_offer_number_with_different_signature_conflicts(api: Any) -> None:
     assert first.offer_number == second.offer_number
 
     accepted = api.client.post("/api/v1/approvals/approve", json=approval_body(first), headers=auth(APPROVER))
-    rejected = api.client.post("/api/v1/approvals/approve", json=approval_body(second), headers=auth(APPROVER))
+    rejected = api.client.post(
+        "/api/v1/approvals/approve", json=approval_body(second), headers=auth(APPROVER)
+    )
 
     assert accepted.status_code == 200, accepted.text
     assert rejected.status_code == 409

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -124,7 +124,7 @@ def hash_refresh_token(token: str) -> str:
 
 
 def _datetime(value: datetime) -> datetime:
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 class UserRepository:
@@ -139,9 +139,7 @@ class UserRepository:
         return _user_view(row) if row is not None else None
 
     async def get_by_username(self, username: str) -> UserView | None:
-        row = (
-            await self.session.execute(select(User).where(User.username == username))
-        ).scalars().first()
+        row = (await self.session.execute(select(User).where(User.username == username))).scalars().first()
         return _user_view(row) if row is not None else None
 
     async def create(
@@ -185,10 +183,8 @@ class UserRepository:
         *,
         now: datetime | None = None,
     ) -> UserView:
-        current = now or datetime.now(timezone.utc)
-        row = (
-            await self.session.execute(select(User).where(User.username == username))
-        ).scalars().first()
+        current = now or datetime.now(UTC)
+        row = (await self.session.execute(select(User).where(User.username == username))).scalars().first()
         if row is None:
             dummy_verify(password)
             raise AuthenticationError("invalid username or password")
@@ -244,7 +240,7 @@ class RefreshTokenRepository:
         ip_address: str | None = None,
         now: datetime | None = None,
     ) -> tuple[str, RefreshTokenView]:
-        current = now or datetime.now(timezone.utc)
+        current = now or datetime.now(UTC)
         raw, row = self._new_row(
             user_id,
             family_id=family_id or uuid4(),
@@ -266,14 +262,18 @@ class RefreshTokenRepository:
         ip_address: str | None = None,
         now: datetime | None = None,
     ) -> tuple[str, RefreshTokenView]:
-        current = now or datetime.now(timezone.utc)
+        current = now or datetime.now(UTC)
         row = (
-            await self.session.execute(
-                select(RefreshToken)
-                .where(RefreshToken.token_hash == hash_refresh_token(raw_token))
-                .with_for_update()
+            (
+                await self.session.execute(
+                    select(RefreshToken)
+                    .where(RefreshToken.token_hash == hash_refresh_token(raw_token))
+                    .with_for_update()
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if row is None:
             raise AuthenticationError("invalid refresh token")
         if row.revoked_at is not None:
@@ -308,14 +308,16 @@ class RefreshTokenRepository:
         reason: str | None = None,
         now: datetime | None = None,
     ) -> bool:
-        current = now or datetime.now(timezone.utc)
+        current = now or datetime.now(UTC)
         row = (
-            await self.session.execute(
-                select(RefreshToken).where(
-                    RefreshToken.token_hash == hash_refresh_token(raw_token)
+            (
+                await self.session.execute(
+                    select(RefreshToken).where(RefreshToken.token_hash == hash_refresh_token(raw_token))
                 )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if row is None or row.revoked_at is not None:
             return False
         row.revoked_at = current
@@ -323,19 +325,23 @@ class RefreshTokenRepository:
         return True
 
     async def revoke_family(self, family_id: UUID, *, now: datetime | None = None) -> int:
-        count = await self._revoke_family(family_id, now or datetime.now(timezone.utc))
+        count = await self._revoke_family(family_id, now or datetime.now(UTC))
         await self.session.commit()
         return count
 
     async def _revoke_family(self, family_id: UUID, now: datetime) -> int:
         rows = (
-            await self.session.execute(
-                select(RefreshToken).where(
-                    RefreshToken.family_id == family_id,
-                    RefreshToken.revoked_at.is_(None),
+            (
+                await self.session.execute(
+                    select(RefreshToken).where(
+                        RefreshToken.family_id == family_id,
+                        RefreshToken.revoked_at.is_(None),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for row in rows:
             row.revoked_at = now
         return len(rows)
@@ -396,12 +402,12 @@ class TokenBlocklistRepository:
         return await self.session.get(TokenBlocklist, jti) is not None
 
     async def purge_expired(self, *, now: datetime | None = None) -> int:
-        current = now or datetime.now(timezone.utc)
+        current = now or datetime.now(UTC)
         rows = (
-            await self.session.execute(
-                select(TokenBlocklist).where(TokenBlocklist.expires_at < current)
-            )
-        ).scalars().all()
+            (await self.session.execute(select(TokenBlocklist).where(TokenBlocklist.expires_at < current)))
+            .scalars()
+            .all()
+        )
         for row in rows:
             await self.session.delete(row)
         if rows:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -31,7 +31,7 @@ from src.models.schemas import (
     q4,
 )
 
-NOW = datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
 
 
 def make_item(**overrides: object) -> TenderItem:
@@ -161,7 +161,7 @@ def test_tender_rejects_unknown_fields() -> None:
 
 def test_tender_rejects_deadline_before_publication() -> None:
     with pytest.raises(ValidationError, match="submission_deadline"):
-        make_tender(submission_deadline=datetime(2025, 12, 31, tzinfo=timezone.utc))
+        make_tender(submission_deadline=datetime(2025, 12, 31, tzinfo=UTC))
 
 
 def test_tender_rejects_duplicate_positions_per_lot() -> None:

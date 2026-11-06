@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from src.api.schemas import InvoiceRequestPayload
@@ -47,9 +47,9 @@ def build_invoice(
     request: InvoiceRequestPayload,
 ) -> Invoice:
     if offer.approved_at is None:
-        issue_date = datetime.now(timezone.utc).date()
+        issue_date = datetime.now(UTC).date()
     else:
-        issue_date = offer.approved_at.astimezone(timezone.utc).date()
+        issue_date = offer.approved_at.astimezone(UTC).date()
 
     lines = [
         InvoiceLine(

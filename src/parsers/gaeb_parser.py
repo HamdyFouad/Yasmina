@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -134,7 +134,7 @@ def _as_aware(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
+        return value.replace(tzinfo=UTC)
     return value
 
 
@@ -233,7 +233,9 @@ def _build_item(
 ) -> TenderItem | None:
     quantity = _as_decimal(getattr(gaeb_item, "qty", None))
     if quantity is None or quantity <= 0:
-        warnings.append(f"skipped position {getattr(gaeb_item, 'full_oz', '?')}: missing or non-positive quantity")
+        warnings.append(
+            f"skipped position {getattr(gaeb_item, 'full_oz', '?')}: missing or non-positive quantity"
+        )
         return None
 
     short_text = str(getattr(gaeb_item, "short_text", "") or "").strip()
@@ -246,10 +248,12 @@ def _build_item(
     combined = f"{short_text} {long_text or ''}"
     unit = normalize_unit_of_measure(getattr(gaeb_item, "unit", None))
     if unit is UnitOfMeasure.NOT_APPLICABLE:
-        warnings.append(f"position {getattr(gaeb_item, 'full_oz', '?')}: unknown unit {getattr(gaeb_item, 'unit', None)!r}")
+        warnings.append(
+            f"position {getattr(gaeb_item, 'full_oz', '?')}: unknown unit {getattr(gaeb_item, 'unit', None)!r}"
+        )
 
-    material = normalize_material(combined)
-    color = normalize_color(combined)
+    material: MaterialType | None = normalize_material(combined)
+    color: StandardizedColor | None = normalize_color(combined)
     if material is MaterialType.NOT_APPLICABLE:
         material = None
     if color is StandardizedColor.UNKNOWN:
@@ -343,7 +347,7 @@ def parse_gaeb(path: str | Path, *, vat_rate: Decimal = Decimal("0.19")) -> Gaeb
 
     deadline = _as_aware(getattr(award, "open_date", None) or getattr(award, "date", None))
     if deadline is None:
-        deadline = datetime.now(timezone.utc) + timedelta(days=30)
+        deadline = datetime.now(UTC) + timedelta(days=30)
         warnings.append("no submission/open date in GAEB file; using now + 30 days")
 
     publication_raw = _as_aware(getattr(award, "date", None))

@@ -37,12 +37,12 @@ def test_carton_to_piece_factor_and_prices() -> None:
     assert result.factor == Decimal("1000")
     assert result.quantity(Decimal("5")) == Decimal("5000.0000")
     assert result.unit_price(Decimal("10.0000")) == Decimal("0.0100")
-    assert convert_quantity(Decimal("2"), UnitOfMeasure.KARTON, UnitOfMeasure.STUECK, pack_size=1000) == Decimal(
-        "2000.0000"
-    )
-    assert convert_unit_price(Decimal("10"), UnitOfMeasure.KARTON, UnitOfMeasure.STUECK, pack_size=1000) == Decimal(
-        "0.0100"
-    )
+    assert convert_quantity(
+        Decimal("2"), UnitOfMeasure.KARTON, UnitOfMeasure.STUECK, pack_size=1000
+    ) == Decimal("2000.0000")
+    assert convert_unit_price(
+        Decimal("10"), UnitOfMeasure.KARTON, UnitOfMeasure.STUECK, pack_size=1000
+    ) == Decimal("0.0100")
 
 
 def test_converted_line_rewrites_tiers_moq_and_attributes() -> None:

@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from src.repositories.catalog_repository import (
+    CatalogRepository,
+    CatalogSeedItem,
+    CatalogSeedResult,
+)
 from src.repositories.ingestion_repository import (
     IngestionJobView,
     ScraperStateRepository,
@@ -46,6 +51,9 @@ from src.repositories.worker_run_repository import (
 
 __all__ = [
     "AuthenticationError",
+    "CatalogRepository",
+    "CatalogSeedItem",
+    "CatalogSeedResult",
     "IngestionJobView",
     "InvoiceNumberExhaustedError",
     "InvoiceRepository",

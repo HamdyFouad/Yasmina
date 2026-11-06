@@ -69,9 +69,7 @@ class MinioObjectStorage:
 
     async def get_bytes(self, object_name: str) -> bytes:
         try:
-            response: Any = await asyncio.to_thread(
-                self._client.get_object, self.bucket, object_name
-            )
+            response: Any = await asyncio.to_thread(self._client.get_object, self.bucket, object_name)
             try:
                 return await asyncio.to_thread(response.read)
             finally:

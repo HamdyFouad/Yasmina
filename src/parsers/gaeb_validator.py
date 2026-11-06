@@ -166,14 +166,13 @@ def _check_boq_totals(document: Any, items: list[Any], issues: list[GaebValidati
         net = _decimal(getattr(totals, "total_net", None))
         vat = _decimal(getattr(totals, "vat_amount", None))
         gross = _decimal(getattr(totals, "total_gross", None))
-        if net is not None and vat is not None and gross is not None:
-            if _differs(q2(net + vat), gross):
-                issues.append(
-                    _issue(
-                        "VAT_TOTAL_MISMATCH",
-                        f"net+VAT={q2(net + vat)}, gross={gross}",
-                    )
+        if net is not None and vat is not None and gross is not None and _differs(q2(net + vat), gross):
+            issues.append(
+                _issue(
+                    "VAT_TOTAL_MISMATCH",
+                    f"net+VAT={q2(net + vat)}, gross={gross}",
                 )
+            )
 
 
 def _check_xsd(
@@ -196,7 +195,9 @@ def _check_xsd(
     try:
         from pygaeb import GAEBWriter
     except ImportError:  # pragma: no cover - optional dependency
-        issues.append(_issue("XSD_UNAVAILABLE", "pyGAEB is not installed", "error" if require_xsd else "warning"))
+        issues.append(
+            _issue("XSD_UNAVAILABLE", "pyGAEB is not installed", "error" if require_xsd else "warning")
+        )
         return False
 
     result = GAEBWriter.validate_against_xsd(
@@ -256,11 +257,7 @@ def validate_gaeb_file(
     try:
         from pygaeb import GAEBParser
     except ImportError as exc:  # pragma: no cover - optional dependency
-        return GaebValidationReport(
-            issues=(
-                _issue("GAEB_UNAVAILABLE", f"pyGAEB is not installed: {exc}"),
-            )
-        )
+        return GaebValidationReport(issues=(_issue("GAEB_UNAVAILABLE", f"pyGAEB is not installed: {exc}"),))
 
     try:
         document = GAEBParser.parse(path)

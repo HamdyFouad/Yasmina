@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import delete
@@ -11,7 +11,8 @@ from sqlalchemy import delete
 from src.config import Settings
 from src.db import dispose_engine, get_engine, get_session_factory
 from src.models.enums import ProcurementProcedure, TenderSourceFormat
-from src.models.orm import ScraperState, Tender as TenderORM, TenderIngestionJob, WorkerRun
+from src.models.orm import ScraperState, TenderIngestionJob, WorkerRun
+from src.models.orm import Tender as TenderORM
 from src.models.schemas import Tender
 from src.repositories.ingestion_repository import (
     ScraperStateRepository,
@@ -28,7 +29,7 @@ pytestmark = pytest.mark.skipif(
     reason="set YASMINA_TEST_DATABASE_URL to run PostgreSQL integration tests",
 )
 
-NOW = datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
 
 
 def settings() -> Settings:
@@ -43,7 +44,7 @@ def settings() -> Settings:
 
 
 def make_tender() -> Tender:
-    suffix = datetime.now(timezone.utc).strftime("%H%M%S%f")
+    suffix = datetime.now(UTC).strftime("%H%M%S%f")
     return Tender(
         tender_number=f"OUTBOX-{suffix}",
         title="Rahmenvertrag Hygiene",
@@ -92,9 +93,7 @@ async def test_outbox_is_claimed_completed_and_watermark_advances() -> None:
             state = await session.get(ScraperState, "vergabe.bayern")
             assert state is not None
             assert state.last_success_at is not None
-            await session.execute(
-                delete(TenderIngestionJob).where(TenderIngestionJob.id == job.id)
-            )
+            await session.execute(delete(TenderIngestionJob).where(TenderIngestionJob.id == job.id))
             await session.execute(delete(TenderORM).where(TenderORM.id == tender.id))
             await session.execute(delete(ScraperState).where(ScraperState.portal_name == "vergabe.bayern"))
             await session.commit()

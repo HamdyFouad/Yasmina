@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, timezone
+from datetime import UTC, date
 from decimal import Decimal
-from typing import Any, Awaitable, Callable, Mapping, Sequence
+from typing import Any
 from urllib.parse import quote
 
 import httpx
@@ -165,9 +166,9 @@ def quotation_payload(
     """Map a signed ``CustomerOffer`` onto an ERPNext Quotation document."""
 
     approved_day: date = (
-        offer.approved_at.astimezone(timezone.utc).date()
+        offer.approved_at.astimezone(UTC).date()
         if offer.approved_at is not None
-        else offer.created_at.astimezone(timezone.utc).date()
+        else offer.created_at.astimezone(UTC).date()
     )
     items: list[dict[str, Any]] = []
     for line in sorted(offer.lines, key=lambda entry: entry.position_number):
@@ -275,7 +276,6 @@ class ERPNextClient:
         params: Mapping[str, Any] | None = None,
         payload: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        headers = self._headers()
         url = f"{self._base_url}{path}"
         last_error: str | None = None
 
@@ -317,7 +317,8 @@ class ERPNextClient:
         retry_after = response.headers.get("Retry-After", "").strip()
         if retry_after.isdigit():
             return min(float(retry_after), 30.0)
-        return self.settings.erpnext_retry_backoff_seconds * (2**attempt)
+        backoff: float = float(self.settings.erpnext_retry_backoff_seconds)
+        return float(backoff * (2**attempt))
 
     async def _find_one(
         self,
@@ -378,7 +379,7 @@ class ERPNextClient:
             )
         existing = await self._find_one("Item", [["Item", "item_code", "=", item.item_code]])
         payload = item_payload(item)
-        update_payload = {
+        update_payload: dict[str, Any] = {
             key: payload[key]
             for key in ("item_name", "item_group", "stock_uom", "description")
             if key in payload

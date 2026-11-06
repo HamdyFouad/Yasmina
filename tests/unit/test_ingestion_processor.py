@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -10,15 +10,15 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from src.config import Settings
 from src.agents.deepseek import TenderTriage
+from src.config import Settings
 from src.models.enums import ProcurementProcedure, TenderSourceFormat, UnitOfMeasure
 from src.models.schemas import Tender, TenderItem
 from src.repositories.ingestion_repository import IngestionJobView
 from src.repositories.tender_repository import StoredTender
 from src.services.ingestion_processor import IngestionProcessingError, TenderIngestionProcessor
 
-NOW = datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
 
 
 class FakeRepository:
@@ -75,7 +75,9 @@ class FakeLLM:
         return TenderTriage(is_relevant=self.relevant, confidence=0.9, reason="test")
 
     def extract_item_specs(self, text: str) -> Any:
-        return SimpleNamespace(material="Nitril", color="blau", glove_size="M", thickness=None, pack_size=None)
+        return SimpleNamespace(
+            material="Nitril", color="blau", glove_size="M", thickness=None, pack_size=None
+        )
 
 
 def make_tender() -> Tender:
@@ -100,7 +102,9 @@ def make_job(tender_id: UUID, *, kind: str = "pdf") -> IngestionJobView:
         max_attempts=5,
         attachments=(
             {
-                "object_name": "scrapers/test/attachments/file.pdf" if kind == "pdf" else "scrapers/test/attachments/file.x83",
+                "object_name": "scrapers/test/attachments/file.pdf"
+                if kind == "pdf"
+                else "scrapers/test/attachments/file.x83",
                 "filename": "file.pdf" if kind == "pdf" else "file.x83",
                 "content_type": "application/pdf" if kind == "pdf" else "application/xml",
                 "kind": kind,
@@ -131,8 +135,15 @@ def make_processor(
     jobs = FakeJobs()
     job = make_job(tender.id, kind=kind)
     storage = FakeStorage({job.attachments[0]["object_name"]: b"attachment"})
-    pdf_parser = lambda path: SimpleNamespace(items=parser_items if parser_items is not None else [make_item()], warnings=[])
-    gaeb_parser = lambda path: SimpleNamespace(tender=tender.model_copy(update={"items": parser_items or [make_item()]}), warnings=[])
+
+    def pdf_parser(path):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(items=parser_items if parser_items is not None else [make_item()], warnings=[])
+
+    def gaeb_parser(path):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(
+            tender=tender.model_copy(update={"items": parser_items or [make_item()]}), warnings=[]
+        )
+
     processor = TenderIngestionProcessor(
         repository,  # type: ignore[arg-type]
         jobs,  # type: ignore[arg-type]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -55,7 +55,7 @@ def make_tender() -> Tender:
         client_name="Stadt Muster",
         procedure=ProcurementProcedure.OPEN_PROCEDURE,
         source_format=TenderSourceFormat.GAEB_X83,
-        submission_deadline=datetime(2026, 2, 1, tzinfo=timezone.utc),
+        submission_deadline=datetime(2026, 2, 1, tzinfo=UTC),
         items=[item],
     )
 
@@ -149,7 +149,7 @@ def test_build_rfq_payload_contains_items_and_callback() -> None:
         suppliers=[{"name": "Hygiene Gross GmbH", "email": "sales@example.com"}],
         callback_url="https://api.example.test/callback",
         idempotency_key="rfq-key-0003",
-        dispatched_at=datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc),
+        dispatched_at=datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
     )
 
     assert payload["event_type"] == "rfq.dispatch"

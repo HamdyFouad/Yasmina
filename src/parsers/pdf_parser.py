@@ -194,8 +194,8 @@ def _build_item(
     lot = _row_value(record, headers, "lot") or None
     combined = f"{short_text} {long_text or ''}"
 
-    material = normalize_material(combined)
-    color = normalize_color(combined)
+    material: MaterialType | None = normalize_material(combined)
+    color: StandardizedColor | None = normalize_color(combined)
     if material is MaterialType.NOT_APPLICABLE:
         material = None
     if color is StandardizedColor.UNKNOWN:

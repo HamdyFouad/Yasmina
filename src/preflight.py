@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import sys
 import urllib.error
@@ -249,6 +250,7 @@ async def check_clamav(settings: Settings, options: PreflightOptions) -> CheckRe
             asyncio.open_connection(settings.clamav_host, settings.clamav_port),
             timeout=options.timeout,
         )
+        assert writer is not None
         writer.write(b"zPING\0")
         await asyncio.wait_for(writer.drain(), timeout=options.timeout)
         response = await asyncio.wait_for(reader.read(32), timeout=options.timeout)
@@ -261,13 +263,13 @@ async def check_clamav(settings: Settings, options: PreflightOptions) -> CheckRe
     finally:
         if writer is not None:
             writer.close()
-            try:
+            with contextlib.suppress(OSError, RuntimeError):
                 await writer.wait_closed()
-            except (OSError, RuntimeError):  # pragma: no cover - best-effort cleanup
-                pass
 
     if b"PONG" in response:
-        return CheckResult("clamav", "ok", f"clamd responded PONG on {settings.clamav_host}:{settings.clamav_port}")
+        return CheckResult(
+            "clamav", "ok", f"clamd responded PONG on {settings.clamav_host}:{settings.clamav_port}"
+        )
     return CheckResult("clamav", "fail", f"unexpected clamd response: {response[:32]!r}")
 
 
@@ -315,9 +317,7 @@ async def check_postgres(settings: Settings, options: PreflightOptions) -> list[
     version = "unknown"
     try:
         version = await connection.fetchval("SHOW server_version")
-        extension = await connection.fetchval(
-            "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
-        )
+        extension = await connection.fetchval("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
         revision: str | None = None
         if await connection.fetchval("SELECT to_regclass('public.alembic_version')") is not None:
             revision = await connection.fetchval("SELECT version_num FROM alembic_version")

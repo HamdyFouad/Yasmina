@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -84,9 +84,7 @@ def offer_to_orm(offer: CustomerOffer) -> CustomerOfferORM:
         id=offer.id,
         offer_number=offer.offer_number,
         customer_name=offer.customer_name,
-        customer_contact_email=(
-            str(offer.customer_contact_email) if offer.customer_contact_email else None
-        ),
+        customer_contact_email=(str(offer.customer_contact_email) if offer.customer_contact_email else None),
         customer_reference=offer.customer_reference,
         tender_id=offer.tender_id,
         status=offer.status,
@@ -156,19 +154,27 @@ class OfferRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    def _statement(self):  # type: ignore[no-untyped-def]
+    def _statement(self) -> Select[Any]:
         return select(CustomerOfferORM).options(selectinload(CustomerOfferORM.lines))
 
     async def get(self, offer_id: UUID) -> StoredOffer | None:
-        orm = (await self.session.execute(self._statement().where(CustomerOfferORM.id == offer_id))).scalars().first()
+        orm = (
+            (await self.session.execute(self._statement().where(CustomerOfferORM.id == offer_id)))
+            .scalars()
+            .first()
+        )
         return StoredOffer(offer=orm_to_offer(orm), created=False) if orm is not None else None
 
     async def get_by_number(self, offer_number: str) -> StoredOffer | None:
         orm = (
-            await self.session.execute(
-                self._statement().where(CustomerOfferORM.offer_number == offer_number)
+            (
+                await self.session.execute(
+                    self._statement().where(CustomerOfferORM.offer_number == offer_number)
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         return StoredOffer(offer=orm_to_offer(orm), created=False) if orm is not None else None
 
     async def list(
@@ -210,10 +216,14 @@ class OfferRepository:
         """
 
         existing_orm = (
-            await self.session.execute(
-                self._statement().where(CustomerOfferORM.offer_number == offer.offer_number)
+            (
+                await self.session.execute(
+                    self._statement().where(CustomerOfferORM.offer_number == offer.offer_number)
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
 
         if existing_orm is None:
             orm = offer_to_orm(offer)
@@ -287,7 +297,7 @@ class OfferRepository:
         }
         existing_orm.gaeb_export_path = offer.gaeb_export_path or existing_orm.gaeb_export_path
         existing_orm.notes = offer.notes
-        existing_orm.updated_at = datetime.now(timezone.utc)
+        existing_orm.updated_at = datetime.now(UTC)
 
         existing_orm.lines.clear()
         await self.session.flush()

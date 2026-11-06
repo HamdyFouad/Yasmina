@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import re
-from datetime import timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -14,7 +13,6 @@ from src.agents.state import AgentContext, AgentState, AgentStatus
 from src.models.enums import (
     CustomerOfferStatus,
     StandardizedColor,
-    UnitOfMeasure,
 )
 from src.models.schemas import (
     CustomerOffer,
@@ -50,7 +48,7 @@ _PACK_RE = re.compile(r"(\d+(?:[.,]\d{3})*)")
 
 
 def _append(state: AgentState, key: str, value: str) -> list[str]:
-    return [*state.get(key, []), value]  # type: ignore[list-item]
+    return [*cast(list[str], state.get(key, [])), value]
 
 
 def _spec_attr(raw: Any, name: str) -> str | None:
@@ -119,8 +117,7 @@ def _enrich_item(item: TenderItem, raw: Any) -> TenderItem:
 
 def _triage_text(tender: Tender) -> str:
     item_text = " ".join(
-        f"{item.position_number} {item.short_text} {item.long_text or ''}".strip()
-        for item in tender.items
+        f"{item.position_number} {item.short_text} {item.long_text or ''}".strip() for item in tender.items
     )
     return (
         f"Title: {tender.title}\n"
@@ -286,13 +283,13 @@ def price_offer(state: AgentState, context: AgentContext) -> dict[str, Any]:
             detail = "; ".join(conversion_errors) if conversion_errors else "no matching unit"
             errors.append(f"unit conversion required for position {item.position_number}: {detail}")
             continue
-        line = _best_quote_line(eligible, item)
-        if line is None:
+        best_line = _best_quote_line(eligible, item)
+        if best_line is None:
             errors.append(f"no usable quote line for position {item.position_number}")
             continue
 
         priced = context.pricing.price_line(
-            line,
+            best_line,
             quantity=item.quantity,
             margin_rate=request.margin_rate,
         )
@@ -301,9 +298,9 @@ def price_offer(state: AgentState, context: AgentContext) -> dict[str, Any]:
                 position_number=item.position_number,
                 description=item.short_text,
                 tender_item_id=item.id,
-                supplier_quote_line_id=line.id,
+                supplier_quote_line_id=best_line.id,
                 quantity=item.quantity,
-                unit=line.unit,
+                unit=best_line.unit,
                 cost_unit_price_net=priced.cost_unit_price_net,
                 margin_rate=priced.margin_rate,
                 unit_price_net=priced.unit_price_net,
@@ -315,13 +312,13 @@ def price_offer(state: AgentState, context: AgentContext) -> dict[str, Any]:
     if errors or not offer_lines:
         return {"status": AgentStatus.FAILED, "errors": errors, "warnings": warnings}
 
-    total_net = q2(sum((line.total_net for line in offer_lines), start=Decimal("0.00")))
+    total_net = q2(sum((offer_line.total_net for offer_line in offer_lines), start=Decimal("0.00")))
     by_rate: dict[Decimal, Decimal] = {}
-    for line in offer_lines:
-        by_rate[line.vat_rate] = by_rate.get(line.vat_rate, Decimal("0.00")) + line.total_net
-    total_vat = q2(
-        sum((q2(base * rate) for rate, base in by_rate.items()), start=Decimal("0.00"))
-    )
+    for offer_line in offer_lines:
+        by_rate[offer_line.vat_rate] = (
+            by_rate.get(offer_line.vat_rate, Decimal("0.00")) + offer_line.total_net
+        )
+    total_vat = q2(sum((q2(base * rate) for rate, base in by_rate.items()), start=Decimal("0.00")))
     total_gross = q2(total_net + total_vat)
     try:
         offer = CustomerOffer(

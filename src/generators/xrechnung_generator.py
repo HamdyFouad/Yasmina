@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
+from typing import cast
 
 from lxml import etree
 
-from src.generators.invoice_models import Invoice, InvoiceParty
+from src.generators.invoice_models import Invoice, InvoiceLine, InvoiceParty
 from src.generators.leitweg import LeitwegIdError, validate_leitweg_id
 from src.generators.schematron import (
     KoSITSchematronError,
@@ -45,7 +46,9 @@ class InvoiceGenerationError(ValueError):
     """Raised when invoice data cannot be serialized into a valid e-invoice."""
 
 
-def _sub(parent: etree._Element, ns: str, local: str, text: str | None = None, **attrs: str) -> etree._Element:
+def _sub(
+    parent: etree._Element, ns: str, local: str, text: str | None = None, **attrs: str
+) -> etree._Element:
     element = etree.SubElement(parent, f"{{{ns}}}{local}", **attrs)
     if text is not None:
         element.text = text
@@ -132,7 +135,9 @@ class XRechnungGenerator:
         _check_party(invoice.seller, "seller")
         _check_party(invoice.buyer, "buyer")
 
-        root = etree.Element(f"{{{UBL_INVOICE}}}Invoice", nsmap={None: UBL_INVOICE, "cac": UBL_CAC, "cbc": UBL_CBC})
+        root = etree.Element(
+            f"{{{UBL_INVOICE}}}Invoice", nsmap={None: UBL_INVOICE, "cac": UBL_CAC, "cbc": UBL_CBC}
+        )
         _sub(root, UBL_CBC, "CustomizationID", XRechnung_CUSTOMIZATION_ID)
         _sub(root, UBL_CBC, "ProfileID", XRechnung_PROFILE_ID)
         _sub(root, UBL_CBC, "ID", invoice.invoice_number)
@@ -167,7 +172,7 @@ class XRechnungGenerator:
         tax_total = _sub(root, UBL_CAC, "TaxTotal")
         _sub(tax_total, UBL_CBC, "TaxAmount", _amount(invoice.total_vat), currencyID=invoice.currency.value)
 
-        groups: dict[Decimal, list] = {}
+        groups: dict[Decimal, list[InvoiceLine]] = {}
         for line in invoice.lines:
             groups.setdefault(line.vat_rate, []).append(line)
         for rate, lines in sorted(groups.items()):
@@ -183,10 +188,34 @@ class XRechnungGenerator:
             _sub(scheme, UBL_CBC, "ID", "VAT")
 
         monetary = _sub(root, UBL_CAC, "LegalMonetaryTotal")
-        _sub(monetary, UBL_CBC, "LineExtensionAmount", _amount(invoice.total_net), currencyID=invoice.currency.value)
-        _sub(monetary, UBL_CBC, "TaxExclusiveAmount", _amount(invoice.total_net), currencyID=invoice.currency.value)
-        _sub(monetary, UBL_CBC, "TaxInclusiveAmount", _amount(invoice.total_gross), currencyID=invoice.currency.value)
-        _sub(monetary, UBL_CBC, "PayableAmount", _amount(invoice.total_gross), currencyID=invoice.currency.value)
+        _sub(
+            monetary,
+            UBL_CBC,
+            "LineExtensionAmount",
+            _amount(invoice.total_net),
+            currencyID=invoice.currency.value,
+        )
+        _sub(
+            monetary,
+            UBL_CBC,
+            "TaxExclusiveAmount",
+            _amount(invoice.total_net),
+            currencyID=invoice.currency.value,
+        )
+        _sub(
+            monetary,
+            UBL_CBC,
+            "TaxInclusiveAmount",
+            _amount(invoice.total_gross),
+            currencyID=invoice.currency.value,
+        )
+        _sub(
+            monetary,
+            UBL_CBC,
+            "PayableAmount",
+            _amount(invoice.total_gross),
+            currencyID=invoice.currency.value,
+        )
 
         for line in invoice.lines:
             line_el = _sub(root, UBL_CAC, "InvoiceLine")
@@ -198,7 +227,13 @@ class XRechnungGenerator:
                 _quantity(line.quantity),
                 unitCode=_UNIT_CODES[line.unit],
             )
-            _sub(line_el, UBL_CBC, "LineExtensionAmount", _amount(line.line_total), currencyID=invoice.currency.value)
+            _sub(
+                line_el,
+                UBL_CBC,
+                "LineExtensionAmount",
+                _amount(line.line_total),
+                currencyID=invoice.currency.value,
+            )
             item = _sub(line_el, UBL_CAC, "Item")
             _sub(item, UBL_CBC, "Name", line.name)
             if line.description:
@@ -211,7 +246,10 @@ class XRechnungGenerator:
             price = _sub(line_el, UBL_CAC, "Price")
             _sub(price, UBL_CBC, "PriceAmount", _amount(line.unit_price), currencyID=invoice.currency.value)
 
-        xml = etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+        xml = cast(
+            bytes,
+            etree.tostring(root, xml_declaration=True, encoding="UTF-8", pretty_print=True),
+        )
         if validate_schematron:
             try:
                 import facturx

@@ -202,7 +202,7 @@ def _client(text: str, element: Tag | None = None) -> str | None:
             node = element.select_one(selector)
             if node is None:
                 continue
-            value = _clean(node.get("title") or _text(node))
+            value = _clean(str(node.get("title") or "") or _text(node))
             if value:
                 return _clean_client(value)
         value = _first_attr(element, "data-client", "data-authority", "data-auftraggeber")
@@ -275,8 +275,12 @@ def _portal_id(element: Tag, url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
 
 
+def _rel_next(value: Any) -> bool:
+    return value is not None and "next" in value
+
+
 def _next_page(soup: BeautifulSoup, page_url: str) -> str | None:
-    rel_next = soup.find("a", attrs={"rel": lambda value: value and "next" in value})
+    rel_next = soup.find("a", attrs={"rel": _rel_next})
     candidates: list[Tag] = [rel_next] if isinstance(rel_next, Tag) else []
     for anchor in soup.select("a[href]"):
         text = _clean(anchor.get_text(" ", strip=True)).casefold()
@@ -314,11 +318,13 @@ class _ParsedCard:
 class HTMLPortalScraper(BaseScraper):
     """Parse common listing cards and enrich incomplete cards from detail pages."""
 
-    start_url: ClassVar[str]
+    start_url: str = ""
     follow_iframe: ClassVar[bool] = False
-    fetch_details: ClassVar[bool] = True
+    fetch_details: bool = True
 
-    def __init__(self, *args: Any, start_url: str | None = None, fetch_details: bool | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self, *args: Any, start_url: str | None = None, fetch_details: bool | None = None, **kwargs: Any
+    ) -> None:
         super().__init__(*args, **kwargs)
         if start_url is not None:
             self.start_url = start_url
@@ -339,7 +345,10 @@ class HTMLPortalScraper(BaseScraper):
             (
                 node
                 for node in iframes
-                if any(token in str(node.get("src", "")).casefold() for token in ("publication", "tender", "vergabe"))
+                if any(
+                    token in str(node.get("src", "")).casefold()
+                    for token in ("publication", "tender", "vergabe")
+                )
             ),
             iframes[0],
         )
@@ -352,7 +361,11 @@ class HTMLPortalScraper(BaseScraper):
     def _select_cards(soup: BeautifulSoup) -> list[Tag]:
         for selector in _CARD_SELECTORS:
             try:
-                elements = [element for element in soup.select(selector) if _detail_link(element, "https://placeholder.invalid")]
+                elements = [
+                    element
+                    for element in soup.select(selector)
+                    if _detail_link(element, "https://placeholder.invalid")
+                ]
             except (ValueError, TypeError):
                 continue
             if elements:
@@ -509,7 +522,9 @@ class HTMLPortalScraper(BaseScraper):
             deadline=card.deadline or detail.deadline,
             cpv_codes=tuple(dict.fromkeys((*card.cpv_codes, *detail.cpv_codes))),
             publication_date=card.publication_date or detail.publication_date,
-            procedure=card.procedure if card.procedure is not ProcurementProcedure.OPEN_PROCEDURE else detail.procedure,
+            procedure=card.procedure
+            if card.procedure is not ProcurementProcedure.OPEN_PROCEDURE
+            else detail.procedure,
             raw_object=detail.raw_object or card.raw_object,
             text=card.text if len(card.text) >= len(detail.text) else detail.text,
         )
@@ -607,7 +622,11 @@ class HTMLPortalScraper(BaseScraper):
                         if needs_detail:
                             card = self._merge_detail(card, detail)
                         if self.settings.scraper_harvest_attachments:
-                            harvested, attachment_errors, attachment_objects = await self._harvest_attachments(
+                            (
+                                harvested,
+                                attachment_errors,
+                                attachment_objects,
+                            ) = await self._harvest_attachments(
                                 detail_page,
                                 limit=self.settings.scraper_max_attachments,
                             )

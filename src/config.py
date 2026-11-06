@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     deepseek_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     embedding_model: str = "BAAI/bge-m3"
     embedding_dimensions: int = Field(default=1024, ge=1, le=8192)
+    embedding_base_url: str | None = None
+    embedding_api_key: SecretStr | None = None
+    embedding_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+    embedding_batch_size: int = Field(default=32, ge=1, le=256)
 
     # --- n8n ---------------------------------------------------------------
     n8n_webhook_base_url: str = "http://localhost:5678"
@@ -206,9 +210,7 @@ class Settings(BaseSettings):
             raise ValueError("JWT_SECRET_KEY must not be empty")
         environment = info.data.get("app_env", "local")
         if environment in {"staging", "production"} and len(secret) < 32:
-            raise ValueError(
-                "JWT_SECRET_KEY must contain at least 32 characters in staging/production"
-            )
+            raise ValueError("JWT_SECRET_KEY must contain at least 32 characters in staging/production")
         return value
 
     @field_validator("default_currency")
@@ -240,10 +242,14 @@ class Settings(BaseSettings):
                 raise ValueError("JWT_SECRET_KEY must be changed in production")
             if self.api_admin_password.get_secret_value() == "change-me-admin-password":
                 raise ValueError("API_ADMIN_PASSWORD must be changed in production")
-            if self.n8n_webhook_hmac_secret is not None and self.n8n_webhook_hmac_secret.get_secret_value() in {
-                "",
-                "change-me-n8n-hmac",
-            }:
+            if (
+                self.n8n_webhook_hmac_secret is not None
+                and self.n8n_webhook_hmac_secret.get_secret_value()
+                in {
+                    "",
+                    "change-me-n8n-hmac",
+                }
+            ):
                 raise ValueError("N8N_WEBHOOK_HMAC_SECRET must be changed in production")
         return self
 

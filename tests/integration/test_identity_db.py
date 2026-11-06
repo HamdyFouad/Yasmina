@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -43,9 +43,7 @@ def settings() -> Settings:
 
 
 async def _cleanup(session) -> None:  # type: ignore[no-untyped-def]
-    user_ids = (
-        await session.execute(select(User.id).where(User.username.like("p45-%")))
-    ).scalars().all()
+    user_ids = (await session.execute(select(User.id).where(User.username.like("p45-%")))).scalars().all()
     for user_id in user_ids:
         await session.execute(delete(RefreshToken).where(RefreshToken.user_id == user_id))
         await session.execute(delete(TokenBlocklist).where(TokenBlocklist.user_id == user_id))
@@ -113,7 +111,7 @@ async def test_refresh_token_revocation_and_access_jti_blocklist() -> None:
             await blocklist.revoke(
                 jti,
                 user_id=user.id,
-                expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+                expires_at=datetime.now(UTC) + timedelta(minutes=15),
                 reason="logout",
             )
             assert await blocklist.is_revoked(jti) is True
@@ -193,4 +191,3 @@ async def test_auth_api_login_refresh_reuse_and_logout_blocklist() -> None:
         async with cleanup_factory() as session:
             await _cleanup(session)
         await dispose_engine()
-

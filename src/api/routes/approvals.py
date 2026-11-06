@@ -182,9 +182,7 @@ async def approve_offer_endpoint(
             }
         )
     else:
-        approved = approved.model_copy(
-            update={"owner": effective_owner or principal.sub}
-        )
+        approved = approved.model_copy(update={"owner": effective_owner or principal.sub})
 
     # Persist the cryptographically approved state before external side effects,
     # so a failed invoice/ERP call can be retried by submitting the same offer.

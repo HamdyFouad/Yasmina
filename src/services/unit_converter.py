@@ -8,9 +8,10 @@ area units are only valid when both sides use the same unit.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Any, Mapping
+from typing import Any
 
 from src.models.enums import UnitOfMeasure
 from src.models.schemas import PriceTier, SupplierQuoteLine, q4
@@ -116,10 +117,16 @@ def _source_base_factor(
         return _ONE
     if unit is UnitOfMeasure.PACK:
         value = _attribute(attributes, "units_per_pack", "pieces_per_pack")
-        return value if value is not None else _require(pack_size, "PACK conversion requires pack_size or units_per_pack")
+        return (
+            value
+            if value is not None
+            else _require(pack_size, "PACK conversion requires pack_size or units_per_pack")
+        )
     if unit is UnitOfMeasure.KARTON:
         value = _carton_factor(attributes, pack_size=pack_size)
-        return _require(value, "KARTON conversion requires pack_size, units_per_carton or units_per_pack+packs_per_carton")
+        return _require(
+            value, "KARTON conversion requires pack_size, units_per_carton or units_per_pack+packs_per_carton"
+        )
     if unit is UnitOfMeasure.PALETTE:
         cartons = _carton_factor(attributes, pack_size=pack_size)
         value = _palette_factor(attributes, cartons)
@@ -147,7 +154,9 @@ def _target_base_factor(
         return _require(value, "target PACK conversion requires units_per_pack")
     if unit is UnitOfMeasure.KARTON:
         value = _carton_factor(attributes, pack_size=None)
-        return _require(value, "target KARTON conversion requires units_per_carton or units_per_pack+packs_per_carton")
+        return _require(
+            value, "target KARTON conversion requires units_per_carton or units_per_pack+packs_per_carton"
+        )
     if unit is UnitOfMeasure.PALETTE:
         value = _palette_factor(attributes, carton_factor)
         return _require(value, "target PALETTE conversion requires units_per_palette or cartons_per_palette")

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -60,7 +61,7 @@ from src.repositories.tender_repository import (
     TenderRepositoryError,
 )
 from src.services.audit_service import AuditService, AuditServiceError
-from src.services.matching_service import HybridMatchingService, MatchResult, MatchingError
+from src.services.matching_service import HybridMatchingService, MatchingError, MatchResult
 
 __all__ = ["router"]
 
@@ -138,7 +139,7 @@ def _ensure_tender_access(tender: Tender, principal: Principal) -> None:
 def _pdf_tender(filename: str, items: list[Any], warnings: list[str]) -> Tender:
     tender_id = uuid4()
     updated_items = [item.model_copy(update={"tender_id": tender_id}) for item in items]
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return Tender(
         id=tender_id,
         tender_number=(Path(filename).stem or "PDF-TENDER")[:64],
@@ -247,9 +248,7 @@ async def upload_tender(
     finally:
         tmp.unlink(missing_ok=True)
 
-    tender = tender.model_copy(
-        update={"source_reference": object_name, "owner": principal.sub}
-    )
+    tender = tender.model_copy(update={"source_reference": object_name, "owner": principal.sub})
     content_type = "application/pdf" if suffix == ".pdf" else "application/xml"
     try:
         await storage.put_bytes(object_name, data, content_type)
@@ -267,10 +266,8 @@ async def upload_tender(
             document=document,
         )
     except TenderRepositoryError as exc:
-        try:
+        with contextlib.suppress(ObjectStorageError):
             await storage.delete(object_name)
-        except ObjectStorageError:
-            pass
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
@@ -400,11 +397,7 @@ async def run_tender_workflow(
         state,
         context,
         checkpointer=checkpointer,
-        config={
-            "configurable": {
-                "thread_id": f"tender:{tender_id}:{payload.offer_request.offer_number}"
-            }
-        },
+        config={"configurable": {"thread_id": f"tender:{tender_id}:{payload.offer_request.offer_number}"}},
     )
     result_offer: CustomerOffer | None = result.get("offer")
     if result_offer is not None:

@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any
 
 import httpx
 
@@ -107,7 +108,8 @@ class TelegramNotifier:
             payload["parse_mode"] = parse_mode
 
         last_error: str | None = None
-        token = self.settings.telegram_bot_token.get_secret_value().strip()
+        secret = self.settings.telegram_bot_token
+        token = secret.get_secret_value().strip() if secret is not None else ""
         for attempt in range(self.settings.telegram_max_retries + 1):
             try:
                 response = await self._send(self.api_url, payload)
@@ -128,9 +130,7 @@ class TelegramNotifier:
                 await self._sleep(delay)
                 continue
             if not 200 <= response.status_code < 300:
-                raise TelegramError(
-                    f"Telegram API returned {response.status_code}: {_description(response)}"
-                )
+                raise TelegramError(f"Telegram API returned {response.status_code}: {_description(response)}")
             return TelegramAlertResult(chat_id=self.chat_id, message_id=_message_id(response))
 
         raise TelegramError(f"Telegram alert failed after retries: {last_error or 'unknown error'}")

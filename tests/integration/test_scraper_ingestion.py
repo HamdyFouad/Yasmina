@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -14,8 +14,8 @@ from src.models.enums import AuditEventType, ProcurementProcedure
 from src.models.schemas import Tender
 from src.repositories.ingestion_repository import IngestionJobView
 from src.repositories.tender_repository import StoredTender
-from src.scrapers.bayern_vergabe import BayernVergabeScraper
 from src.scrapers.base_scraper import ScrapeReport
+from src.scrapers.bayern_vergabe import BayernVergabeScraper
 from src.scrapers.ingestion import PortalIngestionBridge
 from src.scrapers.models import DiscoveredTender, PortalAttachment
 
@@ -117,8 +117,8 @@ def make_discovered(portal_id: str = "2026-001") -> DiscoveredTender:
         title="Reinigung von Verwaltungsgebäuden",
         client_name="Stadt München",
         detail_url=f"https://www.vergabe.bayern.de/ausschreibung/{portal_id}",
-        submission_deadline=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
-        publication_date=datetime(2026, 1, 15, tzinfo=timezone.utc).date(),
+        submission_deadline=datetime(2026, 3, 31, 12, 0, tzinfo=UTC),
+        publication_date=datetime(2026, 1, 15, tzinfo=UTC).date(),
         procedure=ProcurementProcedure.OPEN_PROCEDURE,
         cpv_codes=("33760000-5", "39830000-9"),
         raw_object="scrapers/vergabe.bayern/2026-01-15/abc.html",

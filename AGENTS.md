@@ -22,11 +22,13 @@
 Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 10):
 - `src/config.py` (pydantic-settings)
 - `src/db.py` (async SQLAlchemy session factory)
+- `src/admin.py` (`yasmina-admin` catalogue seeding CLI)
+- `src/main.py` (FastAPI app + startup preflight lifespan)
 - `src/api/` (`security.py`, `rate_limit.py`, `deps.py`, `schemas.py`, `routes/tenders.py`, `routes/approvals.py`, `routes/offers.py`, `routes/ops.py`, `routes/auth.py`)
-- `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `invoice_repository.py`, `user_repository.py`, `ingestion_repository.py`, `worker_run_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`)
+- `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `invoice_repository.py`, `user_repository.py`, `catalog_repository.py`, `ingestion_repository.py`, `worker_run_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`)
 - `src/models/` (`enums.py`, `schemas.py`, `orm.py`)
 - `src/parsers/` (`normalizers.py`, `pdf_parser.py`, `gaeb_parser.py`, `gaeb_validator.py`)
-- `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `password_service.py`, `ingestion_processor.py`, `worker_lock.py`, `worker_metrics.py`)
+- `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `password_service.py`, `embedding_service.py`, `ingestion_processor.py`, `worker_lock.py`, `worker_metrics.py`)
 - `src/agents/` (`graph.py`, `checkpoint.py`, `nodes.py`, `state.py`, `deepseek.py`)
 - `src/integrations/` (`clamav_client.py`, `minio_client.py`, `erpnext_client.py`, `n8n_client.py`, `telegram_notifier.py`; Telegram approval bot planned)
 - `src/scrapers/` (`base_scraper.py`, `bayern_vergabe.py`, `oeffentlichevergabe.py`, `ingestion.py`)
@@ -42,9 +44,11 @@ When given an implementation task:
 
 ## 6. Build, Run & Verification Commands
 - Setup: `python -m pip install -e ".[dev,parsing,ai,e-invoicing]"`; `.env` is created from `.env.example` on first preflight/API start (copy it manually for other tooling).
-- Tests: `python -m pytest -q` (config lives in `pyproject.toml`).
+- Tests: `python -m pytest -q` (config lives in `pyproject.toml`); live DB tests use `YASMINA_TEST_DATABASE_URL`.
+- Quality: `python -m ruff check .`, `python -m ruff format --check .`, `python -m mypy src`.
+- Catalogue: `python -m src.admin seed-catalog --file catalog.csv [--embedding-provider auto|local|hashing] [--dry-run]`; embeddings use an OpenAI-compatible endpoint, local sentence-transformers, or explicit hashing.
+- Extraction eval: `python -m pytest -q tests/evals/test_extraction_eval.py -s` (live accuracy gate when `DEEPSEEK_API_KEY` is set).
 - API: `python -m uvicorn src.main:app --host 127.0.0.1 --port 8000 --reload` (startup runs preflight).
-- Lint / types: `ruff check .` and `mypy src`.
 - Infrastructure: `docker compose up -d postgres minio clamav` (add `--profile automation` for n8n).
 - Preflight: `python -m src.preflight` (or `python -m src.preflight --json`).
 - Approval: `yasmina-approval sign|verify` (see `src/services/approval_service.py`).

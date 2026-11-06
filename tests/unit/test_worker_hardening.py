@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -26,7 +26,7 @@ from src.worker import (
     run_scrape_once,
 )
 
-NOW = datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
 
 
 class FakeStorage:
@@ -130,7 +130,7 @@ def make_discovered(portal_id: str = "2026-001") -> DiscoveredTender:
         title="Reinigung von Verwaltungsgebäuden",
         client_name="Stadt München",
         detail_url=f"https://www.vergabe.bayern.de/ausschreibung/{portal_id}",
-        submission_deadline=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+        submission_deadline=datetime(2026, 3, 31, 12, 0, tzinfo=UTC),
         cpv_codes=("33760000-5",),
         procedure=ProcurementProcedure.OPEN_PROCEDURE,
     )

@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Awaitable, Callable, ClassVar, Protocol, Sequence
-from urllib.parse import urljoin, urlsplit
+from typing import ClassVar, Protocol
+from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
 
 import httpx
@@ -77,7 +78,7 @@ class ScrapedArtifact:
     content_type: str
     content: bytes
     object_name: str
-    fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    fetched_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,7 +91,7 @@ class ScrapedPage:
     content_type: str
     user_agent: str
     archived_object: str | None = None
-    fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    fetched_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,7 +223,9 @@ class BaseScraper:
         ) as client:
             return await client.get(url, headers=headers)
 
-    async def _get_response(self, url: str, user_agent: str, crawl_delay: float | None = None) -> httpx.Response:
+    async def _get_response(
+        self, url: str, user_agent: str, crawl_delay: float | None = None
+    ) -> httpx.Response:
         last_error: str | None = None
         for attempt in range(self.settings.scraper_max_retries + 1):
             await self._throttle(url, crawl_delay)
@@ -283,10 +286,9 @@ class BaseScraper:
     async def _archive(self, page: ScrapedPage) -> str | None:
         digest = hashlib.sha256(page.content).hexdigest()
         prefix = self.settings.scraper_archive_prefix.strip("/") or "scrapers"
-        day = page.fetched_at.astimezone(timezone.utc).date().isoformat()
+        day = page.fetched_at.astimezone(UTC).date().isoformat()
         object_name = (
-            f"{prefix}/{_safe_component(self.portal_name)}/{day}/{digest}"
-            f"{_content_suffix(page.content_type)}"
+            f"{prefix}/{_safe_component(self.portal_name)}/{day}/{digest}{_content_suffix(page.content_type)}"
         )
         try:
             return await self.storage.put_bytes(object_name, page.content, page.content_type or "text/html")
@@ -357,14 +359,14 @@ class BaseScraper:
         if not content:
             raise ScraperError(f"empty attachment response for {url}")
         if len(content) > self.settings.scraper_max_attachment_mb * 1024 * 1024:
-            raise ScraperError(
-                f"attachment {url} exceeds {self.settings.scraper_max_attachment_mb} MB"
-            )
+            raise ScraperError(f"attachment {url} exceeds {self.settings.scraper_max_attachment_mb} MB")
 
         requested_name = Path(filename or urlsplit(url).path).name or "attachment"
         safe_name = "".join(char if char.isalnum() or char in "._-" else "_" for char in requested_name)
         safe_name = safe_name[:180] or "attachment"
-        content_type = response.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0].strip()
+        content_type = (
+            response.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0].strip()
+        )
         suffix = Path(safe_name).suffix.lower()
         if not suffix:
             suffix = _content_suffix(content_type)

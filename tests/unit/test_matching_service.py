@@ -80,7 +80,9 @@ def test_stage_one_filters_incompatible_attributes() -> None:
             candidate("BLACK", color=StandardizedColor.BLACK),
             candidate("SIZE-L", glove_size=GloveSize.L),
             candidate("PACK", unit=UnitOfMeasure.PACK),
-            candidate("UNKNOWN-ATTRS", material=None, color=None, glove_size=GloveSize.NOT_APPLICABLE, unit=None),
+            candidate(
+                "UNKNOWN-ATTRS", material=None, color=None, glove_size=GloveSize.NOT_APPLICABLE, unit=None
+            ),
         ],
     )
 

@@ -15,7 +15,7 @@ in ``docs/ASSUMPTIONS.md`` are the inferred contract.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Any, Self
 from uuid import UUID, uuid4
@@ -102,7 +102,7 @@ def q4(value: Decimal) -> Decimal:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def approval_required(status: CustomerOfferStatus) -> bool:
@@ -355,12 +355,13 @@ class CustomerOfferLine(YasminaSchema):
         expected_unit = q4(self.cost_unit_price_net * (Decimal(1) + self.margin_rate))
         if self.unit_price_net != expected_unit:
             raise ValueError(
-                f"unit_price_net {self.unit_price_net} does not equal "
-                f"cost*(1+margin) = {expected_unit}"
+                f"unit_price_net {self.unit_price_net} does not equal cost*(1+margin) = {expected_unit}"
             )
         expected_total = q2(self.quantity * self.unit_price_net)
         if self.total_net != expected_total:
-            raise ValueError(f"total_net {self.total_net} does not equal quantity*unit_price = {expected_total}")
+            raise ValueError(
+                f"total_net {self.total_net} does not equal quantity*unit_price = {expected_total}"
+            )
         return self
 
 
@@ -411,7 +412,9 @@ class CustomerOffer(YasminaSchema):
     def _validate_line_ownership(self) -> Self:
         for line in self.lines:
             if line.offer_id is not None and line.offer_id != self.id:
-                raise ValueError(f"line {line.position_number} belongs to offer {line.offer_id}, not {self.id}")
+                raise ValueError(
+                    f"line {line.position_number} belongs to offer {line.offer_id}, not {self.id}"
+                )
         return self
 
     @model_validator(mode="after")

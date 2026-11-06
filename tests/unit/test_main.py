@@ -39,6 +39,5 @@ def test_startup_fails_when_preflight_fails(monkeypatch) -> None:  # type: ignor
     monkeypatch.setattr("src.main.run_preflight", fake_preflight)
     app = create_app(make_settings())
 
-    with pytest.raises(RuntimeError, match="Startup preflight failed"):
-        with TestClient(app):
-            pass
+    with pytest.raises(RuntimeError, match="Startup preflight failed"), TestClient(app):
+        pass

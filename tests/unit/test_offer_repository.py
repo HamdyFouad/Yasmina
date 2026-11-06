@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from src.models.enums import CustomerOfferStatus, UnitOfMeasure
@@ -10,7 +10,7 @@ from src.models.schemas import CustomerOffer, CustomerOfferLine, q2, q4
 from src.repositories.offer_repository import OfferRepositoryConflict, offer_to_orm, orm_to_offer
 from src.services.approval_service import generate_keypair, sign_offer
 
-NOW = datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
 
 
 def make_offer() -> CustomerOffer:
@@ -55,9 +55,7 @@ def test_offer_orm_roundtrip_preserves_owner_and_artifacts() -> None:
     assert restored.id == offer.id
     assert restored.offer_number == offer.offer_number
     assert restored.owner == "sales-user"
-    assert restored.invoice_artifacts == {
-        "xrechnung": {"object_name": "offers/AN/invoice.xml"}
-    }
+    assert restored.invoice_artifacts == {"xrechnung": {"object_name": "offers/AN/invoice.xml"}}
     assert restored.status is CustomerOfferStatus.APPROVED
     assert restored.lines[0].id == offer.lines[0].id
     assert restored.lines[0].unit is UnitOfMeasure.KARTON

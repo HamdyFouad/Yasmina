@@ -8,7 +8,7 @@ Graph:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
 
@@ -23,7 +23,7 @@ from src.agents.nodes import (
     route_after_triage,
     triage_tender,
 )
-from src.agents.state import AgentContext, AgentState, initial_state
+from src.agents.state import AgentContext, AgentState
 
 __all__ = ["build_agent_graph", "run_agent", "run_agent_async"]
 
@@ -68,7 +68,7 @@ def build_agent_graph(context: AgentContext, *, checkpointer: Any | None = None)
 def run_agent(state: AgentState, context: AgentContext) -> AgentState:
     """Invoke one workflow pass synchronously (tests/offline tooling)."""
 
-    return build_agent_graph(context).invoke(state)  # type: ignore[return-value]
+    return cast(AgentState, build_agent_graph(context).invoke(state))
 
 
 async def run_agent_async(
@@ -81,4 +81,4 @@ async def run_agent_async(
     """Invoke one workflow pass asynchronously, optionally with checkpointing."""
 
     graph = build_agent_graph(context, checkpointer=checkpointer)
-    return await graph.ainvoke(state, config=config or {})  # type: ignore[return-value]
+    return cast(AgentState, await graph.ainvoke(state, config=config or {}))

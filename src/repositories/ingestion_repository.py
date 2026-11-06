@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -65,10 +65,14 @@ class TenderIngestionJobRepository:
         commit: bool = True,
     ) -> tuple[IngestionJobView, bool]:
         existing = (
-            await self.session.execute(
-                select(TenderIngestionJob).where(TenderIngestionJob.tender_id == tender_id)
+            (
+                await self.session.execute(
+                    select(TenderIngestionJob).where(TenderIngestionJob.tender_id == tender_id)
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if existing is not None:
             return _job_view(existing), False
 
@@ -88,9 +92,7 @@ class TenderIngestionJobRepository:
                 await self.session.flush()
         except IntegrityError as exc:
             await self.session.rollback()
-            raise IngestionRepositoryError(
-                f"ingestion job for tender {tender_id} already exists"
-            ) from exc
+            raise IngestionRepositoryError(f"ingestion job for tender {tender_id} already exists") from exc
         return _job_view(job), True
 
     async def claim_pending(
@@ -101,16 +103,13 @@ class TenderIngestionJobRepository:
         now: datetime | None = None,
         stale_after_seconds: int = 900,
     ) -> list[IngestionJobView]:
-        current = now or datetime.now(timezone.utc)
+        current = now or datetime.now(UTC)
         stale_before = current - timedelta(seconds=stale_after_seconds)
         statement = (
             select(TenderIngestionJob)
             .where(
                 or_(
-                    (
-                        (TenderIngestionJob.status == "pending")
-                        & (TenderIngestionJob.available_at <= current)
-                    ),
+                    ((TenderIngestionJob.status == "pending") & (TenderIngestionJob.available_at <= current)),
                     (
                         (TenderIngestionJob.status == "processing")
                         & (TenderIngestionJob.locked_at <= stale_before)
@@ -168,7 +167,7 @@ class TenderIngestionJobRepository:
         row = await self.session.get(TenderIngestionJob, job_id)
         if row is None:
             raise IngestionRepositoryError(f"ingestion job {job_id} does not exist")
-        current = now or datetime.now(timezone.utc)
+        current = now or datetime.now(UTC)
         row.last_error = error[:8000]
         row.locked_at = None
         row.locked_by = None
@@ -190,7 +189,7 @@ class TenderIngestionJobRepository:
             return
         row.status = "pending"
         row.attempts = max(0, row.attempts - 1)
-        row.available_at = now or datetime.now(timezone.utc)
+        row.available_at = now or datetime.now(UTC)
         row.locked_at = None
         row.locked_by = None
         await self.session.commit()
@@ -238,7 +237,7 @@ class ScraperStateRepository:
         if state is None:
             state = ScraperState(portal_name=portal_name)
             self.session.add(state)
-        state.last_scraped_at = at or datetime.now(timezone.utc)
+        state.last_scraped_at = at or datetime.now(UTC)
         if commit:
             await self.session.commit()
         else:
@@ -253,7 +252,7 @@ class ScraperStateRepository:
         commit: bool = True,
     ) -> ScraperState:
         state = await self.get(portal_name)
-        current = at or datetime.now(timezone.utc)
+        current = at or datetime.now(UTC)
         if state is None:
             state = ScraperState(portal_name=portal_name)
             self.session.add(state)

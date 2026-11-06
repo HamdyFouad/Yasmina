@@ -7,9 +7,9 @@ and German VAT, and returns cent-rounded totals.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, Decimal
-from typing import Sequence
 
 from src.models.enums import UnitOfMeasure
 from src.models.schemas import SupplierQuoteLine, q2, q4
@@ -178,11 +178,7 @@ class PricingService:
             "margin_rate",
         )
         moq = _decimal(line.moq, "moq") if line.moq is not None else None
-        billed = (
-            round_quantity(requested, moq=moq, pack_size=line.pack_size)
-            if round_to_moq
-            else requested
-        )
+        billed = round_quantity(requested, moq=moq, pack_size=line.pack_size) if round_to_moq else requested
         cost, applied_tier = select_tier_price(line, billed)
         unit_price = calculate_unit_price(cost, margin)
         total = q2(billed * unit_price)

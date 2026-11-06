@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -23,7 +23,7 @@ from src.services.approval_service import (
     verify_offer_signature,
 )
 
-NOW = datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
 
 
 def make_offer() -> CustomerOffer:
@@ -89,9 +89,7 @@ def test_approve_offer_accepts_external_signature() -> None:
     private_hex, public_hex = generate_keypair()
     offer = make_offer()
     private = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(private_hex))
-    signature = private.sign(
-        approval_payload_bytes(offer, approver="C. Mueller", approved_at=NOW)
-    ).hex()
+    signature = private.sign(approval_payload_bytes(offer, approver="C. Mueller", approved_at=NOW)).hex()
 
     approved = approve_offer(
         offer,
@@ -103,7 +101,10 @@ def test_approve_offer_accepts_external_signature() -> None:
 
     assert approved.status is CustomerOfferStatus.APPROVED
     assert verify_offer_signature(approved, public_hex) is True
-    assert approval_payload_hash(approved, approver="C. Mueller", approved_at=NOW) == approved.approval_payload_hash
+    assert (
+        approval_payload_hash(approved, approver="C. Mueller", approved_at=NOW)
+        == approved.approval_payload_hash
+    )
 
 
 def test_payload_is_deterministic_and_sensitive_to_content() -> None:

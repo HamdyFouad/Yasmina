@@ -98,7 +98,7 @@ class DeepSeekClient:
         settings: Settings,
         *,
         model: str | None = None,
-    ) -> "DeepSeekClient":
+    ) -> DeepSeekClient:
         return cls(settings, model=model)
 
     def extract_item_specs(self, text: str) -> RawItemSpecs:

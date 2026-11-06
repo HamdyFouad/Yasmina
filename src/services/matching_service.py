@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from difflib import SequenceMatcher
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from src.models.enums import GloveSize, MaterialType, StandardizedColor, UnitOfMeasure
 from src.models.schemas import TenderItem
@@ -170,10 +171,7 @@ def _compatible(item: TenderItem, candidate: CatalogCandidate) -> tuple[bool, li
         reasons.append("material")
     if item.color is not None and candidate.color == item.color:
         reasons.append("colour")
-    if (
-        item.glove_size is not GloveSize.NOT_APPLICABLE
-        and candidate.glove_size == item.glove_size
-    ):
+    if item.glove_size is not GloveSize.NOT_APPLICABLE and candidate.glove_size == item.glove_size:
         reasons.append("glove_size")
     if item.unit is not UnitOfMeasure.NOT_APPLICABLE and candidate.unit == item.unit:
         reasons.append("unit")
@@ -240,9 +238,7 @@ class PgVectorCatalogRepository:
                 )
             )
         if item.unit is not UnitOfMeasure.NOT_APPLICABLE:
-            statement = statement.where(
-                or_(CatalogArticle.unit == item.unit, CatalogArticle.unit.is_(None))
-            )
+            statement = statement.where(or_(CatalogArticle.unit == item.unit, CatalogArticle.unit.is_(None)))
         if query_embedding is not None:
             statement = statement.where(CatalogArticle.embedding.is_not(None)).order_by(
                 CatalogArticle.embedding.cosine_distance(list(query_embedding))

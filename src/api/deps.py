@@ -8,16 +8,16 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.security import AuthError, Principal, Role, decode_access_token
 from src.agents.checkpoint import SqlAlchemyCheckpointSaver
+from src.api.security import AuthError, Principal, Role, decode_access_token
 from src.config import Settings, get_settings
 from src.db import get_session_factory
 from src.integrations.clamav_client import ClamAVScanner
 from src.integrations.erpnext_client import ERPNextClient
 from src.integrations.minio_client import MinioObjectStorage
 from src.integrations.n8n_client import N8nClient
-from src.repositories.integration_repository import IntegrationRepository
 from src.repositories.ingestion_repository import TenderIngestionJobRepository
+from src.repositories.integration_repository import IntegrationRepository
 from src.repositories.invoice_repository import InvoiceRepository
 from src.repositories.offer_repository import OfferRepository
 from src.repositories.supplier_quote_repository import SupplierQuoteRepository

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -19,7 +19,7 @@ from src.repositories.tender_repository import TenderRepository, orm_to_tender, 
 
 
 def make_tender() -> Tender:
-    now = datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
     item = TenderItem(
         position_number="1.1",
         short_text="Nitrilhandschuhe blau Gr. M",
@@ -69,7 +69,9 @@ def test_tender_orm_roundtrip_preserves_optional_fields() -> None:
     tender = make_tender().model_copy(
         update={
             "items": [
-                make_tender().items[0].model_copy(
+                make_tender()
+                .items[0]
+                .model_copy(
                     update={
                         "tender_id": uuid4(),
                         "lot": "Los 2",

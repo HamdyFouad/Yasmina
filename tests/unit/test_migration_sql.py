@@ -5,9 +5,9 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
-from alembic import command
 from alembic.config import Config
 
+from alembic import command
 from src.config import reset_settings_cache
 
 ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"

@@ -33,7 +33,6 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
-    Enum as SAEnum,
     ForeignKey,
     Index,
     Integer,
@@ -46,7 +45,11 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
+from sqlalchemy import (
+    Enum as SAEnum,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from src.models.enums import (
@@ -148,10 +151,12 @@ class Supplier(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
     erpnext_supplier_id: Mapped[str | None] = mapped_column(String(140), nullable=True, unique=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
 
-    quotes: Mapped[list["SupplierQuote"]] = relationship(back_populates="supplier", lazy="selectin")
-    catalog_articles: Mapped[list["CatalogArticle"]] = relationship(back_populates="supplier", lazy="selectin")
+    quotes: Mapped[list[SupplierQuote]] = relationship(back_populates="supplier", lazy="selectin")
+    catalog_articles: Mapped[list[CatalogArticle]] = relationship(back_populates="supplier", lazy="selectin")
 
 
 class Tender(Base, TimestampMixin):
@@ -175,16 +180,24 @@ class Tender(Base, TimestampMixin):
     )
     source_reference: Mapped[str | None] = mapped_column(String(512), nullable=True)
     owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    cpv_codes: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"))
+    cpv_codes: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
 
     publication_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     submission_deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     currency: Mapped[Currency] = mapped_column(
-        _enum(Currency, "currency", length=3), nullable=False, default=Currency.EUR, server_default=text("'EUR'")
+        _enum(Currency, "currency", length=3),
+        nullable=False,
+        default=Currency.EUR,
+        server_default=text("'EUR'"),
     )
     status: Mapped[TenderStatus] = mapped_column(
-        _enum(TenderStatus, "tender_status"), nullable=False, default=TenderStatus.DRAFT, server_default=text("'DRAFT'")
+        _enum(TenderStatus, "tender_status"),
+        nullable=False,
+        default=TenderStatus.DRAFT,
+        server_default=text("'DRAFT'"),
     )
     vat_rate: Mapped[Decimal] = mapped_column(
         Numeric(6, 4), nullable=False, default=Decimal("0.1900"), server_default=text("0.1900")
@@ -194,7 +207,7 @@ class Tender(Base, TimestampMixin):
         "metadata", JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
 
-    items: Mapped[list["TenderItem"]] = relationship(
+    items: Mapped[list[TenderItem]] = relationship(
         back_populates="tender",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -236,7 +249,9 @@ class TenderItem(Base, TimestampMixin):
         server_default=text("'NOT_APPLICABLE'"),
     )
     material: Mapped[MaterialType | None] = mapped_column(_enum(MaterialType, "material_type"), nullable=True)
-    color: Mapped[StandardizedColor | None] = mapped_column(_enum(StandardizedColor, "standardized_color"), nullable=True)
+    color: Mapped[StandardizedColor | None] = mapped_column(
+        _enum(StandardizedColor, "standardized_color"), nullable=True
+    )
 
     thickness_um: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
     dimensions: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -263,7 +278,9 @@ class TenderItem(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("tender_id", "lot", "position_number", name="uq_tender_lot_position"),
         CheckConstraint("quantity > 0", name="quantity_positive"),
-        CheckConstraint("thickness_um IS NULL OR (thickness_um > 0 AND thickness_um <= 2000)", name="thickness_range"),
+        CheckConstraint(
+            "thickness_um IS NULL OR (thickness_um > 0 AND thickness_um <= 2000)", name="thickness_range"
+        ),
         CheckConstraint("pack_size IS NULL OR pack_size > 0", name="pack_size_positive"),
         Index("ix_tender_items_position", "tender_id", "position_number"),
     )
@@ -315,7 +332,7 @@ class SupplierQuote(Base, TimestampMixin):
     )
 
     supplier: Mapped[Supplier | None] = relationship(back_populates="quotes")
-    lines: Mapped[list["SupplierQuoteLine"]] = relationship(
+    lines: Mapped[list[SupplierQuoteLine]] = relationship(
         back_populates="quote",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -345,7 +362,9 @@ class SupplierQuoteLine(Base, TimestampMixin):
         PGUUID(as_uuid=True), ForeignKey("tender_items.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
-    material: Mapped[MaterialType | None] = mapped_column(_enum(MaterialType, "line_material_type"), nullable=True)
+    material: Mapped[MaterialType | None] = mapped_column(
+        _enum(MaterialType, "line_material_type"), nullable=True
+    )
     color: Mapped[StandardizedColor | None] = mapped_column(
         _enum(StandardizedColor, "line_standardized_color"), nullable=True
     )
@@ -371,7 +390,7 @@ class SupplierQuoteLine(Base, TimestampMixin):
     )
 
     quote: Mapped[SupplierQuote] = relationship(back_populates="lines")
-    tiers: Mapped[list["SupplierQuoteTier"]] = relationship(
+    tiers: Mapped[list[SupplierQuoteTier]] = relationship(
         back_populates="line",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -395,7 +414,10 @@ class SupplierQuoteTier(Base):
         PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
     )
     supplier_quote_line_id: Mapped[UUID] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("supplier_quote_lines.id", ondelete="CASCADE"), nullable=False, index=True
+        PGUUID(as_uuid=True),
+        ForeignKey("supplier_quote_lines.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     min_quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     unit_price_net: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
@@ -467,7 +489,7 @@ class CustomerOffer(Base, TimestampMixin):
 
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    lines: Mapped[list["CustomerOfferLine"]] = relationship(
+    lines: Mapped[list[CustomerOfferLine]] = relationship(
         back_populates="offer",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -539,7 +561,9 @@ class CustomerOfferLine(Base, TimestampMixin):
     )
 
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
-    unit: Mapped[UnitOfMeasure] = mapped_column(_enum(UnitOfMeasure, "offer_line_unit_of_measure"), nullable=False)
+    unit: Mapped[UnitOfMeasure] = mapped_column(
+        _enum(UnitOfMeasure, "offer_line_unit_of_measure"), nullable=False
+    )
 
     cost_unit_price_net: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     margin_rate: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False)
@@ -579,9 +603,7 @@ class InvoiceNumberSequence(Base, TimestampMixin):
     __tablename__ = "invoice_number_sequences"
 
     year: Mapped[int] = mapped_column(Integer, primary_key=True)
-    last_value: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default=text("0")
-    )
+    last_value: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
 
     __table_args__ = (
         CheckConstraint("year >= 2000 AND year <= 2200", name="year_range"),
@@ -667,14 +689,14 @@ class Invoice(Base, TimestampMixin):
     )
 
     offer: Mapped[CustomerOffer] = relationship()
-    lines: Mapped[list["InvoiceLine"]] = relationship(
+    lines: Mapped[list[InvoiceLine]] = relationship(
         back_populates="invoice",
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="InvoiceLine.line_id",
         lazy="selectin",
     )
-    vat_splits: Mapped[list["InvoiceVatSplit"]] = relationship(
+    vat_splits: Mapped[list[InvoiceVatSplit]] = relationship(
         back_populates="invoice",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -783,14 +805,16 @@ class User(Base, TimestampMixin):
     roles: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
     )
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failed_login_attempts: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
+    refresh_tokens: Mapped[list[RefreshToken]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -867,7 +891,9 @@ class CatalogArticle(Base, TimestampMixin):
     article_number: Mapped[str] = mapped_column(String(64), nullable=False)
     description: Mapped[str] = mapped_column(String(512), nullable=False)
 
-    material: Mapped[MaterialType | None] = mapped_column(_enum(MaterialType, "catalog_material_type"), nullable=True)
+    material: Mapped[MaterialType | None] = mapped_column(
+        _enum(MaterialType, "catalog_material_type"), nullable=True
+    )
     color: Mapped[StandardizedColor | None] = mapped_column(
         _enum(StandardizedColor, "catalog_standardized_color"), nullable=True
     )
@@ -877,7 +903,9 @@ class CatalogArticle(Base, TimestampMixin):
         default=GloveSize.NOT_APPLICABLE,
         server_default=text("'NOT_APPLICABLE'"),
     )
-    unit: Mapped[UnitOfMeasure | None] = mapped_column(_enum(UnitOfMeasure, "catalog_unit_of_measure"), nullable=True)
+    unit: Mapped[UnitOfMeasure | None] = mapped_column(
+        _enum(UnitOfMeasure, "catalog_unit_of_measure"), nullable=True
+    )
 
     unit_price_net: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     pack_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -954,7 +982,9 @@ class TenderIngestionJob(Base, TimestampMixin):
         index=True,
     )
     portal_name: Mapped[str] = mapped_column(String(64), nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", server_default=text("'pending'"))
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default=text("'pending'")
+    )
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default=text("5"))
     available_at: Mapped[datetime] = mapped_column(
@@ -1008,12 +1038,8 @@ class WorkerRun(Base, TimestampMixin):
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    items_processed: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default=text("0")
-    )
-    errors_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0, server_default=text("0")
-    )
+    items_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    errors_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     details: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
@@ -1119,7 +1145,9 @@ class AuditLog(Base):
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
     )
-    event_type: Mapped[AuditEventType] = mapped_column(_enum(AuditEventType, "audit_event_type"), nullable=False)
+    event_type: Mapped[AuditEventType] = mapped_column(
+        _enum(AuditEventType, "audit_event_type"), nullable=False
+    )
     actor: Mapped[str] = mapped_column(String(128), nullable=False)
     entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
     entity_id: Mapped[str] = mapped_column(String(64), nullable=False)

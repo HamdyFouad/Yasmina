@@ -20,4 +20,4 @@ class OeffentlicheVergabeScraper(HTMLPortalScraper):
 
     portal_name: ClassVar[str] = "oeffentlichevergabe.de"
     portal_code: ClassVar[str] = "OV"
-    start_url: ClassVar[str] = "https://oeffentlichevergabe.de/ui/search"
+    start_url: str = "https://oeffentlichevergabe.de/ui/search"

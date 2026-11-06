@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from src.config import Settings
@@ -91,7 +91,7 @@ def make_discovered(portal_id: str = "2026-001") -> DiscoveredTender:
         title="Reinigung von Verwaltungsgebäuden",
         client_name="Stadt München",
         detail_url=f"https://www.vergabe.bayern.de/ausschreibung/{portal_id}",
-        submission_deadline=datetime(2026, 3, 31, 12, 0, tzinfo=timezone.utc),
+        submission_deadline=datetime(2026, 3, 31, 12, 0, tzinfo=UTC),
         cpv_codes=("33760000-5",),
         procedure=ProcurementProcedure.OPEN_PROCEDURE,
         raw_object="scrapers/vergabe.bayern/2026-01-15/abc.html",
@@ -152,7 +152,9 @@ async def test_run_scrape_once_supports_all_portals() -> None:
 
 
 def test_worker_parser_accepts_cron_and_portal() -> None:
-    args = build_parser().parse_args(["schedule", "--portal", "bund", "--cron", "0 3 * * *", "--max-runs", "1"])
+    args = build_parser().parse_args(
+        ["schedule", "--portal", "bund", "--cron", "0 3 * * *", "--max-runs", "1"]
+    )
 
     assert args.command == "schedule"
     assert args.portal == "bund"

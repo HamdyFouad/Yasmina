@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select, text
@@ -22,7 +22,7 @@ class AuditServiceError(RuntimeError):
 
 def _jsonable(value: Any) -> Any:
     if isinstance(value, datetime):
-        return value.astimezone(timezone.utc).isoformat()
+        return value.astimezone(UTC).isoformat()
     if isinstance(value, dict):
         return {str(key): _jsonable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -45,7 +45,7 @@ def audit_entry_hash(
     """Canonical SHA-256 over the immutable audit fields (excluding the DB id)."""
 
     canonical = {
-        "occurred_at": occurred_at.astimezone(timezone.utc).isoformat(),
+        "occurred_at": occurred_at.astimezone(UTC).isoformat(),
         "event_type": getattr(event_type, "value", str(event_type)),
         "actor": actor,
         "entity_type": entity_type,
@@ -103,17 +103,15 @@ class AuditService:
         payload: dict[str, Any],
         commit: bool = True,
     ) -> AuditLog:
-        occurred_at = datetime.now(timezone.utc)
+        occurred_at = datetime.now(UTC)
         try:
             # One chain: serialize concurrent appenders inside this transaction.
-            await self.session.execute(
-                text("SELECT pg_advisory_xact_lock(hashtext('yasmina_audit_logs'))")
-            )
+            await self.session.execute(text("SELECT pg_advisory_xact_lock(hashtext('yasmina_audit_logs'))"))
             previous = (
-                await self.session.execute(
-                    select(AuditLog).order_by(AuditLog.id.desc()).limit(1)
-                )
-            ).scalars().first()
+                (await self.session.execute(select(AuditLog).order_by(AuditLog.id.desc()).limit(1)))
+                .scalars()
+                .first()
+            )
             prev_hash = previous.entry_hash if previous is not None else None
             entry_hash = audit_entry_hash(
                 occurred_at=occurred_at,

@@ -1,0 +1,42 @@
+[
+  {
+    "id": "nitrile-gloves-m",
+    "text": "Nitrilhandschuhe blau, Größe M, 100 Stück pro Packung, puderfrei",
+    "expected": {
+      "material": "NITRILE",
+      "color": "BLUE",
+      "glove_size": "M",
+      "pack_size": 100
+    }
+  },
+  {
+    "id": "latex-gloves-8",
+    "text": "Naturlatex Handschuhe, transparent, Gr. 8, Karton à 1000 Stück",
+    "expected": {
+      "material": "LATEX",
+      "color": "TRANSPARENT",
+      "glove_size": "M",
+      "pack_size": 1000
+    }
+  },
+  {
+    "id": "paper-towels",
+    "text": "Papierhandtücher 2-lagig, weiß, 20 Packungen je Karton, 200 Blatt",
+    "expected": {
+      "material": "PAPER",
+      "color": "WHITE",
+      "glove_size": "NOT_APPLICABLE",
+      "pack_size": 20
+    }
+  },
+  {
+    "id": "waste-bags",
+    "text": "Müllsäcke 120 Liter, blau, 25 Stück pro Rolle",
+    "expected": {
+      "material": "POLYETHYLENE",
+      "color": "BLUE",
+      "glove_size": "NOT_APPLICABLE",
+      "pack_size": 25
+    }
+  }
+]

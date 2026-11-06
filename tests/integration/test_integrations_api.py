@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -59,7 +59,7 @@ from src.services.approval_service import generate_keypair, sign_offer
 PRIVATE_KEY, PUBLIC_KEY = generate_keypair()
 JWT_SECRET = "test-jwt-secret-key-with-at-least-32-bytes"
 N8N_SECRET = "test-n8n-callback-secret"
-NOW = datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
 
 
 def make_settings() -> Settings:
@@ -91,7 +91,7 @@ def make_tender() -> Tender:
         client_name="Stadt Muster",
         procedure=ProcurementProcedure.OPEN_PROCEDURE,
         source_format=TenderSourceFormat.GAEB_X83,
-        submission_deadline=datetime(2026, 2, 1, tzinfo=timezone.utc),
+        submission_deadline=datetime(2026, 2, 1, tzinfo=UTC),
         items=[
             TenderItem(
                 position_number="1.1",

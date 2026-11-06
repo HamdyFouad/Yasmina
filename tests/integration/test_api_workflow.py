@@ -8,7 +8,7 @@ approval use their real implementations.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -132,7 +132,7 @@ class FakeResult:
     def __init__(self, rows: list[Any]) -> None:
         self._rows = rows
 
-    def scalars(self) -> "FakeResult":
+    def scalars(self) -> FakeResult:
         return self
 
     def all(self) -> list[Any]:
@@ -190,7 +190,9 @@ class FakeTenderRepository:
     def __init__(self) -> None:
         self.items: dict[Any, StoredTender] = {}
 
-    async def save(self, tender, *, source_filename=None, source_path=None, source_object=None, document=None):  # type: ignore[no-untyped-def]
+    async def save(
+        self, tender, *, source_filename=None, source_path=None, source_object=None, document=None
+    ):  # type: ignore[no-untyped-def]
         stored = StoredTender(
             tender=tender,
             document=document,
@@ -337,7 +339,7 @@ def test_end_to_end_langgraph_transition(api, workspace_tmp) -> None:  # type: i
         offer,
         PRIVATE_KEY_HEX,
         approver="C. Mueller",
-        approved_at=datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc),
+        approved_at=datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
     )
 
     approved_payload = {
@@ -419,7 +421,7 @@ def test_approval_rbac_and_verification(api, workspace_tmp) -> None:  # type: ig
         offer,
         PRIVATE_KEY_HEX,
         approver="C. Mueller",
-        approved_at=datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc),
+        approved_at=datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
     )
 
     # Sales role cannot approve.

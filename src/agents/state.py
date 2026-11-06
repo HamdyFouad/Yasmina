@@ -45,7 +45,7 @@ class AgentState(TypedDict, total=False):
     tender: Tender
     supplier_quotes: list[SupplierQuote]
     catalog: list[CatalogCandidate]
-    offer_request: "OfferRequest"
+    offer_request: OfferRequest
     matches: dict[str, list[MatchResult]]
     triage: dict[str, Any]
     offer: CustomerOffer | None

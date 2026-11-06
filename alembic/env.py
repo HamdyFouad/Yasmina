@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from alembic import context
 from src.config import get_settings
 from src.models.orm import Base
 
@@ -28,7 +28,9 @@ config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"
 target_metadata = Base.metadata
 
 
-def _configure(connection: Connection | None = None, *, url: str | None = None, literal_binds: bool = False) -> None:
+def _configure(
+    connection: Connection | None = None, *, url: str | None = None, literal_binds: bool = False
+) -> None:
     context.configure(
         connection=connection,
         url=url,

@@ -47,6 +47,9 @@ e-invoicing = [
     "lxml>=5.2",
     "saxonche>=12,<14",
 ]
+catalogue = [
+    "sentence-transformers>=3.0",
+]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
@@ -66,6 +69,7 @@ Repository = "https://github.com/HamdyFouad/Yasmina"
 yasmina-preflight = "src.preflight:main"
 yasmina-approval = "src.services.approval_service:main"
 yasmina-worker = "src.worker:main"
+yasmina-admin = "src.admin:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
@@ -89,11 +93,12 @@ filterwarnings = ["error::DeprecationWarning:src.*"]
 [tool.ruff]
 line-length = 110
 target-version = "py311"
-extend-exclude = ["alembic/versions"]
+extend-exclude = ["alembic/versions", "docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["E501"]
+# FastAPI deliberately uses function calls (Depends/File/Query) in defaults.
+ignore = ["E501", "B008"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["src"]
@@ -106,6 +111,23 @@ exclude = "(^alembic/versions/|^tests/)"
 warn_unused_ignores = true
 warn_redundant_casts = true
 no_implicit_reexport = true
+
+[[tool.mypy.overrides]]
+module = [
+    "lxml",
+    "lxml.*",
+    "saxonche",
+    "saxonche.*",
+    "docling",
+    "docling.*",
+    "asyncpg",
+    "asyncpg.*",
+    "facturx",
+    "facturx.*",
+    "sentence_transformers",
+    "sentence_transformers.*",
+]
+ignore_missing_imports = true
 
 [tool.coverage.run]
 source = ["src"]

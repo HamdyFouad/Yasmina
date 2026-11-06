@@ -8,9 +8,10 @@ after a restart.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import (
     WRITES_IDX_MAP,
     BaseCheckpointSaver,
@@ -18,7 +19,6 @@ from langgraph.checkpoint.base import (
     Checkpoint,
     CheckpointMetadata,
     CheckpointTuple,
-    RunnableConfig,
     get_checkpoint_id,
     get_checkpoint_metadata,
 )
@@ -104,8 +104,7 @@ class SqlAlchemyCheckpointSaver(BaseCheckpointSaver[str]):
         # our own trusted PostgreSQL schema, so explicitly allow project classes
         # instead of relying on the serializer's permissive fallback.
         super().__init__(
-            serde=serde
-            or JsonPlusSerializer(allowed_msgpack_modules=list(_ALLOWED_CHECKPOINT_TYPES))
+            serde=serde or JsonPlusSerializer(allowed_msgpack_modules=list(_ALLOWED_CHECKPOINT_TYPES))
         )
         self._session_factory = session_factory
 
@@ -149,30 +148,38 @@ class SqlAlchemyCheckpointSaver(BaseCheckpointSaver[str]):
             channel_values: dict[str, Any] = {}
             if versions:
                 blob_rows = (
-                    await session.execute(
-                        select(WorkflowCheckpointBlob).where(
-                            WorkflowCheckpointBlob.thread_id == thread_id,
-                            WorkflowCheckpointBlob.checkpoint_ns == checkpoint_ns,
-                            WorkflowCheckpointBlob.channel.in_(list(versions)),
+                    (
+                        await session.execute(
+                            select(WorkflowCheckpointBlob).where(
+                                WorkflowCheckpointBlob.thread_id == thread_id,
+                                WorkflowCheckpointBlob.checkpoint_ns == checkpoint_ns,
+                                WorkflowCheckpointBlob.channel.in_(list(versions)),
+                            )
                         )
                     )
-                ).scalars().all()
+                    .scalars()
+                    .all()
+                )
                 for blob in blob_rows:
                     if str(blob.version) != str(versions.get(blob.channel)) or blob.value_type == "empty":
                         continue
                     channel_values[blob.channel] = self._load(blob.value_type, blob.value_blob)
 
             write_rows = (
-                await session.execute(
-                    select(WorkflowCheckpointWrite)
-                    .where(
-                        WorkflowCheckpointWrite.thread_id == thread_id,
-                        WorkflowCheckpointWrite.checkpoint_ns == checkpoint_ns,
-                        WorkflowCheckpointWrite.checkpoint_id == row.checkpoint_id,
+                (
+                    await session.execute(
+                        select(WorkflowCheckpointWrite)
+                        .where(
+                            WorkflowCheckpointWrite.thread_id == thread_id,
+                            WorkflowCheckpointWrite.checkpoint_ns == checkpoint_ns,
+                            WorkflowCheckpointWrite.checkpoint_id == row.checkpoint_id,
+                        )
+                        .order_by(WorkflowCheckpointWrite.task_id, WorkflowCheckpointWrite.idx)
                     )
-                    .order_by(WorkflowCheckpointWrite.task_id, WorkflowCheckpointWrite.idx)
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             pending_writes = [
                 (write.task_id, write.channel, self._load(write.value_type, write.value_blob))
                 for write in write_rows
@@ -206,16 +213,12 @@ class SqlAlchemyCheckpointSaver(BaseCheckpointSaver[str]):
         checkpoint_copy = checkpoint.copy()
         values = checkpoint_copy.pop("channel_values")  # type: ignore[misc]
         checkpoint_type, checkpoint_blob = self._dump(checkpoint_copy)
-        metadata_type, metadata_blob = self._dump(
-            get_checkpoint_metadata(config, metadata)
-        )
+        metadata_type, metadata_blob = self._dump(get_checkpoint_metadata(config, metadata))
 
         async with self._session_factory() as session:
             for channel, version in new_versions.items():
                 value_type, value_blob = (
-                    ("empty", b"")
-                    if channel not in values
-                    else self._dump(values[channel])
+                    ("empty", b"") if channel not in values else self._dump(values[channel])
                 )
                 await session.execute(
                     delete(WorkflowCheckpointBlob).where(
@@ -237,14 +240,18 @@ class SqlAlchemyCheckpointSaver(BaseCheckpointSaver[str]):
                 )
 
             existing = (
-                await session.execute(
-                    select(WorkflowCheckpoint).where(
-                        WorkflowCheckpoint.thread_id == thread_id,
-                        WorkflowCheckpoint.checkpoint_ns == checkpoint_ns,
-                        WorkflowCheckpoint.checkpoint_id == checkpoint_id,
+                (
+                    await session.execute(
+                        select(WorkflowCheckpoint).where(
+                            WorkflowCheckpoint.thread_id == thread_id,
+                            WorkflowCheckpoint.checkpoint_ns == checkpoint_ns,
+                            WorkflowCheckpoint.checkpoint_id == checkpoint_id,
+                        )
                     )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
             if existing is None:
                 session.add(
                     WorkflowCheckpoint(
@@ -271,7 +278,7 @@ class SqlAlchemyCheckpointSaver(BaseCheckpointSaver[str]):
     async def aput_writes(
         self,
         config: RunnableConfig,
-        writes: list[tuple[str, Any]],
+        writes: Sequence[tuple[str, Any]],
         task_id: str,
         task_path: str = "",
     ) -> None:
@@ -291,7 +298,9 @@ class SqlAlchemyCheckpointSaver(BaseCheckpointSaver[str]):
                             WorkflowCheckpointWrite.task_id == task_id,
                         )
                     )
-                ).scalars().all()
+                )
+                .scalars()
+                .all()
             }
             for idx, (channel, value) in enumerate(writes):
                 write_idx = WRITES_IDX_MAP.get(channel, idx)
@@ -343,14 +352,10 @@ class SqlAlchemyCheckpointSaver(BaseCheckpointSaver[str]):
         for row in rows:
             if limit is not None and emitted >= limit:
                 break
-            tuple_ = await self.aget_tuple(
-                self._config(row.thread_id, row.checkpoint_ns, row.checkpoint_id)
-            )
+            tuple_ = await self.aget_tuple(self._config(row.thread_id, row.checkpoint_ns, row.checkpoint_id))
             if tuple_ is None:
                 continue
-            if filter and not all(
-                tuple_.metadata.get(key) == value for key, value in filter.items()
-            ):
+            if filter and not all(tuple_.metadata.get(key) == value for key, value in filter.items()):
                 continue
             yield tuple_
             emitted += 1
@@ -363,9 +368,7 @@ class SqlAlchemyCheckpointSaver(BaseCheckpointSaver[str]):
             await session.execute(
                 delete(WorkflowCheckpointBlob).where(WorkflowCheckpointBlob.thread_id == thread_id)
             )
-            await session.execute(
-                delete(WorkflowCheckpoint).where(WorkflowCheckpoint.thread_id == thread_id)
-            )
+            await session.execute(delete(WorkflowCheckpoint).where(WorkflowCheckpoint.thread_id == thread_id))
             await session.commit()
 
     # The production graph is invoked asynchronously. Sync access is deliberately
@@ -385,7 +388,7 @@ class SqlAlchemyCheckpointSaver(BaseCheckpointSaver[str]):
     def put_writes(
         self,
         config: RunnableConfig,
-        writes: list[tuple[str, Any]],
+        writes: Sequence[tuple[str, Any]],
         task_id: str,
         task_path: str = "",
     ) -> None:

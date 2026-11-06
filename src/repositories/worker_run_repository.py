@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -91,7 +91,7 @@ class WorkerRunRepository:
             resource=resource,
             status="running",
             worker_id=worker_id,
-            started_at=started_at or datetime.now(timezone.utc),
+            started_at=started_at or datetime.now(UTC),
             details=dict(details or {}),
         )
         self.session.add(row)
@@ -118,10 +118,10 @@ class WorkerRunRepository:
         row = await self.session.get(WorkerRun, run_id)
         if row is None:
             raise WorkerRunRepositoryError(f"worker run {run_id} does not exist")
-        current = finished_at or datetime.now(timezone.utc)
+        current = finished_at or datetime.now(UTC)
         started = row.started_at
         if started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
+            started = started.replace(tzinfo=UTC)
         row.status = status
         row.finished_at = current
         row.duration_ms = max(0, int((current - started).total_seconds() * 1000))
@@ -138,32 +138,38 @@ class WorkerRunRepository:
 
     async def recent(self, *, limit: int = 20) -> list[WorkerRunView]:
         rows = (
-            await self.session.execute(
-                select(WorkerRun).order_by(desc(WorkerRun.started_at)).limit(max(1, limit))
+            (
+                await self.session.execute(
+                    select(WorkerRun).order_by(desc(WorkerRun.started_at)).limit(max(1, limit))
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [_view(row) for row in rows]
 
     async def latest_by_type(self) -> dict[str, WorkerRunView]:
         latest: dict[str, WorkerRunView] = {}
         for run_type in ("scrape", "ingestion"):
             row = (
-                await self.session.execute(
-                    select(WorkerRun)
-                    .where(WorkerRun.run_type == run_type)
-                    .order_by(desc(WorkerRun.started_at))
-                    .limit(1)
+                (
+                    await self.session.execute(
+                        select(WorkerRun)
+                        .where(WorkerRun.run_type == run_type)
+                        .order_by(desc(WorkerRun.started_at))
+                        .limit(1)
+                    )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
             if row is not None:
                 latest[run_type] = _view(row)
         return latest
 
     async def status_counts(self) -> dict[str, int]:
         rows = (
-            await self.session.execute(
-                select(WorkerRun.status, func.count()).group_by(WorkerRun.status)
-            )
+            await self.session.execute(select(WorkerRun.status, func.count()).group_by(WorkerRun.status))
         ).all()
         counts = {"running": 0, "succeeded": 0, "failed": 0, "skipped": 0, "cancelled": 0}
         for status, count in rows:

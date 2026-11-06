@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hmac
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -50,7 +50,7 @@ def create_access_token(
     *,
     expires_minutes: int | None = None,
 ) -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     minutes = expires_minutes if expires_minutes is not None else settings.jwt_expiry_minutes
     payload: dict[str, Any] = {
         "sub": subject,
@@ -101,9 +101,7 @@ def validate_security_configuration(settings: Settings) -> None:
     if not secret.strip():
         raise SecurityConfigurationError("JWT_SECRET_KEY must not be empty")
     if len(secret) < 32:
-        raise SecurityConfigurationError(
-            "JWT_SECRET_KEY must contain at least 32 characters"
-        )
+        raise SecurityConfigurationError("JWT_SECRET_KEY must contain at least 32 characters")
     if settings.app_env in {"staging", "production"}:
         if "change-me" in secret.lower():
             raise SecurityConfigurationError("JWT_SECRET_KEY still contains a placeholder value")
@@ -114,8 +112,6 @@ def validate_security_configuration(settings: Settings) -> None:
     try:
         import argon2  # noqa: F401
     except ImportError as exc:  # pragma: no cover - mandatory dependency
-        raise SecurityConfigurationError(
-            "argon2-cffi is required for password hashing"
-        ) from exc
+        raise SecurityConfigurationError("argon2-cffi is required for password hashing") from exc
     if settings.password_hash_algorithm != "argon2id":
         raise SecurityConfigurationError("only Argon2id password hashing is supported")

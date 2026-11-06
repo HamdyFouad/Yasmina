@@ -18,7 +18,5 @@ class BayernVergabeScraper(HTMLPortalScraper):
 
     portal_name: ClassVar[str] = "vergabe.bayern"
     portal_code: ClassVar[str] = "BY"
-    start_url: ClassVar[str] = (
-        "https://www.vergabe.bayern.de/veroeffentlichungen/auftragsbekanntmachungen/index.html"
-    )
+    start_url: str = "https://www.vergabe.bayern.de/veroeffentlichungen/auftragsbekanntmachungen/index.html"
     follow_iframe: ClassVar[bool] = True

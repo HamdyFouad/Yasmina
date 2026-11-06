@@ -17,9 +17,10 @@ import hashlib
 import hmac
 import json
 import time
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Mapping, Sequence
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 
@@ -151,13 +152,13 @@ def build_rfq_payload(
 ) -> dict[str, Any]:
     """Build the versioned RFQ envelope sent to n8n."""
 
-    dispatched = dispatched_at or datetime.now(timezone.utc)
+    dispatched = dispatched_at or datetime.now(UTC)
     payload: dict[str, Any] = {
         "schema_version": "1.0",
         "event_id": event_id,
         "event_type": "rfq.dispatch",
         "idempotency_key": idempotency_key,
-        "dispatched_at": dispatched.astimezone(timezone.utc).isoformat(),
+        "dispatched_at": dispatched.astimezone(UTC).isoformat(),
         "callback_url": callback_url,
         "tender": {
             "tender_id": str(tender.id),
@@ -188,7 +189,7 @@ def build_rfq_payload(
         "suppliers": [dict(supplier) for supplier in suppliers],
     }
     if response_deadline is not None:
-        payload["response_deadline"] = response_deadline.astimezone(timezone.utc).isoformat()
+        payload["response_deadline"] = response_deadline.astimezone(UTC).isoformat()
     if notes:
         payload["notes"] = notes
     return payload
@@ -213,11 +214,7 @@ class N8nClient:
     @property
     def configured(self) -> bool:
         secret = self.settings.n8n_webhook_hmac_secret
-        return bool(
-            self.settings.n8n_webhook_base_url
-            and secret is not None
-            and secret.get_secret_value()
-        )
+        return bool(self.settings.n8n_webhook_base_url and secret is not None and secret.get_secret_value())
 
     @property
     def webhook_url(self) -> str:
@@ -286,9 +283,7 @@ class N8nClient:
                 continue
 
             if not 200 <= response.status_code < 300:
-                raise N8nError(
-                    f"n8n webhook returned {response.status_code}: {response.text.strip()[:1000]}"
-                )
+                raise N8nError(f"n8n webhook returned {response.status_code}: {response.text.strip()[:1000]}")
             return N8nDispatchResult(
                 status_code=response.status_code,
                 idempotency_key=idempotency_key,
