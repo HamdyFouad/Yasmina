@@ -29,7 +29,10 @@ waste bags across all thicknesses, volumes and colour standards.
 > retrying embeddings, a safe pgvector reindex command and a broader German
 > extraction golden set. Security hardening adds Redis-backed distributed rate
 > limiting, trusted-proxy client IPs, Bandit/Trivy CI scanning and a Locust load
-> profile for authentication and pgvector matching.
+> profile for authentication and pgvector matching. A React/TypeScript
+> operations dashboard (Vite, Tailwind, shadcn/ui, TanStack Query) now provides
+> the branded login, JWT/refresh session handling and the shell for the upcoming
+> tender, matching and invoice views.
 
 ---
 
@@ -167,6 +170,9 @@ Dockerfile               # multi-stage, non-root production image
 docker-compose.yml       # local infrastructure (PostgreSQL, MinIO, ClamAV, n8n)
 docker-compose.prod.yml  # isolated production stack (API + services + backup)
 .env.prod.example        # production environment template
+frontend/                # React 18 + TypeScript operations dashboard (Vite)
+  src/lib/               # Axios client, token store, typed API wrappers
+  src/features/          # auth, dashboard and view modules
 tests/                   # unit tests (no database required)
   integration/           # live PostgreSQL/MinIO/identity/catalogue tests
   evals/                 # DeepSeek extraction golden dataset + accuracy gate
@@ -265,6 +271,29 @@ PostgreSQL, pgvector, MinIO authentication or ClamAV fail, startup aborts with a
 - `GET /healthz/worker` — latest scrape/ingestion run, duration, item/error counts and outbox queue state
 - `GET /readyz` — startup preflight results
 - `GET /docs` — OpenAPI UI
+
+### 6b. Run the operations dashboard
+
+The `frontend/` workspace is a React 18 + TypeScript SPA (Vite, Tailwind,
+shadcn/ui-style Radix components, TanStack Query) that talks to the API through
+the Vite dev proxy.
+
+```powershell
+cd frontend
+Copy-Item .env.example .env.local   # optional; defaults to /api/v1
+npm install
+npm run dev
+```
+
+Open <http://localhost:5173> and sign in with the admin credentials from your
+`.env` (or a database user). MFA-enabled accounts get the TOTP step
+automatically. The current slice includes the branded login, protected shell,
+JWT/refresh interceptor, typed API layer and an overview with live invoice/offer
+counts; the detailed tender, matching and invoice views are the next phase (see
+`frontend/README.md`).
+
+If the dashboard is hosted on another origin, set `VITE_API_BASE_URL` to the
+absolute backend URL and allow the origin via `CORS_ALLOWED_ORIGINS` on the API.
 
 ### 7. Business API
 
@@ -550,7 +579,7 @@ cron entry keeps both discovery and parsing moving.
 python -m pytest -q
 ```
 
-The current 390 tests pass (plus twenty-nine optional tests — twenty-six live
+The current 394 tests pass (plus twenty-nine optional tests — twenty-six live
 PostgreSQL/Redis tests, two MinIO/ClamAV smoke tests and the DeepSeek eval — that are
 skipped unless their environment variables are set) and cover normalizers, settings, strict schemas,
 ORM metadata, pgvector/HNSW configuration, GAEB parsing/validation, PDF table
@@ -793,7 +822,7 @@ yasmina-approval sign --offer offer.json --private-key-file approver.key `
 yasmina-approval verify --offer signed.json --public-key $env:ED25519_APPROVAL_PUBLIC_KEY
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) has four gates:
+GitHub Actions (`.github/workflows/ci.yml`) has five gates:
 
 - **quality** — `ruff check .`, `ruff format --check .`, `mypy src` (strict),
   byte compilation, offline migration rendering, compose validation and the
@@ -812,6 +841,8 @@ GitHub Actions (`.github/workflows/ci.yml`) has four gates:
   non-root UID, imports, precompiled bytecode and backup-key CLI.
 - **security** — Bandit over `src/` (medium/high gate) and a Trivy
   CRITICAL/HIGH OS/package scan of the freshly built image.
+- **frontend** — `npm ci`, `oxlint` and the strict TypeScript/Vite production
+  build of the operations dashboard.
 
 CI uses `.[dev,e-invoicing]`; local installations may also add
 `.[catalogue]` for local BGE-M3 embeddings.
@@ -982,6 +1013,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 |---|---|
 | Application | `APP_ENV`, `APP_DEBUG`, `APP_SECRET_KEY`, `APP_TIMEZONE` |
 | API / JWT | `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `JWT_EXPIRY_MINUTES`, `REFRESH_TOKEN_EXPIRY_DAYS`, `API_ADMIN_*`, `PASSWORD_MIN_LENGTH`, `PASSWORD_HASH_ALGORITHM`, `PASSWORD_RESET_TOKEN_EXPIRY_MINUTES`, `MAX_UPLOAD_SIZE_MB` |
+| Browser / CORS | `CORS_ALLOWED_ORIGINS` (comma-separated dashboard origins) |
 | MFA / retention | `MFA_ISSUER`, `MFA_TOTP_INTERVAL_SECONDS`, `MFA_TOTP_DIGITS`, `MFA_TOTP_WINDOW`, `AUTH_TOKEN_RETENTION_DAYS` |
 | Rate limiting | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_BACKEND` (`auto`/`memory`/`redis`), `RATE_LIMIT_FAIL_OPEN`, `RATE_LIMIT_AUTH_PER_MINUTE`, `RATE_LIMIT_UPLOAD_PER_MINUTE`, `RATE_LIMIT_BUSINESS_PER_MINUTE`, `REDIS_URL`, `REDIS_TIMEOUT_SECONDS`, `TRUST_PROXY_HEADERS` |
 | Observability | `LOG_LEVEL`, `LOG_FORMAT` (`json`/`text`), `METRICS_ENABLED` |
@@ -1120,6 +1152,8 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P5.1 — multi-stage non-root production image, isolated compose stack with resource limits, structured JSON logging, Prometheus `/metrics` (HTTP latency/errors and LangGraph durations), encrypted `pg_dump` backups to MinIO and a CI Docker build gate
 - [x] P5.2 — merge-safe catalogue re-imports with manual-override protection and duplicate collapsing, batched embedding pipeline with 429/5xx retries and progress reporting, safe `reindex-catalog` backfill and a 19-case German extraction golden set
 - [x] P5.3 — Redis-backed distributed token-bucket rate limiting with trusted `X-Forwarded-For` handling, Bandit + Trivy CI security gates, a hardened no-package-manager runtime image, and a Locust load profile for authentication and pgvector matching
+- [x] P5.4 — operations dashboard foundation: Vite/React 18/TypeScript/Tailwind/shadcn shell, branded MFA login, Axios JWT + single-flight refresh interceptors, typed API layer, RBAC-aware user menu and live overview counts
+- [ ] P5.5 — dashboard views: tender pipeline table/detail drawer, semantic matching and pricing panel, paginated invoices with document downloads and admin payment action (requires `GET /tenders` and activity read endpoints)
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

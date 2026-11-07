@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     # Only enable behind a reverse proxy that overwrites X-Forwarded-For.
     trust_proxy_headers: bool = False
 
+    # --- Browser CORS (operations dashboard) -------------------------------
+    # Comma-separated origins, e.g. "http://localhost:5173,https://ops.example.com".
+    cors_allowed_origins: str = ""
+
     # --- Observability -----------------------------------------------------
     log_format: Literal["json", "text"] = "json"
     metrics_enabled: bool = True
@@ -315,6 +319,14 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """Parse the comma-separated CORS origin allow-list."""
+
+        return [
+            origin.strip().rstrip("/") for origin in self.cors_allowed_origins.split(",") if origin.strip()
+        ]
 
     @property
     def asyncpg_dsn(self) -> str:

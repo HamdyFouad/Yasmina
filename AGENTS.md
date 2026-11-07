@@ -36,6 +36,7 @@ Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 
 - `src/scheduler.py` and `src/worker.py` (cron scheduler, scrape/ingestion CLI, advisory locks and shutdown signals)
 - `src/generators/` (`invoice_models.py`, `leitweg.py`, `pdf_template.py`, `fonts/`, `schematron/`, `zugferd_generator.py`, `xrechnung_generator.py`)
 - `tests/` (unit, integration, evals with German golden fixtures)
+- `frontend/` (React 18 + TypeScript operations dashboard: Vite, Tailwind 3, shadcn/ui-style Radix components, TanStack Query, React Router, Axios with JWT refresh; see `frontend/README.md`)
 
 ## 5. Execution Protocol for Coding Agents
 When given an implementation task:
@@ -46,6 +47,7 @@ When given an implementation task:
 ## 6. Build, Run & Verification Commands
 - Setup: `python -m pip install -e ".[dev,parsing,ai,e-invoicing]"`; `.env` is created from `.env.example` on first preflight/API start (copy it manually for other tooling).
 - Tests: `python -m pytest -q` (config lives in `pyproject.toml`); live DB tests use `YASMINA_TEST_DATABASE_URL`.
+- Dashboard: `cd frontend && npm install && npm run dev` (Vite on 5173, `/api` proxied to `127.0.0.1:8000`); quality via `npm run lint` and `npm run build` (strict TypeScript). Set `VITE_API_BASE_URL` for separate hosting and add the origin to backend `CORS_ALLOWED_ORIGINS`.
 - Quality: `python -m ruff check .`, `python -m ruff format --check .`, `python -m mypy src`.
 - Catalogue: `python -m src.admin seed-catalog --file catalog.csv [--embedding-provider auto|local|hashing] [--dry-run] [--ignore-manual-overrides]`; re-imports merge by `(supplier, article_number)`, preserve pinned `catalog_articles.manual_overrides`, never clear omitted fields and collapse duplicate rows (last wins).
 - Catalogue reindex: `python -m src.admin reindex-catalog [--batch-size N] [--only-missing] [--respect-overrides] [--dry-run] [--json] [--embedding-provider …] [--allow-hash-embeddings]`; recomputes pgvector embeddings in place, never deletes rows, commits per page and audits `SYSTEM_CATALOG_REINDEXED`.

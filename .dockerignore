@@ -24,6 +24,7 @@ htmlcov/
 tests/
 docs/
 scripts/
+frontend/
 var/
 *.log
 *.sqlite3

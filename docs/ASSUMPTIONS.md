@@ -642,6 +642,50 @@ reconciled with the authoritative spec later.
   twenty-four tests and CI additionally runs two live Redis rate-limit tests
   (`YASMINA_TEST_REDIS_URL`).
 
+## Operations dashboard assumptions (P5.4)
+
+- The dashboard is a separate Vite SPA in `frontend/`, not bundled into the API
+  image. In development it uses the Vite `/api` proxy to `127.0.0.1:8000`, so
+  the browser stays same-origin and CORS is not required. For separate hosting,
+  `VITE_API_BASE_URL` points at the backend and `CORS_ALLOWED_ORIGINS` must list
+  the dashboard origin (comma-separated, credentials disabled because refresh
+  tokens travel in the JSON body).
+- React 18 is pinned although the Vite template ships React 19; Tailwind is
+  pinned to v3 so the classic `tailwind.config.ts` and shadcn/ui token setup stay
+  explicit. shadcn primitives are vendored under `src/components/ui` (Radix
+  primitives + `class-variance-authority`) instead of running the interactive
+  `shadcn` CLI, keeping the build reproducible in CI.
+- Strict TypeScript is enforced (`strict`, `noUncheckedIndexedAccess`,
+  `exactOptionalPropertyTypes`). Decimal money fields arrive as strings from
+  Pydantic/v1 serializers and are typed as strings; the UI formats them with
+  `Intl.NumberFormat`. No `any` is used in application code.
+- Access tokens are kept in memory only. The refresh token is persisted in
+  `sessionStorage` (tab-scoped) because the backend returns it in the login body
+  rather than setting an HttpOnly cookie; this is a known XSS trade-off and the
+  recommended backend follow-up is cookie-based refresh tokens plus CSRF
+  protection.
+- The Axios interceptor performs a single-flight refresh on `401`, retries the
+  original request once, and emits a session-expiry event when refresh fails.
+  `403` and `429` (with `Retry-After`) surface as Sonner toasts; FastAPI
+  validation `detail` arrays are flattened into one message.
+- MFA is detected from the `X-Yasmina-MFA-Required` response header on the login
+  `401`, so the header is explicitly exposed by CORS. The login form then
+  submits `totp_code` with the same credentials.
+- The overview currently reads only endpoints that exist (`GET /invoices`,
+  `GET /offers` with status filters). "Tenders discovered", an audit/activity
+  feed and the tender pipeline require new read endpoints (`GET /tenders`,
+  `GET /tenders/{id}`, an audit/outbox listing); they are intentionally marked
+  as pending in the UI rather than mocked.
+- Invoice document downloads require an `offer_number` and are served by
+  `GET /approvals/{offer_number}/documents/{format}`. The future invoice view
+  must resolve `invoice.offer_id` through `GET /offers/{id}` first, or the
+  backend should expose direct invoice artifact URLs.
+- React Query retries once for transient errors but never for 401/403/404/429.
+  Query keys are namespaced by resource; server state is cached for 30 seconds.
+- The frontend CI job runs `npm ci`, `oxlint` and `tsc -b && vite build`. It does
+  not yet run browser end-to-end tests or a production static host deployment.
+- P5.4 adds four CORS unit tests, bringing the default suite to 394 tests.
+
 ## E-invoicing assumptions (P2.1)
 
 - Invoice lines use the shared `UnitOfMeasure`; UBL/CII unit codes are mapped to

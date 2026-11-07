@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.api.metrics import MetricsMiddleware, render_metrics
@@ -93,6 +94,24 @@ def create_app(settings: Settings | None = None, *, run_startup_checks: bool = T
         RequestContextMiddleware,
         trust_proxy_headers=middleware_settings.trust_proxy_headers,
     )
+    if middleware_settings.cors_origins:
+        # Outermost middleware so browser preflight is answered before the
+        # rate limiter and the request logger.
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=middleware_settings.cors_origins,
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=[
+                "X-Request-ID",
+                "X-Yasmina-MFA-Required",
+                "Retry-After",
+                "X-RateLimit-Limit",
+                "X-RateLimit-Remaining",
+            ],
+            max_age=600,
+        )
     application.include_router(auth.router, prefix="/api/v1")
     application.include_router(tenders.router, prefix="/api/v1")
     application.include_router(approvals.router, prefix="/api/v1")
