@@ -13,6 +13,8 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
+from src.api.client_ip import resolve_client_ip
+
 __all__ = ["RequestContextMiddleware", "request_id_var"]
 
 logger = logging.getLogger("yasmina.request")
@@ -38,8 +40,9 @@ def _find_header(headers: Any, name: bytes) -> str | None:
 class RequestContextMiddleware:
     """Assign a request id and log one structured access line per request."""
 
-    def __init__(self, app: Any) -> None:
+    def __init__(self, app: Any, *, trust_proxy_headers: bool = False) -> None:
         self.app = app
+        self.trust_proxy_headers = trust_proxy_headers
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope.get("type") != "http":
@@ -54,6 +57,14 @@ class RequestContextMiddleware:
         start = perf_counter()
         status_code = 500
         error: BaseException | None = None
+        client = resolve_client_ip(
+            peer=(scope.get("client") or (None, 0))[0],
+            headers={
+                "x-forwarded-for": _find_header(headers, b"x-forwarded-for") or "",
+                "x-real-ip": _find_header(headers, b"x-real-ip") or "",
+            },
+            trust_proxy_headers=self.trust_proxy_headers,
+        )
 
         async def send_wrapper(message: dict[str, Any]) -> None:
             nonlocal status_code
@@ -83,7 +94,7 @@ class RequestContextMiddleware:
                     "route": _route_template(scope),
                     "status": status_code,
                     "duration_ms": round((perf_counter() - start) * 1000, 3),
-                    "client": (scope.get("client") or ("unknown", 0))[0],
+                    "client": client,
                     "user_agent": (_find_header(headers, b"user-agent") or "")[:200],
                 },
             )

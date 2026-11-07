@@ -66,9 +66,15 @@ class Settings(BaseSettings):
 
     # --- API rate limiting -------------------------------------------------
     rate_limit_enabled: bool = True
+    rate_limit_backend: Literal["auto", "memory", "redis"] = "auto"
+    rate_limit_fail_open: bool = True
     rate_limit_auth_per_minute: int = Field(default=20, ge=1, le=10000)
     rate_limit_upload_per_minute: int = Field(default=30, ge=1, le=10000)
     rate_limit_business_per_minute: int = Field(default=300, ge=1, le=100000)
+    redis_url: str | None = None
+    redis_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
+    # Only enable behind a reverse proxy that overwrites X-Forwarded-For.
+    trust_proxy_headers: bool = False
 
     # --- Observability -----------------------------------------------------
     log_format: Literal["json", "text"] = "json"
@@ -251,6 +257,24 @@ class Settings(BaseSettings):
         if normalized not in {"EUR", "USD", "CHF"}:
             raise ValueError(f"unsupported currency {value!r}")
         return normalized
+
+    @field_validator("redis_url")
+    @classmethod
+    def _validate_redis_url(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        parts = urlsplit(value.strip())
+        if parts.scheme not in {"redis", "rediss"}:
+            raise ValueError("REDIS_URL must use the redis:// or rediss:// scheme")
+        if not parts.hostname:
+            raise ValueError("REDIS_URL must include a host")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _validate_rate_limit_backend(self) -> Self:
+        if self.rate_limit_backend == "redis" and not self.redis_url:
+            raise ValueError("RATE_LIMIT_BACKEND=redis requires REDIS_URL")
+        return self
 
     @model_validator(mode="after")
     def _assemble_database_url(self) -> Self:

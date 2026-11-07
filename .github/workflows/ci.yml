@@ -31,6 +31,7 @@ env:
   MINIO_SECURE: "false"
   CLAMAV_HOST: localhost
   CLAMAV_PORT: "3310"
+  YASMINA_TEST_REDIS_URL: redis://127.0.0.1:6379/15
   YASMINA_TEST_SERVICES: "1"
   ED25519_APPROVAL_PUBLIC_KEY: abababababababababababababababababababababababababababababababab
 
@@ -137,6 +138,16 @@ jobs:
         ports:
           - 3310:3310
 
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -240,3 +251,35 @@ jobs:
           docker run --rm yasmina-api:ci python -m src.admin generate-backup-key \
             | grep -Eq '^[A-Za-z0-9_-]{43}=$'
           echo "backup key generation works in the runtime image."
+
+  security:
+    name: Security scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Bandit
+        run: python -m pip install "bandit[toml]>=1.7"
+
+      - name: Bandit (medium/high severity gate)
+        run: python -m bandit -r src -c pyproject.toml -ll
+
+      - name: Build image for scanning
+        run: docker build --build-arg INSTALL_EXTRAS="ai,e-invoicing" -t yasmina-api:security .
+
+      - name: Trivy image vulnerability scan
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: yasmina-api:security
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+          vuln-type: os,library

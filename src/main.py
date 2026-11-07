@@ -70,6 +70,10 @@ def create_app(settings: Settings | None = None, *, run_startup_checks: bool = T
         try:
             yield
         finally:
+            limiter = getattr(app.state, "rate_limiter", None)
+            close = getattr(limiter, "aclose", None)
+            if close is not None:
+                await close()
             await dispose_engine()
 
     application = FastAPI(
@@ -80,9 +84,15 @@ def create_app(settings: Settings | None = None, *, run_startup_checks: bool = T
     )
     middleware_settings = settings if settings is not None else get_settings()
     if middleware_settings.rate_limit_enabled:
-        application.add_middleware(RateLimitMiddleware, settings=middleware_settings)
+        application.add_middleware(
+            RateLimitMiddleware,
+            settings=middleware_settings,
+        )
     application.add_middleware(MetricsMiddleware, enabled=middleware_settings.metrics_enabled)
-    application.add_middleware(RequestContextMiddleware)
+    application.add_middleware(
+        RequestContextMiddleware,
+        trust_proxy_headers=middleware_settings.trust_proxy_headers,
+    )
     application.include_router(auth.router, prefix="/api/v1")
     application.include_router(tenders.router, prefix="/api/v1")
     application.include_router(approvals.router, prefix="/api/v1")

@@ -121,6 +121,35 @@ services:
     networks:
       - backend
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - /bin/sh
+      - -c
+      - >
+        exec redis-server
+        --appendonly yes
+        --save "900 1"
+        --requirepass "$$REDIS_PASSWORD"
+    env_file: .env.prod
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
+    logging: *default-logging
+    networks:
+      - backend
+
   api:
     <<: *api-image
     build: *api-build
@@ -134,11 +163,15 @@ services:
         condition: service_completed_successfully
       clamav:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file: .env.prod
     environment:
       APP_ENV: production
       LOG_FORMAT: json
       METRICS_ENABLED: "true"
+      RATE_LIMIT_BACKEND: redis
+      TRUST_PROXY_HEADERS: "true"
       GAEB_EXPORT_DIR: /tmp/exports/gaeb
     command:
       - /bin/sh
@@ -230,3 +263,4 @@ volumes:
   postgres_data:
   minio_data:
   clamav_data:
+  redis_data:

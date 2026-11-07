@@ -594,6 +594,54 @@ reconciled with the authoritative spec later.
 - P5.2 brings the default suite to 376 tests and the live PostgreSQL suite to
   twenty-four tests.
 
+## Security hardening, Redis & load-testing assumptions (P5.3)
+
+- Distributed rate limiting keeps the token-bucket semantics but evaluates the
+  bucket atomically in Redis with a Lua script (`HGET`/`HSET` on `tokens` and
+  `updated_at`, `PEXPIRE` of one window). All replicas therefore share one
+  budget per `scope:client`; keys are prefixed `yasmina:ratelimit:`.
+- The Redis limiter uses `time.time()` (wall clock) rather than `monotonic()`
+  because the timestamp must be comparable across processes/hosts. Small clock
+  skew between API replicas can shift refill by milliseconds, which is
+  acceptable for rate limiting; NTP-synchronised hosts are assumed.
+- Backend selection: `RATE_LIMIT_BACKEND=auto` (default) uses Redis when
+  `REDIS_URL` is set and the in-process bucket otherwise. Explicit `redis`
+  without a URL fails Settings validation, and the production compose sets
+  `RATE_LIMIT_BACKEND=redis` with a password-protected Redis service.
+- Redis failures are handled explicitly: `RATE_LIMIT_FAIL_OPEN=true` (default)
+  allows traffic and logs a warning when Redis is unreachable; `false` returns
+  429/1s. This is a deliberate availability/security trade-off, configurable per
+  environment.
+- `TRUST_PROXY_HEADERS` defaults to `false`. When enabled, the left-most valid
+  address in `X-Forwarded-For` wins, with `X-Real-IP` as fallback; invalid or
+  missing values fall back to the socket peer. Operators must only enable it
+  when the API is not directly reachable, otherwise clients can spoof their
+  identity and evade per-IP budgets. The prod example enables it because the API
+  is published on loopback behind a proxy.
+- The API builds the Redis client lazily on the first rate-limited request so
+  the async connection pool binds to the serving event loop; the application
+  lifespan closes it on shutdown.
+- CI's `security` job runs Bandit over `src` with a medium/high threshold
+  (`-ll`). Low-severity observations (asserts, B105 false positives on audit
+  event names, an intentional `try/except/pass` fallback in PDF extraction) stay
+  in the report but do not fail the build; raising the gate to `-l` would
+  require individual `# nosec` annotations.
+- Trivy scans the built image for OS and Python package vulnerabilities and
+  fails on fixable CRITICAL/HIGH findings. The runtime image removes `pip`,
+  `setuptools` and `wheel` from both the base interpreter and the virtualenv,
+  which removes the fixable `setuptools` CVE and reduces the attack surface; no
+  `pip install` is possible inside the running container.
+- The load test is an operator tool, not part of the default suite. It uses the
+  optional `performance` extra (`locust`), authenticates a database user with MFA
+  disabled, and requires `YASMINA_LOAD_TENDER_ID` to exercise the pgvector match
+  endpoint. Credentials are supplied via environment variables and never
+  committed. The scenario asserts nothing automatically; it produces Locust
+  HTML/CSV reports plus `/metrics`, `pg_stat_activity` and Redis
+  `INFO commandstats` for interpretation.
+- P5.3 brings the default suite to 390 tests; the live PostgreSQL suite stays at
+  twenty-four tests and CI additionally runs two live Redis rate-limit tests
+  (`YASMINA_TEST_REDIS_URL`).
+
 ## E-invoicing assumptions (P2.1)
 
 - Invoice lines use the shared `UnitOfMeasure`; UBL/CII unit codes are mapped to

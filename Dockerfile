@@ -56,11 +56,17 @@ ENV PYTHONUNBUFFERED=1 \
 # container healthcheck in docker-compose.prod.yml.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libpq5 postgresql-client curl tini \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid 10001 yasmina \
+    && rm -rf /var/lib/apt/lists/*
+
+# The runtime does not install packages; dropping pip/setuptools removes both
+# unused tooling and their CVE surface from the final image (base interpreter).
+RUN /usr/local/bin/python3.12 -m pip uninstall -y pip setuptools wheel || true
+
+RUN groupadd --gid 10001 yasmina \
     && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin yasmina
 
 COPY --from=builder /opt/venv /opt/venv
+RUN /opt/venv/bin/python -m pip uninstall -y pip setuptools wheel || true
 
 WORKDIR /app
 COPY --chown=yasmina:yasmina src ./src

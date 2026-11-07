@@ -27,7 +27,9 @@ waste bags across all thicknesses, volumes and colour standards.
 > metrics, and encrypted PostgreSQL backups uploaded to MinIO. Catalogue
 > operations add merge-safe re-imports with manual-override protection, batched
 > retrying embeddings, a safe pgvector reindex command and a broader German
-> extraction golden set.
+> extraction golden set. Security hardening adds Redis-backed distributed rate
+> limiting, trusted-proxy client IPs, Bandit/Trivy CI scanning and a Locust load
+> profile for authentication and pgvector matching.
 
 ---
 
@@ -320,6 +322,10 @@ refresh token. Approval of an offer whose owner is the authenticated principal
 (or whose signed `approved_by` equals the owner) is rejected with `403` by the
 four-eyes rule. Rate limits return `429` with `Retry-After` for `/auth` (20/min),
 `/tenders/upload` (30/min) and other `/api/v1` routes (300/min) by default.
+Buckets are in-process by default; set `REDIS_URL` (and optionally
+`RATE_LIMIT_BACKEND=redis`) to share one atomic token bucket across all API
+replicas. Behind a reverse proxy, set `TRUST_PROXY_HEADERS=true` so the client
+identity comes from `X-Forwarded-For`/`X-Real-IP` instead of the proxy address.
 Requests carry an `X-Request-ID` (honoured when supplied by a proxy) and are
 logged as structured JSON. `GET /metrics` (outside `/api/v1`) exposes Prometheus
 metrics for scraping; see [Production deployment & observability](#production-deployment--observability).
@@ -544,8 +550,8 @@ cron entry keeps both discovery and parsing moving.
 python -m pytest -q
 ```
 
-The current 376 tests pass (plus twenty-seven optional tests — twenty-four live
-PostgreSQL tests, two MinIO/ClamAV smoke tests and the DeepSeek eval — that are
+The current 390 tests pass (plus twenty-nine optional tests — twenty-six live
+PostgreSQL/Redis tests, two MinIO/ClamAV smoke tests and the DeepSeek eval — that are
 skipped unless their environment variables are set) and cover normalizers, settings, strict schemas,
 ORM metadata, pgvector/HNSW configuration, GAEB parsing/validation, PDF table
 extraction, pricing, unit conversion, hybrid matching, LangGraph
@@ -569,10 +575,11 @@ tender persistence, e-invoicing, JSON logging, Prometheus metrics, encrypted
 backups and offline migration rendering.
 
 ```powershell
-# optional live PostgreSQL offer/checkpoint, outbox/lock, invoice, identity,
-# catalogue, billing and account-lifecycle tests (after alembic upgrade head)
+# optional live PostgreSQL/Redis offer/checkpoint, outbox/lock, invoice, identity,
+# catalogue, billing, account-lifecycle and distributed rate-limit tests
 $env:YASMINA_TEST_DATABASE_URL = "postgresql+asyncpg://yasmina:yasmina@localhost:5432/yasmina"
-python -m pytest -q tests/integration/test_offer_workflow_db.py tests/integration/test_ingestion_outbox_db.py tests/integration/test_invoices_db.py tests/integration/test_identity_db.py tests/integration/test_catalog_seed_db.py tests/integration/test_billing_db.py tests/integration/test_account_lifecycle_db.py
+$env:YASMINA_TEST_REDIS_URL = "redis://127.0.0.1:6379/15"
+python -m pytest -q tests/integration/test_offer_workflow_db.py tests/integration/test_ingestion_outbox_db.py tests/integration/test_invoices_db.py tests/integration/test_identity_db.py tests/integration/test_catalog_seed_db.py tests/integration/test_billing_db.py tests/integration/test_account_lifecycle_db.py tests/integration/test_rate_limit_redis.py
 # with local MinIO/ClamAV:
 $env:YASMINA_TEST_SERVICES = "1"
 python -m pytest -q tests/integration/test_services_smoke.py
@@ -786,20 +793,25 @@ yasmina-approval sign --offer offer.json --private-key-file approver.key `
 yasmina-approval verify --offer signed.json --public-key $env:ED25519_APPROVAL_PUBLIC_KEY
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) has two gates:
+GitHub Actions (`.github/workflows/ci.yml`) has four gates:
 
 - **quality** — `ruff check .`, `ruff format --check .`, `mypy src` (strict),
-  byte compilation, offline migration rendering and the `.env` tracked-file
-  guard. The same job renders `scripts/generate_sample_invoice.py` to a PDF and
-  runs the [veraPDF](https://verapdf.org/) CLI (`verapdf/cli:latest -f 3b`)
-  against it, failing the build unless the report contains
-  `isCompliant="true"` for the PDF/A-3b profile.
-- **tests** — Python 3.11 and 3.12 jobs with `pgvector/pgvector:pg16` and
-  ClamAV services plus a `pgsty/minio` server container (MinIO no longer serves
-  anonymous Docker Hub pulls). The workflow applies Alembic,
-  creates the MinIO bucket, runs the real-service preflight, then runs the full
-  pytest suite with `YASMINA_TEST_DATABASE_URL` so the live PostgreSQL tests
-  execute.
+  byte compilation, offline migration rendering, compose validation and the
+  `.env` tracked-file guard. The same job renders
+  `scripts/generate_sample_invoice.py` to a PDF and runs the
+  [veraPDF](https://verapdf.org/) CLI (`verapdf/cli:latest -f 3b`) against it,
+  failing the build unless the report contains `isCompliant="true"` for the
+  PDF/A-3b profile.
+- **tests** — Python 3.11 and 3.12 jobs with `pgvector/pgvector:pg16`, ClamAV
+  and Redis services plus a `pgsty/minio` server container (MinIO no longer
+  serves anonymous Docker Hub pulls). The workflow applies Alembic, creates the
+  MinIO bucket, runs the real-service preflight, then runs the full pytest suite
+  with `YASMINA_TEST_DATABASE_URL` and `YASMINA_TEST_REDIS_URL` so the live
+  PostgreSQL and distributed rate-limit tests execute.
+- **docker** — builds the production image (slim extras for speed), verifies the
+  non-root UID, imports, precompiled bytecode and backup-key CLI.
+- **security** — Bandit over `src/` (medium/high gate) and a Trivy
+  CRITICAL/HIGH OS/package scan of the freshly built image.
 
 CI uses `.[dev,e-invoicing]`; local installations may also add
 `.[catalogue]` for local BGE-M3 embeddings.
@@ -820,6 +832,10 @@ docker build --build-arg INSTALL_EXTRAS="ai,e-invoicing" -t yasmina-api:slim .
   virtualenv, the runtime stage keeps only the virtualenv, the application and
   `libpq5`/`postgresql-client`/`curl`/`tini`.
 - Runs as the fixed non-root user `yasmina` (UID/GID `10001`) with `tini` as PID 1.
+- `pip`, `setuptools` and `wheel` are removed from both the base interpreter and
+  the virtualenv in the runtime stage, so the image ships no package manager and
+  no unused build tooling (this also clears the fixable setuptools CVE reported
+  by Trivy).
 - Bytecode is pre-compiled with `compileall` during the build and
   `PYTHONDONTWRITEBYTECODE=1` prevents runtime writes, so a read-only root
   filesystem is safe.
@@ -840,10 +856,16 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml --profile backup 
 ```
 
 - `edge` network publishes only the API, bound to `127.0.0.1:8000` by default;
-  PostgreSQL, MinIO and ClamAV live exclusively on the `internal: true`
+  PostgreSQL, MinIO, ClamAV and Redis live exclusively on the `internal: true`
   `backend` network with no host ports.
 - Every service has a healthcheck and `restart: unless-stopped`; the API waits
-  for PostgreSQL, MinIO (plus bucket bootstrap) and ClamAV.
+  for PostgreSQL, MinIO (plus bucket bootstrap), ClamAV and Redis.
+- Redis runs with `--appendonly yes` and password authentication
+  (`REDIS_PASSWORD`), and the API connects through `REDIS_URL` with
+  `RATE_LIMIT_BACKEND=redis` so all replicas share one token bucket.
+- `TRUST_PROXY_HEADERS=true` in the prod environment makes rate limiting and
+  access logs use `X-Forwarded-For`/`X-Real-IP`. Only enable it when the API is
+  not directly reachable, because a direct client could spoof those headers.
 - Resource limits/reservations are declared under `deploy.resources`, logs are
   rotated by the `json-file` driver, and the API runs with a read-only root
   filesystem, `tmpfs` for `/tmp`, `cap_drop: [ALL]` and
@@ -851,6 +873,9 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml --profile backup 
 - The API container runs `alembic upgrade head` before starting uvicorn.
 - The optional `backup` service loops `backup-postgres` every
   `BACKUP_INTERVAL_SECONDS` (default one day).
+- Set `RATE_LIMIT_FAIL_OPEN=true` (default) to keep serving traffic if Redis is
+  unreachable; set it to `false` to fail closed and reject requests while the
+  shared limiter is down.
 
 ### Structured logging
 
@@ -906,6 +931,47 @@ python -m src.admin backup-postgres --json
   `BACKUP_ENCRYPTION_KEY` (`src.services.backup_service.decrypt_backup`) and
   running `pg_restore --clean --if-exists --no-owner --dbname <postgresql://…>`.
 
+### Security scanning
+
+The CI `security` job runs two independent gates:
+
+- **Bandit** over the application AST:
+  `python -m bandit -r src -c pyproject.toml -ll`. The `-ll` threshold fails on
+  medium/high findings; low-severity notes (for example B105 false positives on
+  audit event names such as `USER_PASSWORD_CHANGED`) stay visible in the report.
+- **Trivy** over the freshly built production image (`aquasecurity/trivy-action`):
+  CRITICAL/HIGH findings in operating-system and Python packages fail the build,
+  `--ignore-unfixed` keeps it actionable. The base image is hardened by removing
+  `pip`/`setuptools`/`wheel` from the runtime, which also removes the fixable
+  `setuptools` CVE-2025-47273 finding.
+
+Run the same checks locally with `pip install -e ".[dev]"`:
+`python -m bandit -r src -c pyproject.toml -ll` and
+`docker run --rm -v "$PWD:/work" aquasecurity/trivy image yasmina-api:prod`.
+
+### Load & performance testing
+
+`tests/performance/locustfile.py` simulates authenticated users that log in,
+poll `/auth/me`/`/healthz` and execute the pgvector-backed
+`POST /api/v1/tenders/{id}/match`. See
+[`tests/performance/README.md`](tests/performance/README.md) for the full run
+book. In short:
+
+```powershell
+python -m pip install -e ".[performance]"
+$env:YASMINA_LOAD_USERNAME = "loadtest"
+$env:YASMINA_LOAD_PASSWORD = "Load-Test-Password-42!"
+$env:YASMINA_LOAD_TENDER_ID = "<tender-uuid>"
+locust -f tests/performance/locustfile.py --host http://127.0.0.1:8000 `
+  --users 50 --spawn-rate 5 --run-time 5m --headless --html load-report.html
+```
+
+While it runs, watch `/metrics`
+(`yasmina_http_request_duration_seconds`, `yasmina_http_errors_total` for 429s),
+`pg_stat_activity` for connection saturation, and `redis-cli INFO commandstats`
+for the shared limiter's `eval` throughput. The load-test user must not have MFA
+enabled.
+
 ---
 
 ## Configuration
@@ -917,7 +983,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | Application | `APP_ENV`, `APP_DEBUG`, `APP_SECRET_KEY`, `APP_TIMEZONE` |
 | API / JWT | `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `JWT_EXPIRY_MINUTES`, `REFRESH_TOKEN_EXPIRY_DAYS`, `API_ADMIN_*`, `PASSWORD_MIN_LENGTH`, `PASSWORD_HASH_ALGORITHM`, `PASSWORD_RESET_TOKEN_EXPIRY_MINUTES`, `MAX_UPLOAD_SIZE_MB` |
 | MFA / retention | `MFA_ISSUER`, `MFA_TOTP_INTERVAL_SECONDS`, `MFA_TOTP_DIGITS`, `MFA_TOTP_WINDOW`, `AUTH_TOKEN_RETENTION_DAYS` |
-| Rate limiting | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_AUTH_PER_MINUTE`, `RATE_LIMIT_UPLOAD_PER_MINUTE`, `RATE_LIMIT_BUSINESS_PER_MINUTE` |
+| Rate limiting | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_BACKEND` (`auto`/`memory`/`redis`), `RATE_LIMIT_FAIL_OPEN`, `RATE_LIMIT_AUTH_PER_MINUTE`, `RATE_LIMIT_UPLOAD_PER_MINUTE`, `RATE_LIMIT_BUSINESS_PER_MINUTE`, `REDIS_URL`, `REDIS_TIMEOUT_SECONDS`, `TRUST_PROXY_HEADERS` |
 | Observability | `LOG_LEVEL`, `LOG_FORMAT` (`json`/`text`), `METRICS_ENABLED` |
 | Backups | `BACKUP_BUCKET`, `BACKUP_PREFIX`, `BACKUP_ENCRYPTION_KEY`, `BACKUP_RETENTION_DAYS`, `BACKUP_TIMEOUT_SECONDS`, `PG_DUMP_BINARY` |
 | Invoice seller | `COMPANY_NAME`, `COMPANY_STREET`, `COMPANY_CITY`, `COMPANY_POSTAL_CODE`, `COMPANY_VAT_ID`, `COMPANY_IBAN`, `COMPANY_EMAIL`, `COMPANY_PHONE` |
@@ -1053,6 +1119,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P4.8 — password change/reset flows, TOTP MFA with replay protection, logout-all, identity audit events and a refresh-token/token-blocklist retention CLI
 - [x] P5.1 — multi-stage non-root production image, isolated compose stack with resource limits, structured JSON logging, Prometheus `/metrics` (HTTP latency/errors and LangGraph durations), encrypted `pg_dump` backups to MinIO and a CI Docker build gate
 - [x] P5.2 — merge-safe catalogue re-imports with manual-override protection and duplicate collapsing, batched embedding pipeline with 429/5xx retries and progress reporting, safe `reindex-catalog` backfill and a 19-case German extraction golden set
+- [x] P5.3 — Redis-backed distributed token-bucket rate limiting with trusted `X-Forwarded-For` handling, Bandit + Trivy CI security gates, a hardened no-package-manager runtime image, and a Locust load profile for authentication and pgvector matching
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and
