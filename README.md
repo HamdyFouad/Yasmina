@@ -31,8 +31,9 @@ waste bags across all thicknesses, volumes and colour standards.
 > limiting, trusted-proxy client IPs, Bandit/Trivy CI scanning and a Locust load
 > profile for authentication and pgvector matching. A React/TypeScript
 > operations dashboard (Vite, Tailwind, shadcn/ui, TanStack Query) now provides
-> the branded login, JWT/refresh session handling and the shell for the upcoming
-> tender, matching and invoice views.
+> the branded MFA login, cookie-based JWT sessions, the tender pipeline with
+> matching/pricing detail, and the invoice table with ZUGFeRD/XRechnung
+> downloads and admin payment recording.
 
 ---
 
@@ -287,13 +288,18 @@ npm run dev
 
 Open <http://localhost:5173> and sign in with the admin credentials from your
 `.env` (or a database user). MFA-enabled accounts get the TOTP step
-automatically. The current slice includes the branded login, protected shell,
-JWT/refresh interceptor, typed API layer and an overview with live invoice/offer
-counts; the detailed tender, matching and invoice views are the next phase (see
-`frontend/README.md`).
+automatically. The dashboard ships the branded login, protected shell,
+cookie-based JWT/refresh interceptor, a live overview with KPIs and the audit
+activity feed, the tender board with a detail sheet (source download, catalogue
+matching and linked offer pricing) and the paginated invoice table with
+ZUGFeRD/XRechnung downloads plus the admin-only payment dialog. See
+`frontend/README.md` for the view-by-view scope.
 
 If the dashboard is hosted on another origin, set `VITE_API_BASE_URL` to the
-absolute backend URL and allow the origin via `CORS_ALLOWED_ORIGINS` on the API.
+absolute backend URL, allow the origin via `CORS_ALLOWED_ORIGINS` on the API, and
+serve both origins from the same site (for example `ops.example.com` and
+`api.example.com`): the refresh cookie is `SameSite=Strict`. Set
+`REFRESH_COOKIE_SECURE=true` behind HTTPS.
 
 ### 7. Business API
 
@@ -301,9 +307,9 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 
 | Method | Path | Role |
 |---|---|---|
-| POST | `/auth/token` | username/password login (+ `totp_code` when MFA is enabled) |
-| POST | `/auth/refresh` | rotating refresh token |
-| POST | `/auth/logout` | authenticated user; revokes access JTI and refresh token |
+| POST | `/auth/token` | username/password login (+ `totp_code` when MFA is enabled); sets the refresh cookie |
+| POST | `/auth/refresh` | rotates the HttpOnly refresh cookie and returns a new access token |
+| POST | `/auth/logout` | clears the refresh cookie and revokes the access JTI |
 | POST | `/auth/logout/all` | authenticated user; revokes every refresh session |
 | GET | `/auth/me` | any authenticated role |
 | POST | `/auth/users` | admin only |
@@ -315,39 +321,53 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | POST | `/auth/mfa/verify` | authenticated user; enables MFA with a live code |
 | POST | `/auth/mfa/disable` | authenticated user; password + live code required |
 | POST | `/tenders/upload` | sales/admin; sets tender owner |
+| GET | `/tenders` | sales (own), viewer/admin (all); paginated + status filter |
+| GET | `/tenders/{id}` | sales (own), viewer/admin (all); tender + document metadata |
+| GET | `/tenders/{id}/document` | sales (own), viewer/admin (all); original GAEB/PDF stream |
 | POST | `/tenders/{id}/match` | sales (own), admin |
 | POST | `/tenders/{id}/price` | sales (own), admin |
 | POST | `/tenders/{id}/workflow` | sales (own), admin |
 | POST | `/approvals/verify` | viewer/approver/admin |
 | POST | `/approvals/approve` | approver/admin, four-eyes enforced |
 | GET | `/approvals/{offer_number}/documents/{format}` | viewer/approver/admin |
-| GET | `/offers` | sales (own), viewer/admin (all) |
+| GET | `/offers` | sales (own), viewer/admin (all); supports `tender_id` and `status` |
 | GET | `/offers/{id}` | sales (own), viewer/admin (all) |
 | GET | `/invoices` | sales (own), viewer/admin (all) |
 | GET | `/invoices/{id}` | sales (own), viewer/admin (all) |
+| GET | `/invoices/{id}/documents/{zugferd\|xrechnung}` | sales (own), viewer/admin (all) |
 | GET | `/invoices/{id}/events` | sales (own), viewer/admin (all) |
 | GET | `/invoices/{id}/credit-notes` | sales (own), viewer/admin (all) |
+| GET | `/ops/summary` | sales (owner-scoped), viewer/admin (global) |
+| GET | `/ops/activity` | admin/viewer only |
 | POST | `/invoices/{id}/payments` | admin only |
 | POST | `/invoices/{id}/credits` | admin only |
 | POST | `/integrations/rfq/dispatch` | sales/admin |
 | POST | `/integrations/n8n/supplier-quotes` | n8n HMAC signature |
 
 ```powershell
+# -SessionVariable keeps the HttpOnly refresh cookie in this PowerShell session.
 $login = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/auth/token `
-  -ContentType "application/json" `
+  -ContentType "application/json" -SessionVariable web `
   -Body '{"username":"admin","password":"change-me-admin-password"}'
 $token = $login.access_token
-$refresh = $login.refresh_token
 
 $headers = @{ Authorization = "Bearer $token" }
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/tenders/upload `
-  -Headers $headers -Form @{ file = Get-Item .\tender.x83 }
+  -Headers $headers -WebSession $web -Form @{ file = Get-Item .\tender.x83 }
 ```
 
-`/auth/refresh` rotates the refresh token and invalidates the previous one. Reusing
-a rotated token revokes the entire token family. `/auth/logout` adds the current
-access-token `jti` to `token_blocklist` and optionally revokes the supplied
-refresh token. Approval of an offer whose owner is the authenticated principal
+The login and refresh JSON responses contain only the access token
+(`access_token`, `token_type`, `expires_in`, `roles`). The refresh token is a
+`HttpOnly`, `SameSite=Strict`, optionally `Secure` cookie scoped to
+`REFRESH_COOKIE_PATH` (default `/api/v1/auth`). API tests and non-browser clients
+may still send `{"refresh_token": "..."}` to `/auth/refresh` as a fallback, but
+the cookie takes precedence when both are present.
+
+`/auth/refresh` rotates the refresh cookie and invalidates the previous token. Reusing
+a rotated token revokes the entire token family. `/auth/logout` revokes the
+refresh token from the cookie (or fallback body), adds the current access-token
+`jti` to `token_blocklist` and clears the cookie. Approval of an offer whose
+owner is the authenticated principal
 (or whose signed `approved_by` equals the owner) is rejected with `403` by the
 four-eyes rule. Rate limits return `429` with `Retry-After` for `/auth` (20/min),
 `/tenders/upload` (30/min) and other `/api/v1` routes (300/min) by default.
@@ -1013,7 +1033,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 |---|---|
 | Application | `APP_ENV`, `APP_DEBUG`, `APP_SECRET_KEY`, `APP_TIMEZONE` |
 | API / JWT | `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `JWT_EXPIRY_MINUTES`, `REFRESH_TOKEN_EXPIRY_DAYS`, `API_ADMIN_*`, `PASSWORD_MIN_LENGTH`, `PASSWORD_HASH_ALGORITHM`, `PASSWORD_RESET_TOKEN_EXPIRY_MINUTES`, `MAX_UPLOAD_SIZE_MB` |
-| Browser / CORS | `CORS_ALLOWED_ORIGINS` (comma-separated dashboard origins) |
+| Browser / CORS | `CORS_ALLOWED_ORIGINS` (comma-separated dashboard origins), `REFRESH_COOKIE_NAME`, `REFRESH_COOKIE_SECURE`, `REFRESH_COOKIE_SAMESITE`, `REFRESH_COOKIE_PATH` |
 | MFA / retention | `MFA_ISSUER`, `MFA_TOTP_INTERVAL_SECONDS`, `MFA_TOTP_DIGITS`, `MFA_TOTP_WINDOW`, `AUTH_TOKEN_RETENTION_DAYS` |
 | Rate limiting | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_BACKEND` (`auto`/`memory`/`redis`), `RATE_LIMIT_FAIL_OPEN`, `RATE_LIMIT_AUTH_PER_MINUTE`, `RATE_LIMIT_UPLOAD_PER_MINUTE`, `RATE_LIMIT_BUSINESS_PER_MINUTE`, `REDIS_URL`, `REDIS_TIMEOUT_SECONDS`, `TRUST_PROXY_HEADERS` |
 | Observability | `LOG_LEVEL`, `LOG_FORMAT` (`json`/`text`), `METRICS_ENABLED` |
@@ -1153,7 +1173,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P5.2 — merge-safe catalogue re-imports with manual-override protection and duplicate collapsing, batched embedding pipeline with 429/5xx retries and progress reporting, safe `reindex-catalog` backfill and a 19-case German extraction golden set
 - [x] P5.3 — Redis-backed distributed token-bucket rate limiting with trusted `X-Forwarded-For` handling, Bandit + Trivy CI security gates, a hardened no-package-manager runtime image, and a Locust load profile for authentication and pgvector matching
 - [x] P5.4 — operations dashboard foundation: Vite/React 18/TypeScript/Tailwind/shadcn shell, branded MFA login, Axios JWT + single-flight refresh interceptors, typed API layer, RBAC-aware user menu and live overview counts
-- [ ] P5.5 — dashboard views: tender pipeline table/detail drawer, semantic matching and pricing panel, paginated invoices with document downloads and admin payment action (requires `GET /tenders` and activity read endpoints)
+- [x] P5.5 — dashboard views: owner-scoped tender board with a detail sheet (document download, hybrid catalogue matching, linked-offer pricing), paginated invoice table with ZUGFeRD/XRechnung downloads and an admin-only payment dialog, plus the ops KPI/activity feed; backend adds tender read/document routes, `/ops/summary`, `/ops/activity`, `/offers?tender_id=`, invoice document downloads and HttpOnly refresh cookies
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

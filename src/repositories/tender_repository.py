@@ -8,11 +8,12 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.models.enums import TenderStatus
 from src.models.orm import Tender as TenderORM
 from src.models.orm import TenderItem as TenderItemORM
 from src.models.schemas import Tender, TenderItem
@@ -193,6 +194,38 @@ class TenderRepository:
         orm = (await self.session.execute(statement)).scalars().first()
         return self._stored(orm) if orm is not None else None
 
+    async def list_tenders(
+        self,
+        *,
+        owner: str | None = None,
+        status: TenderStatus | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[StoredTender]:
+        """List tenders newest-first without parsing their GAEB source."""
+
+        statement = select(TenderORM).options(selectinload(TenderORM.items))
+        if owner is not None:
+            statement = statement.where(TenderORM.owner == owner)
+        if status is not None:
+            statement = statement.where(TenderORM.status == status)
+        statement = statement.order_by(TenderORM.created_at.desc()).offset(offset).limit(limit)
+        rows = (await self.session.execute(statement)).scalars().all()
+        return [self._stored(row, load_document=False) for row in rows]
+
+    async def count(
+        self,
+        *,
+        owner: str | None = None,
+        status: TenderStatus | None = None,
+    ) -> int:
+        statement = select(func.count()).select_from(TenderORM)
+        if owner is not None:
+            statement = statement.where(TenderORM.owner == owner)
+        if status is not None:
+            statement = statement.where(TenderORM.status == status)
+        return int((await self.session.execute(statement)).scalar_one())
+
     async def get_by_number(self, tender_number: str) -> StoredTender | None:
         """Look up a tender by its stable portal/tender number."""
 
@@ -204,7 +237,7 @@ class TenderRepository:
         orm = (await self.session.execute(statement)).scalars().first()
         return self._stored(orm) if orm is not None else None
 
-    def _stored(self, orm: TenderORM) -> StoredTender:
+    def _stored(self, orm: TenderORM, *, load_document: bool = True) -> StoredTender:
         tender = orm_to_tender(orm)
         metadata = dict(tender.metadata or {})
         source_path = metadata.get("_source_path")
@@ -214,7 +247,7 @@ class TenderRepository:
         public_tender = tender.model_copy(update={"metadata": public_metadata})
         document = None
         path: Path | None = Path(source_path) if source_path else None
-        if path is not None and path.suffix.lower() in {".x83", ".d83"} and path.is_file():
+        if load_document and path is not None and path.suffix.lower() in {".x83", ".d83"} and path.is_file():
             try:
                 document = parse_gaeb(path).document
             except Exception:

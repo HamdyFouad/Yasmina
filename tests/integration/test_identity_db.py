@@ -31,6 +31,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _set_refresh_cookie(client: TestClient, current: Settings, token: str) -> None:
+    """Replace the refresh cookie with an exact value.
+
+    httpx keeps the domain-scoped cookie the server set and would add a second
+    domain-less cookie with the same name, so clear the jar first and guarantee
+    the request carries exactly the token under test.
+    """
+    client.cookies.clear()
+    client.cookies.set(current.refresh_cookie_name, token, path=current.refresh_cookie_path)
+
+
 def settings() -> Settings:
     assert DATABASE_URL is not None
     return Settings(
@@ -136,6 +147,7 @@ async def test_auth_api_login_refresh_reuse_and_logout_blocklist() -> None:
         # before handing the URL to the application lifespan.
         await dispose_engine()
         app = create_app(current_settings, run_startup_checks=False)
+        cookie_name = current_settings.refresh_cookie_name
         with TestClient(app) as client:
             login = client.post(
                 "/api/v1/auth/token",
@@ -143,8 +155,14 @@ async def test_auth_api_login_refresh_reuse_and_logout_blocklist() -> None:
             )
             assert login.status_code == 200, login.text
             first_access = login.json()["access_token"]
-            first_refresh = login.json()["refresh_token"]
+            assert "refresh_token" not in login.json()
             assert login.json()["expires_in"] <= 900
+            first_refresh = client.cookies.get(cookie_name)
+            assert first_refresh
+            set_cookie = login.headers.get("set-cookie", "")
+            assert "HttpOnly" in set_cookie
+            assert "SameSite=strict" in set_cookie
+            assert f"Path={current_settings.refresh_cookie_path}" in set_cookie
 
             me = client.get(
                 "/api/v1/auth/me",
@@ -152,40 +170,46 @@ async def test_auth_api_login_refresh_reuse_and_logout_blocklist() -> None:
             )
             assert me.status_code == 200
 
-            refreshed = client.post(
-                "/api/v1/auth/refresh",
-                json={"refresh_token": first_refresh},
-            )
+            refreshed = client.post("/api/v1/auth/refresh")
             assert refreshed.status_code == 200, refreshed.text
-            second_access = refreshed.json()["access_token"]
-            second_refresh = refreshed.json()["refresh_token"]
+            assert "refresh_token" not in refreshed.json()
+            second_refresh = client.cookies.get(cookie_name)
+            assert second_refresh and second_refresh != first_refresh
 
-            reused = client.post(
-                "/api/v1/auth/refresh",
-                json={"refresh_token": first_refresh},
-            )
+            _set_refresh_cookie(client, current_settings, first_refresh)
+            reused = client.post("/api/v1/auth/refresh")
             assert reused.status_code == 401
             assert "reuse" in reused.json()["detail"]
 
-            family_revoked = client.post(
-                "/api/v1/auth/refresh",
-                json={"refresh_token": second_refresh},
-            )
+            _set_refresh_cookie(client, current_settings, second_refresh)
+            family_revoked = client.post("/api/v1/auth/refresh")
             assert family_revoked.status_code == 401
+
+            client.cookies.clear()
+            fresh_login = client.post(
+                "/api/v1/auth/token",
+                json={"username": username, "password": password},
+            )
+            assert fresh_login.status_code == 200, fresh_login.text
+            fresh_access = fresh_login.json()["access_token"]
 
             logout = client.post(
                 "/api/v1/auth/logout",
-                json={"refresh_token": second_refresh},
-                headers={"Authorization": f"Bearer {second_access}"},
+                headers={"Authorization": f"Bearer {fresh_access}"},
             )
             assert logout.status_code == 200, logout.text
+            assert logout.json()["refresh_revoked"] is True
+            assert client.cookies.get(cookie_name) is None
 
             blocked = client.get(
                 "/api/v1/auth/me",
-                headers={"Authorization": f"Bearer {second_access}"},
+                headers={"Authorization": f"Bearer {fresh_access}"},
             )
             assert blocked.status_code == 401
             assert "revoked" in blocked.json()["detail"]
+
+            after_logout = client.post("/api/v1/auth/refresh")
+            assert after_logout.status_code == 401
     finally:
         cleanup_factory = get_session_factory(current_settings)
         async with cleanup_factory() as session:

@@ -42,6 +42,17 @@ PREFIX = "p48-"
 PASSWORD = "A-Strong-Password-42!"
 
 
+def _set_refresh_cookie(client: TestClient, current: Settings, token: str) -> None:
+    """Replace the refresh cookie with an exact value.
+
+    httpx keeps the domain-scoped cookie the server set and would add a second
+    domain-less cookie with the same name, so clear the jar first and guarantee
+    the request carries exactly the token under test.
+    """
+    client.cookies.clear()
+    client.cookies.set(current.refresh_cookie_name, token, path=current.refresh_cookie_path)
+
+
 def settings() -> Settings:
     assert DATABASE_URL is not None
     return Settings(
@@ -112,7 +123,9 @@ async def test_password_change_revokes_sessions_and_is_audited() -> None:
             login = _login(client, username)
             assert login.status_code == 200, login.text
             access = login.json()["access_token"]
-            refresh = login.json()["refresh_token"]
+            assert "refresh_token" not in login.json()
+            refresh_cookie = client.cookies.get(current_settings.refresh_cookie_name)
+            assert refresh_cookie
 
             change = client.post(
                 "/api/v1/auth/password/change",
@@ -124,7 +137,8 @@ async def test_password_change_revokes_sessions_and_is_audited() -> None:
 
             assert _login(client, username).status_code == 401
             assert _login(client, username, new_password).status_code == 200
-            assert client.post("/api/v1/auth/refresh", json={"refresh_token": refresh}).status_code == 401
+            _set_refresh_cookie(client, current_settings, refresh_cookie)
+            assert client.post("/api/v1/auth/refresh").status_code == 401
 
             wrong_current = client.post(
                 "/api/v1/auth/password/change",
@@ -362,18 +376,22 @@ async def test_logout_all_devices_revokes_every_session() -> None:
         await dispose_engine()
         with _client(current_settings) as client:
             first = _login(client, username)
-            second = _login(client, username)
-            assert first.status_code == 200 and second.status_code == 200
+            assert first.status_code == 200, first.text
             first_access = first.json()["access_token"]
-            first_refresh = first.json()["refresh_token"]
-            second_refresh = second.json()["refresh_token"]
+            first_refresh = client.cookies.get(current_settings.refresh_cookie_name)
+            assert first_refresh
+            second = _login(client, username)
+            assert second.status_code == 200, second.text
+            second_refresh = client.cookies.get(current_settings.refresh_cookie_name)
+            assert second_refresh and second_refresh != first_refresh
 
             logout_all = client.post("/api/v1/auth/logout/all", headers=_bearer(first_access))
             assert logout_all.status_code == 200, logout_all.text
             assert logout_all.json()["refresh_tokens_revoked"] == 2
 
             for token in (first_refresh, second_refresh):
-                response = client.post("/api/v1/auth/refresh", json={"refresh_token": token})
+                _set_refresh_cookie(client, current_settings, token)
+                response = client.post("/api/v1/auth/refresh")
                 assert response.status_code == 401
             blocked = client.get("/api/v1/auth/me", headers=_bearer(first_access))
             assert blocked.status_code == 401

@@ -1,6 +1,9 @@
 /**
  * Auth and session types mirroring the FastAPI auth routes.
  * `Role` values match `src/models/enums.py::Role`.
+ *
+ * Refresh tokens are never part of a JSON response: the API sets an HttpOnly
+ * cookie, so the browser stores and sends it automatically.
  */
 export type Role = 'admin' | 'sales' | 'approver' | 'viewer'
 
@@ -15,16 +18,6 @@ export interface TokenResponse {
   token_type: 'bearer'
   expires_in: number
   roles: Role[]
-  refresh_token?: string
-  refresh_expires_in?: number
-}
-
-export interface RefreshTokenRequest {
-  refresh_token: string
-}
-
-export interface LogoutRequest {
-  refresh_token?: string
 }
 
 export interface MeResponse {

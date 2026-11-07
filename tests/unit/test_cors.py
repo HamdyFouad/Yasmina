@@ -49,6 +49,7 @@ def test_cors_preflight_allows_a_configured_origin() -> None:
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert response.headers["access-control-allow-credentials"] == "true"
     assert "authorization" in response.headers["access-control-allow-headers"].lower()
 
 

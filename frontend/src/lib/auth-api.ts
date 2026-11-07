@@ -1,12 +1,7 @@
 import { api, refreshAccessToken } from '@/lib/api-client'
 import { isApiError } from '@/lib/api-error'
-import { clearSession, getRefreshToken, hasRefreshToken, setSession } from '@/lib/token-store'
-import type {
-  LoginRequest,
-  LogoutRequest,
-  MeResponse,
-  TokenResponse,
-} from '@/types/auth'
+import { clearSession, setAccessToken } from '@/lib/token-store'
+import type { LoginRequest, MeResponse, TokenResponse } from '@/types/auth'
 
 export function isMfaRequired(error: unknown): boolean {
   return isApiError(error) && error.mfaRequired
@@ -14,10 +9,7 @@ export function isMfaRequired(error: unknown): boolean {
 
 export async function login(request: LoginRequest): Promise<TokenResponse> {
   const response = await api.post<TokenResponse>('/auth/token', request)
-  setSession({
-    accessToken: response.data.access_token,
-    ...(response.data.refresh_token ? { refreshToken: response.data.refresh_token } : {}),
-  })
+  setAccessToken(response.data.access_token)
   return response.data
 }
 
@@ -26,21 +18,21 @@ export async function fetchMe(): Promise<MeResponse> {
   return response.data
 }
 
+/**
+ * Restore a page-reload session: the refresh token is an HttpOnly cookie, so
+ * always try to rotate it before reading the current user.
+ */
 export async function restoreSession(): Promise<MeResponse> {
-  if (!hasRefreshToken()) {
-    throw new Error('No session to restore.')
-  }
   await refreshAccessToken()
   return await fetchMe()
 }
 
 export async function logout(): Promise<void> {
-  const refreshToken = getRefreshToken()
-  const body: LogoutRequest = refreshToken ? { refresh_token: refreshToken } : {}
   try {
-    await api.post('/auth/logout', body)
+    // No body: the API reads and clears the HttpOnly refresh cookie.
+    await api.post('/auth/logout')
   } catch {
-    // Local logout must always succeed, even if the token was already invalid.
+    // Local logout must always succeed, even if the cookie was already invalid.
   } finally {
     clearSession()
   }

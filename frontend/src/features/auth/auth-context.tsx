@@ -7,7 +7,7 @@ import {
   restoreSession,
 } from '@/lib/auth-api'
 import { SESSION_EXPIRED_EVENT } from '@/lib/api-client'
-import { clearSession, hasRefreshToken } from '@/lib/token-store'
+import { clearSession } from '@/lib/token-store'
 import type { LoginRequest, MeResponse, Role, SessionStatus } from '@/types/auth'
 
 interface AuthContextValue {
@@ -30,12 +30,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false
 
     const bootstrap = async (): Promise<void> => {
-      if (!hasRefreshToken()) {
-        if (!cancelled) {
-          setStatus('unauthenticated')
-        }
-        return
-      }
       try {
         const me = await restoreSession()
         if (!cancelled) {

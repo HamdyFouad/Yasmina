@@ -75,6 +75,17 @@ export function isApiError(value: unknown): value is ApiError {
   return value instanceof ApiError
 }
 
+/** Human-readable message for a caught query/mutation error. */
+export function apiErrorMessage(value: unknown): string {
+  if (isApiError(value)) {
+    return value.detail
+  }
+  if (value instanceof Error) {
+    return value.message
+  }
+  return 'Unexpected error while talking to the API.'
+}
+
 export function toApiError(error: unknown): ApiError {
   if (error instanceof ApiError) {
     return error

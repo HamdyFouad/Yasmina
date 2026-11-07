@@ -1,9 +1,8 @@
 # Yasmina Day 2 Operations Dashboard
 
-Read-only operations console for the Yasmina API: authentication, overview, tenders,
-catalogue matching/pricing and invoice billing. This first slice is the frontend
-foundation (shell, auth flow, typed API client); the detailed views follow once the
-tender read endpoints land.
+Operations console for the Yasmina API: authentication, an overview with KPIs and
+the audit activity feed, the tender pipeline with matching/pricing detail, and
+invoice billing with compliant document downloads.
 
 ## Stack
 
@@ -37,34 +36,59 @@ npm run build      # type-check + production bundle
 npm run preview    # serve the built bundle
 ```
 
+## Views
+
+| Route | Content |
+|---|---|
+| `/login` | Username/password login with an MFA (TOTP) step when the account requires it. |
+| `/` | Overview: owner-scoped KPI cards, gross invoiced/paid/outstanding, recent audit events (admin/viewer) and session details. |
+| `/tenders` | Paginated tender board with status filter. Rows open a detail sheet with metadata, the original GAEB/PDF download, hybrid catalogue matching and linked pricing offers with their line/VAT breakdown and totals. |
+| `/invoices` | Paginated invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, and the admin-only "Mark as paid" dialog. |
+
+The `Offers` navigation entry is still a placeholder; offer pricing is currently
+shown inside the tender detail sheet, filtered with `GET /offers?tender_id=...`.
+
 ## Auth flow
 
 - `src/lib/api-client.ts` injects `Authorization: Bearer <access token>` and
   refreshes on `401` through `POST /auth/refresh`, retrying the original request.
   Concurrent 401s share a single refresh request (single-flight).
-- Access token is kept **in memory only**. The refresh token is stored in
-  `sessionStorage` for tab-scoped reload survival because the backend returns it
-  in the JSON body instead of an HttpOnly cookie. Moving it to an HttpOnly cookie
-  is the recommended backend follow-up.
+- The access token is kept **in memory only**. The refresh token is an
+  `HttpOnly`, `SameSite=Strict` cookie set by the API (`withCredentials: true`),
+  so it is never readable from JavaScript and a page reload restores the session
+  by calling `/auth/refresh` without a body.
 - `403` (RBAC/four-eyes) and `429` (rate limit, with `Retry-After`) produce
   toast notifications; the Axios error normalizes FastAPI `detail` payloads.
 - MFA is detected from the `401` + `X-Yasmina-MFA-Required` response header and
   the login form then requests `totp_code`.
 - A session-expiry event clears local state and routes back to `/login`.
 
+## Backend endpoints used
+
+- `POST /auth/token`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`
+- `GET /tenders`, `GET /tenders/{id}`, `GET /tenders/{id}/document`
+- `POST /tenders/{id}/match`
+- `GET /offers?tender_id={id}`
+- `GET /invoices`, `GET /invoices/{id}/documents/{zugferd|xrechnung}`,
+  `POST /invoices/{id}/payments`
+- `GET /ops/summary`, `GET /ops/activity`
+
 ## Environment
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VITE_API_BASE_URL` | `/api/v1` | Backend base URL. Keep `/api/v1` for the Vite proxy, or set the absolute URL (e.g. `http://127.0.0.1:8000/api/v1`) and allow the dashboard origin via backend `CORS_ALLOWED_ORIGINS`. |
+| `VITE_API_BASE_URL` | `/api/v1` | Backend base URL. Keep `/api/v1` for the Vite proxy, or set the absolute URL (e.g. `http://127.0.0.1:8000/api/v1`) and allow the dashboard origin via backend `CORS_ALLOWED_ORIGINS`. Cookie auth requires the dashboard and API to be same-site. |
 
 ## Current scope
 
 - [x] Branded login with MFA step
 - [x] Protected app shell (sidebar, header, user menu, mobile navigation)
 - [x] Typed API layer + auth context + React Query provider
-- [x] Overview skeleton with live invoice/offer counts
-- [ ] Overview activity feed and tender KPIs (needs `GET /tenders` and an audit stream)
-- [ ] Tender table, pipeline filters and detail drawer
-- [ ] Matching/pricing panel
-- [ ] Paginated invoice table, document downloads and admin "mark as paid"
+- [x] Cookie-based refresh sessions with in-memory access tokens
+- [x] Overview KPIs, billing totals and audit activity feed
+- [x] Paginated tender board, status filter and detail sheet
+- [x] Source-document download, catalogue matching scores and linked offer pricing
+- [x] Paginated invoice table with ZUGFeRD/XRechnung downloads
+- [x] Admin-only "Mark as paid" payment dialog
+- [ ] Offer workspace beyond the tender detail sheet
+- [ ] Browser end-to-end tests and a production static-host deployment

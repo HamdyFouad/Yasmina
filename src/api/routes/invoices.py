@@ -5,16 +5,18 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from src.api.deps import (
     get_credit_note_repository,
     get_invoice_repository,
+    get_object_storage,
     get_offer_repository,
     require_roles,
 )
 from src.api.schemas import InvoiceCreditPayload, InvoicePaymentPayload
 from src.api.security import Principal, Role
+from src.integrations.minio_client import MinioObjectStorage, ObjectStorageError, object_name_for_invoice
 from src.models.enums import InvoiceStatus
 from src.repositories.credit_note_repository import (
     CreditNoteRepository,
@@ -91,6 +93,60 @@ async def get_invoice(
         "events": await repository.events(invoice_id),
         "event_chain_valid": await repository.verify_event_chain(invoice_id),
     }
+
+
+@router.get("/{invoice_id}/documents/{document_format}")
+async def download_invoice_document(
+    invoice_id: UUID,
+    document_format: str,
+    repository: InvoiceRepository = Depends(get_invoice_repository),
+    offers: OfferRepository = Depends(get_offer_repository),
+    storage: MinioObjectStorage = Depends(get_object_storage),
+    principal: Principal = Depends(require_roles(Role.SALES, Role.VIEWER, Role.ADMIN)),
+) -> Response:
+    """Download the ZUGFeRD PDF or XRechnung XML for an invoice.
+
+    The invoice only stores ``offer_id``; the offer number used in the MinIO
+    object name is resolved here so the dashboard never has to chain two calls.
+    """
+
+    invoice = await repository.get_by_id(invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="invoice not found")
+    await _authorize(invoice, principal, offers)
+
+    formats = {
+        "zugferd": ("pdf", "application/pdf"),
+        "xrechnung": ("xml", "application/xml"),
+    }
+    if document_format not in formats:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="unknown document format; use zugferd or xrechnung",
+        )
+    extension, media_type = formats[document_format]
+    offer = await offers.get(invoice.offer_id)
+    if offer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="invoice offer not found")
+    object_name = object_name_for_invoice(offer.offer.offer_number, extension)
+    try:
+        if not await storage.exists(object_name):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="invoice document has not been generated",
+            )
+        data = await storage.get_bytes(object_name)
+    except ObjectStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    filename = f"{invoice.invoice.invoice_number}.{extension}"
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{invoice_id}/events")

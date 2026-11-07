@@ -642,14 +642,16 @@ reconciled with the authoritative spec later.
   twenty-four tests and CI additionally runs two live Redis rate-limit tests
   (`YASMINA_TEST_REDIS_URL`).
 
-## Operations dashboard assumptions (P5.4)
+## Operations dashboard assumptions (P5.4–P5.5)
 
 - The dashboard is a separate Vite SPA in `frontend/`, not bundled into the API
   image. In development it uses the Vite `/api` proxy to `127.0.0.1:8000`, so
-  the browser stays same-origin and CORS is not required. For separate hosting,
-  `VITE_API_BASE_URL` points at the backend and `CORS_ALLOWED_ORIGINS` must list
-  the dashboard origin (comma-separated, credentials disabled because refresh
-  tokens travel in the JSON body).
+  the browser stays same-origin. For separate hosting, `VITE_API_BASE_URL`
+  points at the backend, `CORS_ALLOWED_ORIGINS` must list the dashboard origin
+  and `CORS_ALLOW_CREDENTIALS` is enabled because the refresh token is a cookie.
+  Both hosts should share a site (for example `ops.example.com` and
+  `api.example.com`) because the cookie is `SameSite=Strict`; serve them over
+  HTTPS and set `REFRESH_COOKIE_SECURE=true`.
 - React 18 is pinned although the Vite template ships React 19; Tailwind is
   pinned to v3 so the classic `tailwind.config.ts` and shadcn/ui token setup stay
   explicit. shadcn primitives are vendored under `src/components/ui` (Radix
@@ -659,11 +661,14 @@ reconciled with the authoritative spec later.
   `exactOptionalPropertyTypes`). Decimal money fields arrive as strings from
   Pydantic/v1 serializers and are typed as strings; the UI formats them with
   `Intl.NumberFormat`. No `any` is used in application code.
-- Access tokens are kept in memory only. The refresh token is persisted in
-  `sessionStorage` (tab-scoped) because the backend returns it in the login body
-  rather than setting an HttpOnly cookie; this is a known XSS trade-off and the
-  recommended backend follow-up is cookie-based refresh tokens plus CSRF
-  protection.
+- Access tokens are kept in memory only. The refresh token is an `HttpOnly`,
+  `SameSite=Strict`, optionally `Secure` cookie scoped to
+  `REFRESH_COOKIE_PATH` (default `/api/v1/auth`); it is never returned in JSON.
+  `/auth/refresh` rotates the cookie and `/auth/logout` clears it. A page reload
+  restores the session by calling `/auth/refresh` with `withCredentials: true`.
+  The request-body `refresh_token` fallback is retained for tests and non-browser
+  clients, with the cookie taking precedence when both are present. Cross-site
+  cookies are out of scope; document that deployments must be same-site.
 - The Axios interceptor performs a single-flight refresh on `401`, retries the
   original request once, and emits a session-expiry event when refresh fails.
   `403` and `429` (with `Retry-After`) surface as Sonner toasts; FastAPI
@@ -671,20 +676,36 @@ reconciled with the authoritative spec later.
 - MFA is detected from the `X-Yasmina-MFA-Required` response header on the login
   `401`, so the header is explicitly exposed by CORS. The login form then
   submits `totp_code` with the same credentials.
-- The overview currently reads only endpoints that exist (`GET /invoices`,
-  `GET /offers` with status filters). "Tenders discovered", an audit/activity
-  feed and the tender pipeline require new read endpoints (`GET /tenders`,
-  `GET /tenders/{id}`, an audit/outbox listing); they are intentionally marked
-  as pending in the UI rather than mocked.
-- Invoice document downloads require an `offer_number` and are served by
-  `GET /approvals/{offer_number}/documents/{format}`. The future invoice view
-  must resolve `invoice.offer_id` through `GET /offers/{id}` first, or the
-  backend should expose direct invoice artifact URLs.
+- The overview reads `GET /ops/summary` (owner-scoped for sales) and
+  `GET /ops/activity` (admin/viewer only, newest 25 audit rows by default). Sales
+  users therefore see KPI cards and billing totals for their own data, while the
+  global audit stream stays hidden. `/ops/summary` returns money as strings
+  (`gross_invoiced`, `gross_paid`, `currency`) to preserve decimal precision.
+- The tender board uses `GET /tenders` (pagination + status filter, owner-scoped
+  for sales) and the detail sheet uses `GET /tenders/{id}` plus
+  `GET /tenders/{id}/document` for the original GAEB/PDF stream. Matching runs
+  on demand through `POST /tenders/{id}/match`; results include lexical,
+  semantic and hybrid scores and are not cached server-side.
+- Linked pricing offers are found with `GET /offers?tender_id=...` (new optional
+  filter) so the dashboard does not have to page the entire offer list. Totals
+  shown in the UI are the server-computed net/VAT/gross values; the client never
+  recalculates prices. Freight and pallet costs are **not** modelled by the
+  pricing engine yet, so the sheet says so explicitly instead of inventing a
+  line item.
+- Invoice documents are served directly by
+  `GET /invoices/{id}/documents/{zugferd|xrechnung}`; the API resolves
+  `invoice.offer_id` to the offer number internally, so the browser does not
+  chain offer lookups. PDF/A-3 and XRechnung generation still happens during the
+  approval workflow, and a missing artifact returns `404`.
+- The "Mark as paid" action is only rendered for admin accounts and posts to
+  `POST /invoices/{id}/payments`; the server remains the authority on RBAC and
+  overpayment validation.
 - React Query retries once for transient errors but never for 401/403/404/429.
   Query keys are namespaced by resource; server state is cached for 30 seconds.
 - The frontend CI job runs `npm ci`, `oxlint` and `tsc -b && vite build`. It does
   not yet run browser end-to-end tests or a production static host deployment.
-- P5.4 adds four CORS unit tests, bringing the default suite to 394 tests.
+- The suite runs 438 tests with live PostgreSQL, Redis, MinIO and ClamAV enabled,
+  matching the CI job configuration.
 
 ## E-invoicing assumptions (P2.1)
 

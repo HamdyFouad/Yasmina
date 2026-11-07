@@ -54,6 +54,27 @@ export function formatDateTime(value: string | null | undefined, locale = 'de-DE
   }).format(date)
 }
 
+export function formatQuantity(value: string | number): string {
+  const amount = typeof value === 'string' ? Number.parseFloat(value) : value
+  if (Number.isNaN(amount)) {
+    return '—'
+  }
+  return new Intl.NumberFormat('de-DE', {
+    maximumFractionDigits: 2,
+  }).format(amount)
+}
+
+export function formatPercent(value: string | number): string {
+  const rate = typeof value === 'string' ? Number.parseFloat(value) : value
+  if (Number.isNaN(rate)) {
+    return '—'
+  }
+  return new Intl.NumberFormat('de-DE', {
+    style: 'percent',
+    maximumFractionDigits: 2,
+  }).format(rate)
+}
+
 export function titleCase(value: string): string {
   return value
     .toLowerCase()

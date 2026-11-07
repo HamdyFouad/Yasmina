@@ -70,7 +70,12 @@ def auth(value: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {value}"}
 
 
-def make_offer(*, offer_number: str = "AN-2026-0100", customer: str = "Stadt Muster") -> CustomerOffer:
+def make_offer(
+    *,
+    offer_number: str = "AN-2026-0100",
+    customer: str = "Stadt Muster",
+    tender_id: UUID | None = None,
+) -> CustomerOffer:
     cost = Decimal("10.0000")
     margin = Decimal("0.15")
     unit_price = q4(cost * (Decimal(1) + margin))
@@ -90,6 +95,7 @@ def make_offer(*, offer_number: str = "AN-2026-0100", customer: str = "Stadt Mus
         offer_number=offer_number,
         customer_name=customer,
         customer_contact_email="einkauf@example.com",
+        tender_id=tender_id,
         status=CustomerOfferStatus.DRAFT,
         lines=[line],
         margin_rate=margin,
@@ -163,12 +169,15 @@ class FakeOfferRepository:
         offset: int = 0,
         owner: str | None = None,
         status: CustomerOfferStatus | None = None,
+        tender_id: UUID | None = None,
     ) -> list[CustomerOffer]:
         values = list(self.offers.values())
         if owner is not None:
             values = [offer for offer in values if offer.owner == owner]
         if status is not None:
             values = [offer for offer in values if offer.status == status]
+        if tender_id is not None:
+            values = [offer for offer in values if offer.tender_id == tender_id]
         return values[offset : offset + limit]
 
     async def count(
@@ -176,12 +185,15 @@ class FakeOfferRepository:
         *,
         owner: str | None = None,
         status: CustomerOfferStatus | None = None,
+        tender_id: UUID | None = None,
     ) -> int:
         values = list(self.offers.values())
         if owner is not None:
             values = [offer for offer in values if offer.owner == owner]
         if status is not None:
             values = [offer for offer in values if offer.status == status]
+        if tender_id is not None:
+            values = [offer for offer in values if offer.tender_id == tender_id]
         return len(values)
 
 
@@ -366,3 +378,25 @@ def test_offer_read_routes_enforce_sales_ownership(api: Any) -> None:
 def test_missing_offer_is_404(api: Any) -> None:
     response = api.client.get(f"/api/v1/offers/{uuid4()}", headers=auth(VIEWER))
     assert response.status_code == 404
+
+
+def test_offers_can_be_filtered_by_tender(api: Any) -> None:
+    tender_id = uuid4()
+    matching = make_offer(offer_number="AN-2026-0300", tender_id=tender_id).model_copy(
+        update={"owner": "sales-a"}
+    )
+    unrelated = make_offer(offer_number="AN-2026-0301", tender_id=uuid4()).model_copy(
+        update={"owner": "sales-a"}
+    )
+    api.repository.offers[matching.offer_number] = matching
+    api.repository.offers[unrelated.offer_number] = unrelated
+
+    response = api.client.get(
+        "/api/v1/offers",
+        params={"tender_id": str(tender_id)},
+        headers=auth(SALES_A),
+    )
+
+    assert response.status_code == 200, response.text
+    assert [offer["offer_number"] for offer in response.json()["offers"]] == ["AN-2026-0300"]
+    assert response.json()["count"] == 1

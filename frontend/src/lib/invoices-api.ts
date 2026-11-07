@@ -1,6 +1,8 @@
 import { api } from '@/lib/api-client'
+import { filenameFromDisposition, saveBlob } from '@/lib/download'
 import type {
   InvoiceDetailResponse,
+  InvoiceDocumentFormat,
   InvoiceListResponse,
   InvoicePaymentRequest,
   InvoicePaymentResponse,
@@ -36,4 +38,20 @@ export async function recordInvoicePayment(
     payload,
   )
   return response.data
+}
+
+/** Fetch the generated ZUGFeRD PDF or XRechnung XML and save it locally. */
+export async function downloadInvoiceDocument(
+  invoiceId: string,
+  format: InvoiceDocumentFormat,
+  fallbackFilename: string,
+): Promise<void> {
+  const response = await api.get<Blob>(`/invoices/${invoiceId}/documents/${format}`, {
+    responseType: 'blob',
+  })
+  const filename = filenameFromDisposition(
+    response.headers['content-disposition'],
+    fallbackFilename,
+  )
+  saveBlob(response.data, filename)
 }

@@ -184,12 +184,15 @@ class OfferRepository:
         offset: int = 0,
         owner: str | None = None,
         status: CustomerOfferStatus | None = None,
+        tender_id: UUID | None = None,
     ) -> list[CustomerOffer]:
         statement = self._statement().order_by(CustomerOfferORM.created_at.desc())
         if owner is not None:
             statement = statement.where(CustomerOfferORM.owner == owner)
         if status is not None:
             statement = statement.where(CustomerOfferORM.status == status)
+        if tender_id is not None:
+            statement = statement.where(CustomerOfferORM.tender_id == tender_id)
         statement = statement.offset(offset).limit(limit)
         rows = (await self.session.execute(statement)).scalars().all()
         return [orm_to_offer(row) for row in rows]
@@ -199,12 +202,15 @@ class OfferRepository:
         *,
         owner: str | None = None,
         status: CustomerOfferStatus | None = None,
+        tender_id: UUID | None = None,
     ) -> int:
         statement = select(func.count()).select_from(CustomerOfferORM)
         if owner is not None:
             statement = statement.where(CustomerOfferORM.owner == owner)
         if status is not None:
             statement = statement.where(CustomerOfferORM.status == status)
+        if tender_id is not None:
+            statement = statement.where(CustomerOfferORM.tender_id == tender_id)
         return int((await self.session.execute(statement)).scalar_one())
 
     async def save(self, offer: CustomerOffer, *, commit: bool = True) -> StoredOffer:

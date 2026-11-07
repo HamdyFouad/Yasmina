@@ -26,7 +26,7 @@ Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 
 - `src/main.py` (FastAPI app + startup preflight lifespan)
 - `src/logging_config.py` (JSON log formatter and handler configuration)
 - `src/api/` (`security.py`, `rate_limit.py`, `observability.py`, `metrics.py`, `deps.py`, `schemas.py`, `routes/tenders.py`, `routes/approvals.py`, `routes/offers.py`, `routes/invoices.py`, `routes/ops.py`, `routes/auth.py`)
-- `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `invoice_repository.py`, `credit_note_repository.py`, `invoice_event_repository.py`, `user_repository.py`, `catalog_repository.py`, `ingestion_repository.py`, `worker_run_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`)
+- `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `invoice_repository.py`, `credit_note_repository.py`, `invoice_event_repository.py`, `user_repository.py`, `catalog_repository.py`, `ingestion_repository.py`, `worker_run_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`, `ops_repository.py`)
 - `src/models/` (`enums.py`, `schemas.py`, `orm.py`)
 - `src/parsers/` (`normalizers.py`, `pdf_parser.py`, `gaeb_parser.py`, `gaeb_validator.py`)
 - `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `password_service.py`, `mfa_service.py`, `token_maintenance.py`, `backup_service.py`, `embedding_service.py`, `embedding_pipeline.py`, `ingestion_processor.py`, `worker_lock.py`, `worker_metrics.py`)
@@ -47,7 +47,7 @@ When given an implementation task:
 ## 6. Build, Run & Verification Commands
 - Setup: `python -m pip install -e ".[dev,parsing,ai,e-invoicing]"`; `.env` is created from `.env.example` on first preflight/API start (copy it manually for other tooling).
 - Tests: `python -m pytest -q` (config lives in `pyproject.toml`); live DB tests use `YASMINA_TEST_DATABASE_URL`.
-- Dashboard: `cd frontend && npm install && npm run dev` (Vite on 5173, `/api` proxied to `127.0.0.1:8000`); quality via `npm run lint` and `npm run build` (strict TypeScript). Set `VITE_API_BASE_URL` for separate hosting and add the origin to backend `CORS_ALLOWED_ORIGINS`.
+- Dashboard: `cd frontend && npm install && npm run dev` (Vite on 5173, `/api` proxied to `127.0.0.1:8000`); quality via `npm run lint` and `npm run build` (strict TypeScript). Views: overview (`/ops/summary`, `/ops/activity`), tender board/detail (`GET /tenders[/{id}]`, document download, matching, linked offers), invoices (downloads + admin payment). Set `VITE_API_BASE_URL` for separate hosting, add the origin to backend `CORS_ALLOWED_ORIGINS`, and keep the hosts same-site because refresh uses an HttpOnly `SameSite=Strict` cookie.
 - Quality: `python -m ruff check .`, `python -m ruff format --check .`, `python -m mypy src`.
 - Catalogue: `python -m src.admin seed-catalog --file catalog.csv [--embedding-provider auto|local|hashing] [--dry-run] [--ignore-manual-overrides]`; re-imports merge by `(supplier, article_number)`, preserve pinned `catalog_articles.manual_overrides`, never clear omitted fields and collapse duplicate rows (last wins).
 - Catalogue reindex: `python -m src.admin reindex-catalog [--batch-size N] [--only-missing] [--respect-overrides] [--dry-run] [--json] [--embedding-provider …] [--allow-hash-embeddings]`; recomputes pgvector embeddings in place, never deletes rows, commits per page and audits `SYSTEM_CATALOG_REINDEXED`.
@@ -57,7 +57,7 @@ When given an implementation task:
 - Infrastructure: `docker compose up -d postgres minio clamav` (add `--profile automation` for n8n).
 - Preflight: `python -m src.preflight` (or `python -m src.preflight --json`).
 - Approval: `yasmina-approval sign|verify` (see `src/services/approval_service.py`).
-- Auth: `POST /api/v1/auth/token` (access + refresh; `totp_code` when MFA is enabled), `/auth/refresh` (rotating), `/auth/logout` (JTI blocklist), `/auth/users` (admin). Four-eyes rejects self-approval by owner/tender creator.
+- Auth: `POST /api/v1/auth/token` (returns only the access token; the rotating refresh token is set as an HttpOnly, SameSite=Strict cookie scoped to `REFRESH_COOKIE_PATH`, with `totp_code` when MFA is enabled), `/auth/refresh` (rotates the cookie; a body token remains a fallback for non-browser clients), `/auth/logout` (clears the cookie and blocklists the JTI), `/auth/users` (admin). Four-eyes rejects self-approval by owner/tender creator.
 - Account lifecycle: `POST /auth/password/change` (current password required), `/auth/password/reset` (single-use token), `/auth/password/reset/request` (public, always 202), `/auth/users/{username}/password/reset` (admin-issued token), `/auth/logout/all` (revoke every refresh session).
 - MFA: `/auth/mfa/setup` returns a base32 secret + `otpauth://` URI, `/auth/mfa/verify` enables TOTP enrollment, `/auth/mfa/disable` needs password + live code; secrets are Fernet-sealed from `APP_SECRET_KEY` and `users.mfa_last_step` blocks code replay. RFC 6238 code lives in `src/services/mfa_service.py`.
 - Token retention: `python -m src.admin purge-auth-tokens [--retention-days N] [--dry-run] [--json]` purges expired refresh tokens, stale revoked sessions, expired JTIs and used/expired reset tokens, and appends a `SYSTEM_TOKEN_CLEANUP` audit entry.

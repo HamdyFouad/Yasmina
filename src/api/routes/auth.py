@@ -6,11 +6,12 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from src.api.deps import (
     get_app_settings,
     get_audit_service,
+    get_optional_principal,
     get_password_reset_repository,
     get_principal,
     get_refresh_token_repository,
@@ -100,19 +101,37 @@ async def _audit(
 def _token_response(
     settings: Settings,
     principal: Principal,
-    *,
-    refresh_token: str | None = None,
 ) -> dict[str, object]:
-    response: dict[str, object] = {
+    """Access-token payload; the refresh token only travels in the HttpOnly cookie."""
+
+    return {
         "access_token": create_access_token(settings, principal.sub, principal.roles),
         "token_type": "bearer",
         "expires_in": settings.jwt_expiry_minutes * 60,
         "roles": [role.value for role in principal.roles],
     }
-    if refresh_token is not None:
-        response["refresh_token"] = refresh_token
-        response["refresh_expires_in"] = settings.refresh_token_expiry_days * 86400
-    return response
+
+
+def _set_refresh_cookie(response: Response, settings: Settings, raw_token: str) -> None:
+    response.set_cookie(
+        key=settings.refresh_cookie_name,
+        value=raw_token,
+        max_age=settings.refresh_token_expiry_days * 86400,
+        httponly=True,
+        secure=settings.refresh_cookie_secure,
+        samesite=settings.refresh_cookie_samesite,
+        path=settings.refresh_cookie_path,
+    )
+
+
+def _clear_refresh_cookie(response: Response, settings: Settings) -> None:
+    response.delete_cookie(
+        key=settings.refresh_cookie_name,
+        path=settings.refresh_cookie_path,
+        httponly=True,
+        secure=settings.refresh_cookie_secure,
+        samesite=settings.refresh_cookie_samesite,
+    )
 
 
 def _mfa_required(detail: str = "mfa code required") -> HTTPException:
@@ -164,6 +183,7 @@ async def _verify_second_factor(
 async def issue_token(
     payload: TokenRequest,
     request: Request,
+    response: Response,
     settings: Settings = Depends(get_app_settings),
     users: UserRepository = Depends(get_user_repository),
     refresh_tokens: RefreshTokenRepository = Depends(get_refresh_token_repository),
@@ -205,14 +225,14 @@ async def issue_token(
             await users.record_mfa_step(user.id, step)
         principal = _principal_for_user(user)
 
-    refresh_token: str | None = None
     if user is not None:
-        refresh_token, _ = await refresh_tokens.issue(
+        raw_refresh, _ = await refresh_tokens.issue(
             user.id,
             ttl_days=settings.refresh_token_expiry_days,
             user_agent=user_agent,
             ip_address=ip_address,
         )
+        _set_refresh_cookie(response, settings, raw_refresh)
     await _audit(
         audit,
         AuditEventType.USER_LOGIN_SUCCEEDED,
@@ -225,21 +245,35 @@ async def issue_token(
             "bootstrap_admin": user is None,
         },
     )
-    return _token_response(settings, principal, refresh_token=refresh_token)
+    return _token_response(settings, principal)
 
 
 @router.post("/refresh")
 async def refresh_token(
-    payload: RefreshTokenRequest,
+    request: Request,
+    response: Response,
+    payload: RefreshTokenRequest | None = None,
     settings: Settings = Depends(get_app_settings),
     users: UserRepository = Depends(get_user_repository),
     refresh_tokens: RefreshTokenRepository = Depends(get_refresh_token_repository),
 ) -> dict[str, object]:
-    """Rotate a refresh token and issue a fresh short-lived access token."""
+    """Rotate the HttpOnly refresh cookie and issue a fresh access token.
 
+    A body token is still accepted for non-browser API clients, but the cookie
+    takes precedence and the rotated token is only written to the cookie.
+    """
+
+    raw_refresh = request.cookies.get(settings.refresh_cookie_name)
+    if not raw_refresh and payload is not None:
+        raw_refresh = payload.refresh_token
+    if not raw_refresh:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="refresh token is missing",
+        )
     try:
-        raw_token, rotated = await refresh_tokens.rotate(
-            payload.refresh_token,
+        rotated_token, rotated = await refresh_tokens.rotate(
+            raw_refresh,
             ttl_days=settings.refresh_token_expiry_days,
         )
     except RefreshTokenReuseError as exc:
@@ -260,24 +294,33 @@ async def refresh_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="refresh token user is inactive",
         )
-    return _token_response(settings, _principal_for_user(user), refresh_token=raw_token)
+    _set_refresh_cookie(response, settings, rotated_token)
+    return _token_response(settings, _principal_for_user(user))
 
 
 @router.post("/logout")
 async def logout(
-    payload: LogoutRequest,
     request: Request,
+    response: Response,
+    payload: LogoutRequest | None = None,
     settings: Settings = Depends(get_app_settings),
-    principal: Principal = Depends(get_principal),
+    principal: Principal | None = Depends(get_optional_principal),
     users: UserRepository = Depends(get_user_repository),
     refresh_tokens: RefreshTokenRepository = Depends(get_refresh_token_repository),
     blocklist: TokenBlocklistRepository = Depends(get_token_blocklist_repository),
     audit: AuditService = Depends(get_audit_service),
 ) -> dict[str, object]:
-    """Revoke the current access JTI and, when supplied, its refresh token."""
+    """Revoke the refresh cookie/session, blocklist the JTI and clear the cookie.
 
-    user = await users.get_by_username(principal.sub)
-    if principal.jti is not None:
+    The access token is optional: an expired token must not stop the browser
+    from discarding and revoking its refresh cookie.
+    """
+
+    raw_refresh = request.cookies.get(settings.refresh_cookie_name)
+    if not raw_refresh and payload is not None:
+        raw_refresh = payload.refresh_token
+    user = await users.get_by_username(principal.sub) if principal is not None else None
+    if principal is not None and principal.jti is not None:
         await blocklist.revoke(
             principal.jti,
             user_id=user.id if user is not None else None,
@@ -285,14 +328,16 @@ async def logout(
             reason="logout",
         )
     refresh_revoked = False
-    if payload.refresh_token:
-        refresh_revoked = await refresh_tokens.revoke(payload.refresh_token)
+    if raw_refresh:
+        refresh_revoked = await refresh_tokens.revoke(raw_refresh)
+    _clear_refresh_cookie(response, settings)
     _, ip_address = _client_meta(request)
+    actor = principal.sub if principal is not None else "anonymous"
     await _audit(
         audit,
         AuditEventType.USER_LOGOUT,
-        actor=principal.sub,
-        entity_id=str(user.id) if user is not None else principal.sub,
+        actor=actor,
+        entity_id=str(user.id) if user is not None else actor,
         payload={"refresh_revoked": refresh_revoked, "ip_address": ip_address},
     )
     return {"status": "logged_out", "refresh_revoked": refresh_revoked}

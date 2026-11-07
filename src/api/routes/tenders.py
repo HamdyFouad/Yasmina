@@ -8,9 +8,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,7 +49,7 @@ from src.integrations.minio_client import (
     ObjectStorageError,
     object_name_for_tender,
 )
-from src.models.enums import ProcurementProcedure, TenderSourceFormat
+from src.models.enums import ProcurementProcedure, TenderSourceFormat, TenderStatus
 from src.models.schemas import CustomerOffer, Tender
 from src.parsers.gaeb_parser import GaebParseError, parse_gaeb
 from src.parsers.pdf_parser import PdfParseError, PdfParserUnavailable, parse_pdf
@@ -128,6 +129,14 @@ def _tender_or_404(tender_id: UUID, stored: StoredTender | None) -> StoredTender
     return stored
 
 
+def _is_sales_only(principal: Principal) -> bool:
+    return (
+        Role.SALES in principal.roles
+        and Role.ADMIN not in principal.roles
+        and Role.VIEWER not in principal.roles
+    )
+
+
 def _ensure_tender_access(tender: Tender, principal: Principal) -> None:
     if Role.ADMIN in principal.roles:
         return
@@ -166,6 +175,94 @@ def _export_target(settings: Settings, raw: str) -> Path:
         )
     target.parent.mkdir(parents=True, exist_ok=True)
     return target
+
+
+@router.get("")
+async def list_tenders(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    tender_status: TenderStatus | None = Query(default=None, alias="status"),
+    repository: TenderRepository = Depends(get_tender_repository),
+    principal: Principal = Depends(require_roles(Role.SALES, Role.VIEWER, Role.ADMIN)),
+) -> dict[str, Any]:
+    """List tenders; sales users only see the tenders they own."""
+
+    owner = principal.sub if _is_sales_only(principal) else None
+    tenders = await repository.list_tenders(
+        owner=owner,
+        status=tender_status,
+        limit=limit,
+        offset=offset,
+    )
+    total = await repository.count(owner=owner, status=tender_status)
+    return {
+        "tenders": [stored.tender.model_dump(mode="json") for stored in tenders],
+        "count": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.get("/{tender_id}")
+async def get_tender(
+    tender_id: UUID,
+    repository: TenderRepository = Depends(get_tender_repository),
+    principal: Principal = Depends(require_roles(Role.SALES, Role.VIEWER, Role.ADMIN)),
+) -> dict[str, Any]:
+    """Return one tender with its normalized positions."""
+
+    stored = _tender_or_404(tender_id, await repository.get(tender_id))
+    _ensure_tender_access(stored.tender, principal)
+    return {
+        "tender": stored.tender.model_dump(mode="json"),
+        "document": {
+            "filename": stored.source_filename,
+            "available": bool(stored.source_object),
+        },
+    }
+
+
+@router.get("/{tender_id}/document")
+async def download_tender_document(
+    tender_id: UUID,
+    repository: TenderRepository = Depends(get_tender_repository),
+    storage: MinioObjectStorage = Depends(get_object_storage),
+    principal: Principal = Depends(require_roles(Role.SALES, Role.VIEWER, Role.ADMIN)),
+) -> Response:
+    """Stream the original uploaded GAEB/PDF document from object storage."""
+
+    stored = _tender_or_404(tender_id, await repository.get(tender_id))
+    _ensure_tender_access(stored.tender, principal)
+    if not stored.source_object:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="this tender has no stored source document",
+        )
+    try:
+        if not await storage.exists(stored.source_object):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="source document not found",
+            )
+        data = await storage.get_bytes(stored.source_object)
+    except ObjectStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    filename = Path(stored.source_filename or stored.source_object).name
+    filename = filename.replace('"', "").replace("\r", "").replace("\n", "")
+    ascii_name = filename.encode("ascii", "replace").decode("ascii")
+    media_type = "application/pdf" if filename.lower().endswith(".pdf") else "application/xml"
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
+            )
+        },
+    )
 
 
 @router.post("/upload", status_code=status.HTTP_201_CREATED)

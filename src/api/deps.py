@@ -21,6 +21,7 @@ from src.repositories.ingestion_repository import TenderIngestionJobRepository
 from src.repositories.integration_repository import IntegrationRepository
 from src.repositories.invoice_repository import InvoiceRepository
 from src.repositories.offer_repository import OfferRepository
+from src.repositories.ops_repository import OpsRepository
 from src.repositories.supplier_quote_repository import SupplierQuoteRepository
 from src.repositories.tender_repository import TenderRepository
 from src.repositories.user_repository import (
@@ -45,6 +46,8 @@ __all__ = [
     "get_n8n_client",
     "get_object_storage",
     "get_offer_repository",
+    "get_ops_repository",
+    "get_optional_principal",
     "get_password_reset_repository",
     "get_principal",
     "get_refresh_token_repository",
@@ -98,6 +101,28 @@ async def get_principal(
             detail="bearer token has been revoked",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    return principal
+
+
+async def get_optional_principal(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    settings: Settings = Depends(get_app_settings),
+    session: AsyncSession = Depends(get_session),
+) -> Principal | None:
+    """Decode a bearer token when one is present, never raising.
+
+    Used by logout so an expired access token cannot prevent the refresh cookie
+    from being cleared and revoked.
+    """
+
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        return None
+    try:
+        principal = decode_access_token(credentials.credentials, settings)
+    except AuthError:
+        return None
+    if await TokenBlocklistRepository(session).is_revoked(principal.jti):
+        return None
     return principal
 
 
@@ -175,6 +200,12 @@ def get_invoice_repository(
     session: AsyncSession = Depends(get_session),
 ) -> InvoiceRepository:
     return InvoiceRepository(session)
+
+
+def get_ops_repository(
+    session: AsyncSession = Depends(get_session),
+) -> OpsRepository:
+    return OpsRepository(session)
 
 
 def get_credit_note_repository(

@@ -63,7 +63,6 @@ class YasminaUser(HttpUser):
                 f"load-test login failed with HTTP {response.status_code}: {response.text[:200]}"
             )
         self.access_token: str = response.json()["access_token"]
-        self.refresh_token: str | None = response.json().get("refresh_token")
         self.authorization = {"Authorization": f"Bearer {self.access_token}"}
 
     @task(2)

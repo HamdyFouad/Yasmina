@@ -1,55 +1,23 @@
 /**
- * Session storage.
+ * In-memory access-token store.
  *
- * - Access token: in memory only (never persisted), so an XSS cannot read it
- *   from storage and it disappears when the tab closes.
- * - Refresh token: `sessionStorage` (tab-scoped) because the backend returns it
- *   in the JSON body rather than setting an HttpOnly cookie. Moving it to an
- *   HttpOnly cookie is the recommended backend follow-up; until then this is a
- *   deliberate usability/security trade-off documented in the README.
+ * The access token deliberately lives in a module variable (never
+ * `localStorage`/`sessionStorage`), so an XSS cannot read a persisted bearer
+ * token. The refresh token is an HttpOnly cookie managed entirely by the API,
+ * which means a page reload restores the session by calling `/auth/refresh`
+ * with `withCredentials: true`.
  */
 
-const REFRESH_TOKEN_KEY = 'yasmina.refresh_token'
-
 let accessToken: string | null = null
-
-export interface SessionTokens {
-  accessToken: string
-  refreshToken?: string
-}
 
 export function getAccessToken(): string | null {
   return accessToken
 }
 
-export function getRefreshToken(): string | null {
-  try {
-    return window.sessionStorage.getItem(REFRESH_TOKEN_KEY)
-  } catch {
-    return null
-  }
-}
-
-export function setSession(tokens: SessionTokens): void {
-  accessToken = tokens.accessToken
-  if (tokens.refreshToken) {
-    try {
-      window.sessionStorage.setItem(REFRESH_TOKEN_KEY, tokens.refreshToken)
-    } catch {
-      // Storage can be unavailable (private mode); the session still works in memory.
-    }
-  }
+export function setAccessToken(token: string): void {
+  accessToken = token
 }
 
 export function clearSession(): void {
   accessToken = null
-  try {
-    window.sessionStorage.removeItem(REFRESH_TOKEN_KEY)
-  } catch {
-    // Ignore unavailable storage.
-  }
-}
-
-export function hasRefreshToken(): boolean {
-  return getRefreshToken() !== null
 }

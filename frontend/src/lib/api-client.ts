@@ -6,13 +6,7 @@ import { toast } from 'sonner'
 
 import { toApiError, ApiError } from '@/lib/api-error'
 import { API_BASE_URL, API_TIMEOUT_MS } from '@/lib/env'
-import {
-  clearSession,
-  getAccessToken,
-  getRefreshToken,
-  hasRefreshToken,
-  setSession,
-} from '@/lib/token-store'
+import { clearSession, getAccessToken, setAccessToken } from '@/lib/token-store'
 import type { TokenResponse } from '@/types/auth'
 
 export const SESSION_EXPIRED_EVENT = 'yasmina:session-expired'
@@ -24,6 +18,9 @@ interface RetriableConfig extends InternalAxiosRequestConfig {
 export const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: API_TIMEOUT_MS,
+  // Required for the HttpOnly refresh cookie; the API also enables CORS
+  // credentials for separately hosted dashboards.
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -51,20 +48,15 @@ function isAuthEndpoint(url: string | undefined): boolean {
 }
 
 async function performRefresh(): Promise<string> {
-  const refreshToken = getRefreshToken()
-  if (!refreshToken) {
-    throw new ApiError('No refresh token is available for this session.', { status: 401 })
-  }
-  // Bare axios (not the `api` instance) prevents interceptor recursion.
+  // Bare axios (not the `api` instance) prevents interceptor recursion. The
+  // refresh token travels only as the HttpOnly cookie, so the request has no
+  // body and must opt into credentials explicitly.
   const response = await axios.post<TokenResponse>(
     `${API_BASE_URL}/auth/refresh`,
-    { refresh_token: refreshToken },
-    { timeout: API_TIMEOUT_MS, headers: { 'Content-Type': 'application/json' } },
+    undefined,
+    { timeout: API_TIMEOUT_MS, withCredentials: true },
   )
-  setSession({
-    accessToken: response.data.access_token,
-    ...(response.data.refresh_token ? { refreshToken: response.data.refresh_token } : {}),
-  })
+  setAccessToken(response.data.access_token)
   return response.data.access_token
 }
 
@@ -90,13 +82,7 @@ api.interceptors.response.use(
     const config = error.config as RetriableConfig | undefined
     const status = error.response?.status ?? null
 
-    if (
-      status === 401 &&
-      config !== undefined &&
-      config._retry !== true &&
-      !isAuthEndpoint(config.url) &&
-      hasRefreshToken()
-    ) {
+    if (status === 401 && config !== undefined && config._retry !== true && !isAuthEndpoint(config.url)) {
       config._retry = true
       try {
         const token = await refreshAccessToken()

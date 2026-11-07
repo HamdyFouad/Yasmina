@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from src.api.deps import (
     get_credit_note_repository,
     get_invoice_repository,
+    get_object_storage,
     get_offer_repository,
     get_session,
 )
@@ -37,14 +38,17 @@ class FakeSession:
 class FakeInvoiceRepository:
     def __init__(self) -> None:
         self.invoice_id = uuid4()
+        self.offer_id = uuid4()
         self.payments: list[tuple[UUID, Any, str | None]] = []
         self.record = SimpleNamespace(
+            offer_id=self.offer_id,
+            invoice=SimpleNamespace(invoice_number="INV-2026-0001"),
             as_dict=lambda: {
                 "id": str(self.invoice_id),
                 "invoice_number": "INV-2026-0001",
                 "status": "ISSUED",
                 "total_gross": "119.00",
-            }
+            },
         )
 
     async def list(self, **kwargs: Any) -> list[Any]:
@@ -92,11 +96,33 @@ class FakeCreditNoteRepository:
 
 
 class FakeOfferRepository:
+    def __init__(self, *, owner: str = "sales-a") -> None:
+        self.owner = owner
+
     async def get(self, offer_id: UUID) -> Any:
-        return SimpleNamespace(offer=SimpleNamespace(owner="sales-a"))
+        return SimpleNamespace(offer=SimpleNamespace(owner=self.owner, offer_number="ANG-2026-0001"))
 
 
-def make_client() -> tuple[TestClient, FakeInvoiceRepository, FakeCreditNoteRepository, str]:
+class FakeStorage:
+    def __init__(self, *, present: bool = True) -> None:
+        self.present = present
+        self.requested: list[str] = []
+
+    async def exists(self, object_name: str) -> bool:
+        return self.present
+
+    async def get_bytes(self, object_name: str) -> bytes:
+        self.requested.append(object_name)
+        return b"%PDF-1.7 invoice"
+
+
+def make_client(
+    *,
+    offer_owner: str = "sales-a",
+    storage_present: bool = True,
+    subject: str = "admin-user",
+    roles: list[Role] | None = None,
+) -> tuple[TestClient, FakeInvoiceRepository, FakeCreditNoteRepository, str]:
     settings = make_settings()
     invoices = FakeInvoiceRepository()
     credits = FakeCreditNoteRepository()
@@ -104,8 +130,9 @@ def make_client() -> tuple[TestClient, FakeInvoiceRepository, FakeCreditNoteRepo
     app.dependency_overrides[get_session] = lambda: FakeSession()
     app.dependency_overrides[get_invoice_repository] = lambda: invoices
     app.dependency_overrides[get_credit_note_repository] = lambda: credits
-    app.dependency_overrides[get_offer_repository] = lambda: FakeOfferRepository()
-    token = create_access_token(settings, "admin-user", [Role.ADMIN])
+    app.dependency_overrides[get_offer_repository] = lambda: FakeOfferRepository(owner=offer_owner)
+    app.dependency_overrides[get_object_storage] = lambda: FakeStorage(present=storage_present)
+    token = create_access_token(settings, subject, roles or [Role.ADMIN])
     return TestClient(app), invoices, credits, token
 
 
@@ -145,3 +172,74 @@ def test_invoice_detail_and_events() -> None:
         assert response.status_code == 200, response.text
         assert response.json()["event_chain_valid"] is True
         assert response.json()["events"][0]["event_type"] == "ISSUED"
+
+
+def test_invoice_document_downloads_resolve_the_offer_number() -> None:
+    client, invoices, _, token = make_client()
+    with client:
+        pdf = client.get(
+            f"/api/v1/invoices/{invoices.invoice_id}/documents/zugferd",
+            headers=auth(token),
+        )
+        assert pdf.status_code == 200, pdf.text
+        assert pdf.headers["content-type"] == "application/pdf"
+        assert 'filename="INV-2026-0001.pdf"' in pdf.headers["content-disposition"]
+        assert pdf.content.startswith(b"%PDF")
+
+        xml = client.get(
+            f"/api/v1/invoices/{invoices.invoice_id}/documents/xrechnung",
+            headers=auth(token),
+        )
+        assert xml.status_code == 200, xml.text
+        assert xml.headers["content-type"] == "application/xml"
+        assert 'filename="INV-2026-0001.xml"' in xml.headers["content-disposition"]
+
+        unknown_format = client.get(
+            f"/api/v1/invoices/{invoices.invoice_id}/documents/paper",
+            headers=auth(token),
+        )
+        assert unknown_format.status_code == 404
+        assert "zugferd" in unknown_format.json()["detail"]
+
+        unknown_invoice = client.get(
+            f"/api/v1/invoices/{uuid4()}/documents/zugferd",
+            headers=auth(token),
+        )
+        assert unknown_invoice.status_code == 404
+
+
+def test_invoice_documents_report_ungenerated_files() -> None:
+    client, invoices, _, token = make_client(storage_present=False)
+    with client:
+        response = client.get(
+            f"/api/v1/invoices/{invoices.invoice_id}/documents/zugferd",
+            headers=auth(token),
+        )
+        assert response.status_code == 404
+        assert "generated" in response.json()["detail"]
+
+
+def test_sales_users_only_download_their_own_invoice_documents() -> None:
+    client, invoices, _, token = make_client(
+        offer_owner="sales-a",
+        subject="sales-a",
+        roles=[Role.SALES],
+    )
+    with client:
+        allowed = client.get(
+            f"/api/v1/invoices/{invoices.invoice_id}/documents/xrechnung",
+            headers=auth(token),
+        )
+        assert allowed.status_code == 200, allowed.text
+
+    other, other_invoices, _, other_token = make_client(
+        offer_owner="sales-b",
+        subject="sales-a",
+        roles=[Role.SALES],
+    )
+    with other:
+        forbidden = other.get(
+            f"/api/v1/invoices/{other_invoices.invoice_id}/documents/xrechnung",
+            headers=auth(other_token),
+        )
+        assert forbidden.status_code == 403

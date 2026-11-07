@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     password_min_length: int = Field(default=12, ge=8, le=128)
     password_hash_algorithm: Literal["argon2id"] = "argon2id"
     password_reset_token_expiry_minutes: int = Field(default=15, ge=1, le=1440)
+    # Refresh token cookie: HttpOnly, SameSite=Strict by default. Secure must be
+    # enabled behind HTTPS (set REFRESH_COOKIE_SECURE=true in production).
+    refresh_cookie_name: str = Field(default="yasmina_refresh_token", min_length=1, max_length=64)
+    refresh_cookie_secure: bool = False
+    refresh_cookie_samesite: Literal["lax", "strict", "none"] = "strict"
+    refresh_cookie_path: str = "/api/v1/auth"
     max_upload_size_mb: int = Field(default=25, ge=1, le=200)
 
     # --- MFA / TOTP --------------------------------------------------------

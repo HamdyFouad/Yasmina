@@ -30,6 +30,7 @@ async def list_offers(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     offer_status: CustomerOfferStatus | None = Query(default=None, alias="status"),
+    tender_id: UUID | None = Query(default=None),
     repository: OfferRepository = Depends(get_offer_repository),
     principal: Principal = Depends(require_roles(Role.SALES, Role.VIEWER, Role.ADMIN)),
 ) -> dict[str, Any]:
@@ -41,8 +42,9 @@ async def list_offers(
         offset=offset,
         owner=owner,
         status=offer_status,
+        tender_id=tender_id,
     )
-    total = await repository.count(owner=owner, status=offer_status)
+    total = await repository.count(owner=owner, status=offer_status, tender_id=tender_id)
     return {
         "offers": [offer.model_dump(mode="json") for offer in offers],
         "count": total,

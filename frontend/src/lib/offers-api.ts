@@ -11,12 +11,14 @@ export async function fetchOffers(params: {
   limit?: number
   offset?: number
   status?: CustomerOfferStatus
+  tenderId?: string
 } = {}): Promise<OfferListResponse> {
   const response = await api.get<OfferListResponse>('/offers', {
     params: {
       ...(params.limit !== undefined ? { limit: params.limit } : {}),
       ...(params.offset !== undefined ? { offset: params.offset } : {}),
       ...(params.status !== undefined ? { status: params.status } : {}),
+      ...(params.tenderId !== undefined ? { tender_id: params.tenderId } : {}),
     },
   })
   return response.data

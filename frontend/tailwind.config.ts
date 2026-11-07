@@ -75,6 +75,25 @@ export default {
       boxShadow: {
         card: '0 1px 2px 0 rgb(15 23 42 / 0.04), 0 1px 3px 0 rgb(15 23 42 / 0.06)',
       },
+      keyframes: {
+        'fade-in': {
+          from: { opacity: '0' },
+          to: { opacity: '1' },
+        },
+        'slide-in-right': {
+          from: { transform: 'translateX(100%)' },
+          to: { transform: 'translateX(0)' },
+        },
+        'zoom-in': {
+          from: { opacity: '0', transform: 'translate(-50%, -50%) scale(0.97)' },
+          to: { opacity: '1', transform: 'translate(-50%, -50%) scale(1)' },
+        },
+      },
+      animation: {
+        'fade-in': 'fade-in 150ms ease-out',
+        'slide-in-right': 'slide-in-right 220ms cubic-bezier(0.22, 1, 0.36, 1)',
+        'zoom-in': 'zoom-in 150ms ease-out',
+      },
     },
   },
 } satisfies Config

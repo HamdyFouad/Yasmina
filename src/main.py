@@ -100,7 +100,7 @@ def create_app(settings: Settings | None = None, *, run_startup_checks: bool = T
         application.add_middleware(
             CORSMiddleware,
             allow_origins=middleware_settings.cors_origins,
-            allow_credentials=False,
+            allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
             expose_headers=[
@@ -118,6 +118,7 @@ def create_app(settings: Settings | None = None, *, run_startup_checks: bool = T
     application.include_router(offers.router, prefix="/api/v1")
     application.include_router(invoices.router, prefix="/api/v1")
     application.include_router(integrations.router, prefix="/api/v1")
+    application.include_router(ops.api_router, prefix="/api/v1")
     application.include_router(ops.router)
 
     @application.get("/healthz", tags=["ops"])

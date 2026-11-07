@@ -12,9 +12,9 @@ export function OffersPage() {
       />
       <EmptyState
         icon={Tags}
-        title="Offer workspace is queued for the next phase"
-        description="GET /offers and GET /offers/{id} are already available. This view will add status filtering, line detail and approval state."
-        hint="Four-eyes approval remains in POST /approvals/approve."
+        title="Offer workspace is not built yet"
+        description="Pricing is currently reviewed inside the tender detail sheet, which lists every customer offer linked to a tender with its line and VAT breakdown."
+        hint="Open Tenders → select a tender → “Pricing & linked offers”."
       />
     </div>
   )

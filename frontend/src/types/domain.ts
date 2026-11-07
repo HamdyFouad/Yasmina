@@ -226,6 +226,51 @@ export interface InvoiceListResponse {
   offset: number
 }
 
+export type InvoiceDocumentFormat = 'zugferd' | 'xrechnung'
+
+export interface TenderDocument {
+  filename: string | null
+  available: boolean
+}
+
+export interface TenderListResponse {
+  tenders: Tender[]
+  count: number
+  limit: number
+  offset: number
+}
+
+export interface TenderDetailResponse {
+  tender: Tender
+  document: TenderDocument
+}
+
+export interface ActivityEvent {
+  id: number
+  occurred_at: string
+  event_type: string
+  actor: string
+  entity_type: string
+  entity_id: string
+  payload: Record<string, unknown>
+}
+
+export interface ActivityResponse {
+  events: ActivityEvent[]
+  count: number
+}
+
+export interface OpsSummary {
+  tenders: number
+  offers: number
+  pending_approvals: number
+  invoices: number
+  overdue_invoices: number
+  gross_invoiced: string
+  gross_paid: string
+  currency: Currency
+}
+
 export interface InvoiceDetailResponse {
   invoice: Invoice
   events: InvoiceEvent[]
@@ -258,7 +303,7 @@ export interface MatchCandidate {
   description: string
   score: number
   lexical_score: number
-  semantic_score: number
+  semantic_score: number | null
   matched_attributes: string[]
   reasons: string[]
 }
