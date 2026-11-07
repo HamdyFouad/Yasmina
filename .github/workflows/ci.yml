@@ -275,7 +275,7 @@ jobs:
         run: docker build --build-arg INSTALL_EXTRAS="ai,e-invoicing" -t yasmina-api:security .
 
       - name: Trivy image vulnerability scan
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: yasmina-api:security
           format: table
