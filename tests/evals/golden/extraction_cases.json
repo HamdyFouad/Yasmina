@@ -1,6 +1,7 @@
 [
   {
     "id": "nitrile-gloves-m",
+    "category": "gloves",
     "text": "Nitrilhandschuhe blau, Größe M, 100 Stück pro Packung, puderfrei",
     "expected": {
       "material": "NITRILE",
@@ -11,6 +12,7 @@
   },
   {
     "id": "latex-gloves-8",
+    "category": "gloves",
     "text": "Naturlatex Handschuhe, transparent, Gr. 8, Karton à 1000 Stück",
     "expected": {
       "material": "LATEX",
@@ -20,7 +22,63 @@
     }
   },
   {
+    "id": "nitrile-black-xl",
+    "category": "gloves",
+    "text": "Nitrilhandschuhe schwarz, Größe XL, puderfrei, 100 Stück pro Box",
+    "expected": {
+      "material": "NITRILE",
+      "color": "BLACK",
+      "glove_size": "XL",
+      "pack_size": 100
+    }
+  },
+  {
+    "id": "nitrile-blue-size-7",
+    "category": "gloves",
+    "text": "Nitril-Einweghandschuhe blau, Gr. 7, 200 Stück pro Packung",
+    "expected": {
+      "material": "NITRILE",
+      "color": "BLUE",
+      "glove_size": "S",
+      "pack_size": 200
+    }
+  },
+  {
+    "id": "nitrile-carton-size-9",
+    "category": "gloves",
+    "text": "Nitrilhandschuhe blau, Größe 9, unsteril, Karton à 1000 Stück",
+    "expected": {
+      "material": "NITRILE",
+      "color": "BLUE",
+      "glove_size": "L",
+      "pack_size": 1000
+    }
+  },
+  {
+    "id": "nitrile-white-xs",
+    "category": "gloves",
+    "text": "Nitrilhandschuhe weiß, Größe XS, 100 Stück",
+    "expected": {
+      "material": "NITRILE",
+      "color": "WHITE",
+      "glove_size": "XS",
+      "pack_size": 100
+    }
+  },
+  {
+    "id": "nitrile-orange-xxl",
+    "category": "gloves",
+    "text": "Nitrilhandschuhe orange, Größe XXL, 50 Stück pro Packung",
+    "expected": {
+      "material": "NITRILE",
+      "color": "ORANGE",
+      "glove_size": "XXL",
+      "pack_size": 50
+    }
+  },
+  {
     "id": "paper-towels",
+    "category": "paper",
     "text": "Papierhandtücher 2-lagig, weiß, 20 Packungen je Karton, 200 Blatt",
     "expected": {
       "material": "PAPER",
@@ -30,13 +88,113 @@
     }
   },
   {
+    "id": "paper-towels-recycled",
+    "category": "paper",
+    "text": "Recyclingpapier-Handtücher, 1-lagig, weiß, 4000 Blatt pro Karton",
+    "expected": {
+      "material": "RECYCLED_PAPER",
+      "color": "WHITE",
+      "glove_size": "NOT_APPLICABLE",
+      "pack_size": 4000
+    }
+  },
+  {
+    "id": "kitchen-rolls",
+    "category": "paper",
+    "text": "Küchenrollen aus Papier, 3-lagig, weiß, 4 Rollen pro Packung",
+    "expected": {
+      "material": "PAPER",
+      "color": "WHITE",
+      "glove_size": "NOT_APPLICABLE",
+      "pack_size": 4
+    }
+  },
+  {
+    "id": "paper-towels-blue",
+    "category": "paper",
+    "text": "Papierhandtücher blau, 2-lagig, 200 Blatt pro Packung",
+    "expected": {
+      "material": "PAPER",
+      "color": "BLUE",
+      "glove_size": "NOT_APPLICABLE",
+      "pack_size": 200
+    }
+  },
+  {
+    "id": "toilet-paper-recycled",
+    "category": "paper",
+    "text": "Toilettenpapier aus Recyclingpapier, 3-lagig, weiß, 8 Rollen pro Packung",
+    "expected": {
+      "material": "RECYCLED_PAPER",
+      "color": "WHITE",
+      "glove_size": "NOT_APPLICABLE",
+      "pack_size": 8
+    }
+  },
+  {
+    "id": "tissue-packs",
+    "category": "paper",
+    "text": "Papiertaschentücher, weiß, 10 Packungen à 10 Tücher",
+    "expected": {
+      "material": "PAPER",
+      "color": "WHITE",
+      "glove_size": "NOT_APPLICABLE",
+      "pack_size": 10
+    }
+  },
+  {
     "id": "waste-bags",
+    "category": "waste",
     "text": "Müllsäcke 120 Liter, blau, 25 Stück pro Rolle",
     "expected": {
       "material": "POLYETHYLENE",
       "color": "BLUE",
       "glove_size": "NOT_APPLICABLE",
       "pack_size": 25
+    }
+  },
+  {
+    "id": "waste-bags-60-black",
+    "category": "waste",
+    "text": "Müllbeutel aus Polyethylen, 60 Liter, schwarz, 20 Stück pro Rolle",
+    "expected": {
+      "material": "POLYETHYLENE",
+      "color": "BLACK",
+      "glove_size": "NOT_APPLICABLE",
+      "pack_size": 20
+    }
+  },
+  {
+    "id": "waste-bags-240-grey-hdpe",
+    "category": "waste",
+    "text": "Müllsäcke aus HDPE, 240 Liter, grau, 10 Stück pro Rolle",
+    "expected": {
+      "material": "POLYETHYLENE",
+      "color": "GREY",
+      "glove_size": "NOT_APPLICABLE",
+      "pack_size": 10
+    }
+  },
+  {
+    "id": "waste-bags-yellow",
+    "category": "waste",
+    "text": "Abfallsäcke aus Polyethylen, 120 Liter, gelb, 25 Stück pro Rolle",
+    "expected": {
+      "material": "POLYETHYLENE",
+      "color": "YELLOW",
+      "glove_size": "NOT_APPLICABLE",
+      "pack_size": 25
+    }
+  },
+  {
+    "id": "waste-bags-30-transparent",
+    "category": "waste",
+    "text": "Müllbeutel aus LDPE, 30 Liter, transparent, 50 Stück pro Rolle",
+    "expected": {
+      "material": "POLYETHYLENE",
+      "color": "TRANSPARENT",
+      "glove_size": "NOT_APPLICABLE",
+      "pack_size": 50
     }
   }
 ]

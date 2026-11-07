@@ -44,6 +44,8 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert "CREATE TABLE invoice_events" in sql
     assert "CREATE TABLE password_reset_tokens" in sql
     assert "ALTER TABLE users ADD COLUMN mfa_enabled" in sql
+    assert "ALTER TABLE catalog_articles ADD COLUMN manual_overrides" in sql
+    assert "ALTER TABLE catalog_articles ADD COLUMN embedding_model" in sql
     assert "CREATE TRIGGER trg_invoice_events_append_only" in sql
     assert "CREATE TRIGGER trg_invoice_events_no_truncate" in sql
     assert "ALTER TABLE tenders ADD COLUMN owner" in sql

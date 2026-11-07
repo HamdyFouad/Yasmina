@@ -24,7 +24,10 @@ waste bags across all thicknesses, volumes and colour standards.
 > with TOTP MFA, password resets, global logout, hashed reset tokens and a
 > token-retention CLI are complete. P5 adds a hardened multi-stage production
 > image, an isolated compose stack, structured JSON logging with Prometheus
-> metrics, and encrypted PostgreSQL backups uploaded to MinIO.
+> metrics, and encrypted PostgreSQL backups uploaded to MinIO. Catalogue
+> operations add merge-safe re-imports with manual-override protection, batched
+> retrying embeddings, a safe pgvector reindex command and a broader German
+> extraction golden set.
 
 ---
 
@@ -118,6 +121,7 @@ src/
     unit_converter.py    # auditable CARTON/PACK/PIECE/ROLL conversions
     password_service.py  # Argon2id hashing and password policy
     embedding_service.py # OpenAI-compatible / local / hashing embeddings
+    embedding_pipeline.py # batching, 429/5xx retries and progress reporting
     ingestion_processor.py # PDF/GAEB parsing + triage worker
     worker_lock.py       # PostgreSQL advisory locks per portal
     worker_metrics.py    # worker health snapshot aggregation
@@ -540,7 +544,7 @@ cron entry keeps both discovery and parsing moving.
 python -m pytest -q
 ```
 
-The current 359 tests pass (plus twenty-three optional tests — twenty live
+The current 376 tests pass (plus twenty-seven optional tests — twenty-four live
 PostgreSQL tests, two MinIO/ClamAV smoke tests and the DeepSeek eval — that are
 skipped unless their environment variables are set) and cover normalizers, settings, strict schemas,
 ORM metadata, pgvector/HNSW configuration, GAEB parsing/validation, PDF table
@@ -552,8 +556,9 @@ append-only invoice event chain, billing/payment/credit API routes, Argon2id
 users, RFC 6238 TOTP vectors, MFA enrolment/login challenges, password reset
 tokens and token retention, refresh-token rotation/reuse detection, JWT
 blocklisting, four-eyes
-approval, tender/offer ownership, rate limiting, catalogue CSV/JSON seeding and
-vector upserts, deepseek extraction evals, durable ingestion outbox
+approval, tender/offer ownership, rate limiting, catalogue CSV/JSON seeding,
+merge-safe re-imports, manual-override protection, batched embedding retries,
+catalogue reindexing, extraction evals, durable ingestion outbox
 claiming/retry,
 attachment harvesting and watermarking, advisory locking, signal-driven
 shutdown, worker run metrics, Telegram delivery, ClamAV scanning and audit
@@ -619,7 +624,7 @@ converted = UnitConverter().convert_line(quote_line, UnitOfMeasure.STUECK)
 priced = PricingService().price_line(converted, quantity=Decimal("5000"))
 ```
 
-### Catalogue seeding
+### Catalogue seeding, merging and reindexing
 
 ```powershell
 # CSV: article_number, description, supplier, material, color, glove_size, unit,
@@ -627,12 +632,39 @@ priced = PricingService().price_line(converted, quantity=Decimal("5000"))
 python -m src.admin seed-catalog --file catalog.csv
 python -m src.admin seed-catalog --file catalog.json --embedding-provider local
 python -m src.admin seed-catalog --file catalog.csv --dry-run
+# let the file win over pinned manual overrides
+python -m src.admin seed-catalog --file catalog.csv --ignore-manual-overrides
+
+# recompute pgvector embeddings in place (after a model upgrade)
+python -m src.admin reindex-catalog --dry-run --json
+python -m src.admin reindex-catalog --batch-size 64
+python -m src.admin reindex-catalog --only-missing
 ```
 
 The CLI (`yasmina-admin seed-catalog`) validates each row, maps German material /
 colour / size / unit text through the normalizers, generates embeddings and
 upserts `catalog_articles` by `(supplier, article_number)`.
 
+- **Merge, don't clobber.** Re-importing a supplier file updates prices and specs
+  but never clears fields the file omits. Rows can pin fields via
+  `catalog_articles.manual_overrides` (for example `["description",
+  "unit_price_net"]`); those fields survive imports until
+  `--ignore-manual-overrides` is used, which writes the file values and clears
+  the pins it repaired. Unknown attribute keys are merged, not replaced.
+- **Duplicates collapse.** Repeated `(supplier, article_number)` rows inside one
+  file are reduced to the last occurrence and reported as `duplicates`; the
+  database unique constraint still guarantees a single row per pair.
+- **Batched, retrying embeddings.** Imports embed in
+  `EMBEDDING_BATCH_SIZE` batches with exponential backoff for HTTP 429/5xx
+  responses (`EMBEDDING_MAX_RETRIES`, `EMBEDDING_RETRY_BACKOFF_SECONDS`), honour
+  `Retry-After`, and print per-batch progress (`created`/`updated`/`duplicates`
+  plus batch and retry counts in `--json` output).
+- **Safe reindex.** `reindex-catalog` pages through existing rows by primary key,
+  recomputes the embedding text and updates `embedding`/`embedding_model` in
+  place — no rows are deleted, batches commit independently, and an interrupted
+  run can simply be restarted. `--only-missing` backfills NULL embeddings,
+  `--respect-overrides` skips rows whose embedding is manually pinned, and each
+  run appends `SYSTEM_CATALOG_REINDEXED` to the audit log.
 - `auto` uses an OpenAI-compatible embeddings endpoint when
   `EMBEDDING_API_KEY` or `DEEPSEEK_API_KEY` is configured, otherwise hashing
   vectors are refused unless `--allow-hash-embeddings` is explicit.
@@ -640,15 +672,17 @@ upserts `catalog_articles` by `(supplier, article_number)`.
   `catalogue` extra).
 - `--embedding-provider hashing` is deterministic and intended for offline tests
   and CI only; it is not a semantic model.
-- `--dry-run` validates rows without calling an embedding endpoint or writing the
-  database.
+- `--dry-run` validates rows (and reports duplicate counts/batch estimates)
+  without calling an embedding endpoint or writing the database.
 
 ### AI extraction evals
 
-`tests/evals/golden/extraction_cases.json` holds German tender snippets with
-expected material, colour, glove-size and pack-size values. The offline integrity
-test always runs; when `DEEPSEEK_API_KEY` is set, the eval calls the live client
-and fails if field accuracy drops below the 85 % baseline:
+`tests/evals/golden/extraction_cases.json` holds 19 German tender snippets across
+paper towels, nitrile/latex gloves and garbage bags with expected material,
+colour, glove-size and pack-size values. The offline integrity test always runs
+and asserts the three product categories stay covered; when `DEEPSEEK_API_KEY`
+is set, the eval calls the live client and fails if field accuracy drops below
+the 85 % baseline:
 
 ```powershell
 $env:DEEPSEEK_API_KEY = "..."
@@ -892,7 +926,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | ClamAV | `CLAMAV_HOST`, `CLAMAV_PORT`, `CLAMAV_TIMEOUT_SECONDS` |
 | Preflight | `PREFLIGHT_TIMEOUT_SECONDS` |
 | DeepSeek | `DEEPSEEK_ENABLED`, `DEEPSEEK_API_KEY`, `DEEPSEEK_CHAT_MODEL`, `DEEPSEEK_REASONER_MODEL` |
-| Embeddings | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_TIMEOUT_SECONDS`, `EMBEDDING_BATCH_SIZE` |
+| Embeddings | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_TIMEOUT_SECONDS`, `EMBEDDING_BATCH_SIZE`, `EMBEDDING_MAX_RETRIES`, `EMBEDDING_RETRY_BACKOFF_SECONDS` |
 | Embeddings | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` (BGE-M3, 1024) |
 | n8n | `N8N_WEBHOOK_BASE_URL`, `N8N_WEBHOOK_HMAC_SECRET`, `N8N_RFQ_WEBHOOK_PATH`, `N8N_CALLBACK_URL`, `N8N_CALLBACK_MAX_AGE_SECONDS` |
 | Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_APPROVAL_CHAT_ID`, `TELEGRAM_ALERTS_ENABLED`, `TELEGRAM_TIMEOUT_SECONDS`, `TELEGRAM_MAX_RETRIES`, `TELEGRAM_RETRY_BACKOFF_SECONDS` |
@@ -1018,6 +1052,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P4.7 — embedded-font PDF/A-3 with a veraPDF CI gate, `GET /invoices` + payment and credit-note REST endpoints, gapless `GS-YYYY-XXXX` credit notes and a GoBD append-only hash-chained invoice event log
 - [x] P4.8 — password change/reset flows, TOTP MFA with replay protection, logout-all, identity audit events and a refresh-token/token-blocklist retention CLI
 - [x] P5.1 — multi-stage non-root production image, isolated compose stack with resource limits, structured JSON logging, Prometheus `/metrics` (HTTP latency/errors and LangGraph durations), encrypted `pg_dump` backups to MinIO and a CI Docker build gate
+- [x] P5.2 — merge-safe catalogue re-imports with manual-override protection and duplicate collapsing, batched embedding pipeline with 429/5xx retries and progress reporting, safe `reindex-catalog` backfill and a 19-case German extraction golden set
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

@@ -75,6 +75,13 @@ def test_catalog_embedding_is_pgvector_with_hnsw() -> None:
     assert options["using"] == "hnsw"
     assert options["ops"] == {"embedding": "vector_cosine_ops"}
     assert options["with"] == {"m": 16, "ef_construction": 64}
+    assert table.c.manual_overrides.nullable is False
+    assert table.c.manual_overrides.type.__class__.__name__ == "JSONB"
+    assert "ck_catalog_articles_manual_overrides_array" in {
+        constraint.name for constraint in table.constraints
+    }
+    assert table.c.last_imported_at.nullable is True
+    assert table.c.embedding_model.type.length == 128
 
 
 def test_audit_log_is_hash_chained_and_constrained() -> None:

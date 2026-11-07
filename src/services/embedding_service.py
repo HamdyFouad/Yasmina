@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import math
 from collections.abc import Sequence
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 
 import httpx
@@ -14,6 +16,9 @@ from src.config import Settings
 __all__ = [
     "EmbeddingError",
     "EmbeddingProvider",
+    "EmbeddingRateLimitError",
+    "EmbeddingRetryableError",
+    "EmbeddingTransientError",
     "HashingEmbeddingProvider",
     "OpenAIEmbeddingProvider",
     "SentenceTransformerEmbeddingProvider",
@@ -24,6 +29,38 @@ __all__ = [
 
 class EmbeddingError(RuntimeError):
     """Raised when an embedding provider cannot produce a valid vector."""
+
+
+class EmbeddingRetryableError(EmbeddingError):
+    """Base class for transient failures the batching pipeline may retry."""
+
+    def __init__(self, message: str, *, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class EmbeddingRateLimitError(EmbeddingRetryableError):
+    """Raised when the embedding endpoint answers HTTP 429."""
+
+
+class EmbeddingTransientError(EmbeddingRetryableError):
+    """Raised for timeouts, transport errors and HTTP 5xx responses."""
+
+
+def _retry_after_seconds(raw: str | None) -> float | None:
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        moment = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return max(0.0, (moment - datetime.now(UTC)).total_seconds())
 
 
 class EmbeddingProvider(Protocol):
@@ -130,9 +167,23 @@ class OpenAIEmbeddingProvider:
                         json=payload,
                         headers=headers,
                     )
+        except httpx.TimeoutException as exc:
+            raise EmbeddingTransientError(f"embedding request timed out: {exc}") from exc
+        except httpx.TransportError as exc:
+            raise EmbeddingTransientError(f"embedding request failed: {exc}") from exc
         except httpx.HTTPError as exc:
             raise EmbeddingError(f"embedding request failed: {exc}") from exc
 
+        if response.status_code == 429:
+            retry_after = _retry_after_seconds(response.headers.get("retry-after"))
+            raise EmbeddingRateLimitError(
+                f"embedding endpoint rate limited (429): {response.text[:300]}",
+                retry_after=retry_after,
+            )
+        if 500 <= response.status_code < 600:
+            raise EmbeddingTransientError(
+                f"embedding endpoint returned {response.status_code}: {response.text[:300]}"
+            )
         if not 200 <= response.status_code < 300:
             raise EmbeddingError(f"embedding endpoint returned {response.status_code}: {response.text[:500]}")
         try:

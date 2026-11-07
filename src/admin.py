@@ -8,7 +8,7 @@ import csv
 import json
 import logging
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -24,7 +24,11 @@ from src.parsers.normalizers import (
     normalize_pack_size,
     normalize_unit_of_measure,
 )
-from src.repositories.catalog_repository import CatalogRepository, CatalogSeedItem
+from src.repositories.catalog_repository import (
+    CatalogRepository,
+    CatalogSeedItem,
+    dedupe_catalog_items,
+)
 from src.services.audit_service import AuditService
 from src.services.backup_service import (
     BackupError,
@@ -32,8 +36,10 @@ from src.services.backup_service import (
     generate_backup_key,
     run_postgres_backup,
 )
+from src.services.embedding_pipeline import EmbeddingBatchProgress, embed_in_batches
 from src.services.embedding_service import (
     EmbeddingError,
+    EmbeddingProvider,
     HashingEmbeddingProvider,
     build_embedding_provider,
     embedding_text,
@@ -207,16 +213,22 @@ async def seed_catalog(
     embedding_provider: str = "auto",
     allow_hash_embeddings: bool = False,
     dry_run: bool = False,
+    ignore_manual_overrides: bool = False,
+    progress: Callable[[EmbeddingBatchProgress], None] | None = None,
 ) -> dict[str, Any]:
     rows = load_catalog_rows(file_path)
     items = parse_catalog_rows(rows, default_supplier=supplier)
     if not items:
         raise CatalogSeedError("catalogue contains no rows")
+    unique_items, duplicates = dedupe_catalog_items(items)
     if dry_run:
         return {
             "dry_run": True,
-            "articles": len(items),
-            "suppliers": len({item.supplier_name for item in items}),
+            "articles": len(unique_items),
+            "suppliers": len({item.supplier_name for item in unique_items}),
+            "duplicates": duplicates,
+            "batches": (len(unique_items) + settings.embedding_batch_size - 1)
+            // settings.embedding_batch_size,
         }
 
     provider = build_embedding_provider(settings, embedding_provider)
@@ -225,37 +237,241 @@ async def seed_catalog(
             "refusing non-semantic hashing embeddings; configure an embedding API key "
             "or pass --allow-hash-embeddings for an explicit offline dry run"
         )
-    batch_size = settings.embedding_batch_size
-    for start in range(0, len(items), batch_size):
-        batch = items[start : start + batch_size]
-        texts = [
-            embedding_text(
-                description=item.description,
-                material=item.material.value if item.material else None,
-                color=item.color.value if item.color else None,
-                glove_size=item.glove_size.value,
-                unit=item.unit.value if item.unit else None,
-                pack_size=item.pack_size,
-                attributes=item.attributes,
-            )
-            for item in batch
-        ]
-        vectors = await provider.embed(texts)
-        for item, vector in zip(batch, vectors, strict=True):
-            item.embedding = vector
+    texts = [
+        embedding_text(
+            description=item.description,
+            material=item.material.value if item.material else None,
+            color=item.color.value if item.color else None,
+            glove_size=item.glove_size.value,
+            unit=item.unit.value if item.unit else None,
+            pack_size=item.pack_size,
+            attributes=item.attributes,
+        )
+        for item in unique_items
+    ]
+    run = await embed_in_batches(
+        provider,
+        texts,
+        batch_size=settings.embedding_batch_size,
+        max_retries=settings.embedding_max_retries,
+        backoff_seconds=settings.embedding_retry_backoff_seconds,
+        on_progress=progress or _progress_reporter("embedding"),
+    )
+    model = _embedding_model_label(settings, provider)
+    for item, vector in zip(unique_items, run.vectors, strict=True):
+        item.embedding = vector
+        item.embedding_model = model
 
     factory = get_session_factory(settings)
     try:
         async with factory() as session:
-            result = await CatalogRepository(session).seed(items)
+            result = await CatalogRepository(session).seed(
+                unique_items,
+                ignore_manual_overrides=ignore_manual_overrides,
+            )
     finally:
         await dispose_engine()
     return {
         "dry_run": False,
-        "articles": len(items),
+        "articles": len(unique_items),
         "suppliers": result.suppliers,
+        "created": result.created,
+        "updated": result.updated,
         "upserted": result.upserted,
+        "duplicates": result.duplicates,
+        "batches": run.batches,
+        "retries": run.retries,
+        "embedding_model": model,
     }
+
+
+async def reindex_catalog(
+    *,
+    settings: Settings,
+    batch_size: int | None = None,
+    only_missing: bool = False,
+    dry_run: bool = False,
+    embedding_provider: str = "auto",
+    allow_hash_embeddings: bool = False,
+    respect_overrides: bool = False,
+    progress: Callable[[EmbeddingBatchProgress], None] | None = None,
+) -> dict[str, Any]:
+    """Recompute pgvector embeddings for existing catalogue rows in place."""
+
+    size = max(1, batch_size or settings.embedding_batch_size)
+    factory = get_session_factory(settings)
+    if dry_run:
+        # A dry run only counts candidates; it must not require API credentials.
+        try:
+            async with factory() as session:
+                total = await CatalogRepository(session).count_articles(only_missing=only_missing)
+        finally:
+            await dispose_engine()
+        return {
+            "dry_run": True,
+            "articles": total,
+            "only_missing": only_missing,
+            "batch_size": size,
+            "embedding_model": _model_label_for_provider(settings, embedding_provider),
+        }
+
+    provider = build_embedding_provider(settings, embedding_provider)
+    if isinstance(provider, HashingEmbeddingProvider) and not allow_hash_embeddings:
+        raise CatalogSeedError(
+            "refusing non-semantic hashing embeddings; configure an embedding API key "
+            "or pass --allow-hash-embeddings for an explicit offline reindex"
+        )
+    model = _embedding_model_label(settings, provider)
+    processed = 0
+    skipped = 0
+    batches = 0
+    retries = 0
+    try:
+        async with factory() as session:
+            repository = CatalogRepository(session)
+            total = await repository.count_articles(only_missing=only_missing)
+
+            after_id = None
+            reporter = progress or _progress_reporter("reindex")
+            while True:
+                page = await repository.reindex_page(
+                    after_id=after_id,
+                    limit=size,
+                    only_missing=only_missing,
+                )
+                if not page:
+                    break
+                after_id = page[-1].id
+                candidates = [
+                    article
+                    for article in page
+                    if not (respect_overrides and "embedding" in article.manual_overrides)
+                ]
+                skipped += len(page) - len(candidates)
+                if not candidates:
+                    continue
+                texts = [
+                    embedding_text(
+                        description=article.description,
+                        material=article.material.value if article.material else None,
+                        color=article.color.value if article.color else None,
+                        glove_size=article.glove_size.value,
+                        unit=article.unit.value if article.unit else None,
+                        pack_size=article.pack_size,
+                        attributes=article.attributes,
+                    )
+                    for article in candidates
+                ]
+                run = await embed_in_batches(
+                    provider,
+                    texts,
+                    batch_size=size,
+                    max_retries=settings.embedding_max_retries,
+                    backoff_seconds=settings.embedding_retry_backoff_seconds,
+                    on_progress=reporter,
+                )
+                rows = [
+                    (article.id, vector, model)
+                    for article, vector in zip(candidates, run.vectors, strict=True)
+                ]
+                await repository.update_embeddings(rows)
+                processed += len(rows)
+                batches += run.batches
+                retries += run.retries
+                logger.info(
+                    "catalog reindex progress",
+                    extra={
+                        "event": "catalog_reindex_progress",
+                        "processed": processed,
+                        "total": total,
+                    },
+                )
+            await _audit_reindex(
+                session,
+                processed=processed,
+                total=total,
+                model=model,
+                only_missing=only_missing,
+                dry_run=False,
+            )
+    finally:
+        await dispose_engine()
+    return {
+        "dry_run": False,
+        "articles": total,
+        "processed": processed,
+        "skipped": skipped,
+        "batches": batches,
+        "retries": retries,
+        "embedding_model": model,
+        "only_missing": only_missing,
+    }
+
+
+async def _audit_reindex(
+    session: Any,
+    *,
+    processed: int,
+    total: int,
+    model: str,
+    only_missing: bool,
+    dry_run: bool,
+) -> None:
+    try:
+        await AuditService(session).append(
+            event_type=AuditEventType.SYSTEM_CATALOG_REINDEXED,
+            actor="yasmina-admin",
+            entity_type="catalog_articles",
+            entity_id="reindex",
+            payload={
+                "processed": processed,
+                "total": total,
+                "embedding_model": model,
+                "only_missing": only_missing,
+                "dry_run": dry_run,
+            },
+        )
+    except Exception:  # pragma: no cover - embeddings are already persisted
+        logger.exception("catalogue reindex audit entry could not be recorded")
+
+
+def _embedding_model_label(settings: Settings, provider: EmbeddingProvider) -> str:
+    if isinstance(provider, HashingEmbeddingProvider):
+        return f"hashing-{provider.dimensions}"
+    return settings.embedding_model
+
+
+def _model_label_for_provider(settings: Settings, provider: str) -> str:
+    normalized = provider.strip().lower()
+    has_key = bool(
+        (settings.embedding_api_key and settings.embedding_api_key.get_secret_value().strip())
+        or (settings.deepseek_api_key and settings.deepseek_api_key.get_secret_value().strip())
+    )
+    if normalized in {"hashing", "hash"} or (normalized == "auto" and not has_key):
+        return f"hashing-{settings.embedding_dimensions}"
+    return settings.embedding_model
+
+
+def _progress_reporter(label: str) -> Callable[[EmbeddingBatchProgress], None]:
+    def report(progress: EmbeddingBatchProgress) -> None:
+        message = f"{label}: {progress.completed}/{progress.total} ({progress.percent:.0f}%)"
+        if sys.stderr.isatty():
+            print(f"\r{message}", end="", file=sys.stderr, flush=True)
+            if progress.completed >= progress.total:
+                print(file=sys.stderr)
+            return
+        logger.info(
+            message,
+            extra={
+                "event": f"{label}_progress",
+                "completed": progress.completed,
+                "total": progress.total,
+                "batch": progress.batch_index,
+                "batches": progress.batch_count,
+            },
+        )
+
+    return report
 
 
 async def purge_tokens(
@@ -338,8 +554,45 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="explicitly allow deterministic offline hashing vectors",
     )
+    seed.add_argument(
+        "--ignore-manual-overrides",
+        action="store_true",
+        help="let imported values win over pinned manual overrides",
+    )
     seed.add_argument("--dry-run", action="store_true")
     seed.add_argument("--json", action="store_true", dest="as_json")
+    reindex = subparsers.add_parser(
+        "reindex-catalog",
+        help="recompute pgvector embeddings for existing catalogue articles",
+    )
+    reindex.add_argument(
+        "--embedding-provider",
+        choices=("auto", "openai", "deepseek", "local", "hashing"),
+        default="auto",
+    )
+    reindex.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="articles per embedding batch (default: EMBEDDING_BATCH_SIZE)",
+    )
+    reindex.add_argument(
+        "--only-missing",
+        action="store_true",
+        help="only backfill rows whose embedding is NULL",
+    )
+    reindex.add_argument(
+        "--respect-overrides",
+        action="store_true",
+        help="skip articles whose embedding field is manually pinned",
+    )
+    reindex.add_argument(
+        "--allow-hash-embeddings",
+        action="store_true",
+        help="explicitly allow deterministic offline hashing vectors",
+    )
+    reindex.add_argument("--dry-run", action="store_true", help="count candidates without embedding")
+    reindex.add_argument("--json", action="store_true", dest="as_json")
     purge = subparsers.add_parser(
         "purge-auth-tokens",
         help="delete expired refresh tokens, access-token JTIs and reset tokens",
@@ -391,6 +644,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     embedding_provider=args.embedding_provider,
                     allow_hash_embeddings=args.allow_hash_embeddings,
                     dry_run=args.dry_run,
+                    ignore_manual_overrides=args.ignore_manual_overrides,
                 )
             )
             if args.as_json:
@@ -399,8 +653,37 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(
                     f"catalogue: {summary['articles']} articles, "
                     f"{summary['suppliers']} suppliers, "
-                    f"{summary.get('upserted', 0)} upserted"
+                    f"{summary.get('created', 0)} created, "
+                    f"{summary.get('updated', 0)} updated, "
+                    f"{summary.get('duplicates', 0)} duplicates collapsed"
                 )
+            return 0
+        if args.command == "reindex-catalog":
+            reindex_summary = asyncio.run(
+                reindex_catalog(
+                    settings=settings,
+                    batch_size=args.batch_size,
+                    only_missing=args.only_missing,
+                    dry_run=args.dry_run,
+                    embedding_provider=args.embedding_provider,
+                    allow_hash_embeddings=args.allow_hash_embeddings,
+                    respect_overrides=args.respect_overrides,
+                )
+            )
+            if args.as_json:
+                print(json.dumps(reindex_summary, indent=2, ensure_ascii=False))
+            else:
+                if reindex_summary["dry_run"]:
+                    print(
+                        f"reindex: would embed {reindex_summary['articles']} articles "
+                        f"with {reindex_summary['embedding_model']}"
+                    )
+                else:
+                    print(
+                        f"reindex: {reindex_summary['processed']}/{reindex_summary['articles']} articles "
+                        f"re-embedded with {reindex_summary['embedding_model']}, "
+                        f"{reindex_summary['skipped']} skipped"
+                    )
             return 0
         if args.command == "purge-auth-tokens":
             cleanup = asyncio.run(

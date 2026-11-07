@@ -59,11 +59,20 @@ def make_settings() -> Settings:
 def test_golden_extraction_dataset_is_well_formed() -> None:
     cases = load_cases()
 
-    assert len(cases) >= 4
+    assert len(cases) >= 12
     assert len({case["id"] for case in cases}) == len(cases)
+    categories = {case["category"] for case in cases}
+    assert {"paper", "gloves", "waste"} <= categories
+    for category in ("paper", "gloves", "waste"):
+        assert sum(1 for case in cases if case["category"] == category) >= 4
     for case in cases:
         assert case["text"].strip()
         assert set(case["expected"]) == {"material", "color", "glove_size", "pack_size"}
+        expected = case["expected"]
+        assert expected["material"] in {member.value for member in MaterialType}
+        assert expected["color"] in {member.value for member in StandardizedColor}
+        assert expected["glove_size"] in {"XS", "S", "M", "L", "XL", "XXL", "NOT_APPLICABLE"}
+        assert isinstance(expected["pack_size"], int) and expected["pack_size"] > 0
 
 
 @pytest.mark.skipif(not os.getenv("DEEPSEEK_API_KEY"), reason="DEEPSEEK_API_KEY not configured")

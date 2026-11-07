@@ -546,6 +546,54 @@ reconciled with the authoritative spec later.
   at twenty tests, and CI additionally builds the production image and verifies
   the non-root UID, importability and precompiled bytecode.
 
+## Catalogue operations & seeding assumptions (P5.2)
+
+- `catalog_articles.manual_overrides` is a JSONB list of field names an operator
+  pinned (for example `["description", "unit_price_net"]`). A seed import writes
+  only fields it actually supplies and never overwrites a pinned field unless
+  `--ignore-manual-overrides` is passed; that repair mode also removes the pins
+  it rewrote, so subsequent imports behave normally again.
+- Omitted import fields never clear existing data. `NULL` material/colour/unit,
+  a missing pack size and the implicit `NOT_APPLICABLE` glove size are treated as
+  "not supplied". Explicitly clearing a value is an administrative edit, not an
+  import side effect.
+- `attributes` merge key-by-key (existing keys retained, incoming keys win on
+  collision) unless `attributes` itself is pinned, in which case the whole map
+  is protected. Identity fields `supplier`/`article_number` are immutable in the
+  merge: changing them creates a new article, which is why the database unique
+  constraint is the final duplicate guard.
+- Duplicate rows inside one file collapse to the last occurrence and are
+  reported as `duplicates`; this keeps a single `INSERT … ON CONFLICT` target per
+  article. Supplier names are matched case-insensitively for duplicate detection
+  but stored exactly as supplied for existing suppliers.
+- `catalog_articles.last_imported_at` and `embedding_model` record provenance for
+  operators; the merge does not use them to decide updates.
+- Embedding batches are executed by `src/services/embedding_pipeline.py`, which
+  owns retry/backoff and progress reporting. Providers classify HTTP 429 as
+  `EmbeddingRateLimitError` (with `Retry-After` in seconds when present) and
+  timeouts/transport/5xx errors as `EmbeddingTransientError`; the pipeline
+  retries those (`EMBEDDING_MAX_RETRIES`) with exponential backoff capped at 30
+  seconds, then fails with the batch index. Non-retryable errors fail immediately.
+- Progress is written to stderr: an in-place line on a TTY, structured log
+  records otherwise, so `--json` command output on stdout stays machine-readable.
+  Hashing embeddings remain refused without `--allow-hash-embeddings`, including
+  during reindex; a reindex `--dry-run` only counts candidates and therefore does
+  not require provider credentials.
+- `reindex-catalog` pages by primary key (`id > last_id`) and updates only
+  `embedding`, `embedding_model` and `updated_at`. It never inserts or deletes
+  rows, commits per page, and is restartable. With an unchanged product text the
+  new vector is deterministic for local/openai providers; upgraded models
+  naturally produce different vectors for every row. `--only-missing` restricts
+  the pass to rows whose embedding is `NULL`; `--respect-overrides` skips rows
+  whose `embedding` field is manually pinned. Each successful run appends
+  `SYSTEM_CATALOG_REINDEXED` with processed/skipped/model counts.
+- The golden extraction dataset now holds 19 German snippets across paper towels,
+  gloves (nitrile and latex) and garbage bags. The offline integrity test asserts
+  category coverage (at least four per category), unique ids and enum-valid
+  expectations; the live DeepSeek accuracy gate remains at 85 % field accuracy.
+- P5.2 brings the default suite to 376 tests and the live PostgreSQL suite to
+  twenty-four tests.
+
 ## E-invoicing assumptions (P2.1)
 
 - Invoice lines use the shared `UnitOfMeasure`; UBL/CII unit codes are mapped to

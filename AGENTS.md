@@ -29,7 +29,7 @@ Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 
 - `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `invoice_repository.py`, `credit_note_repository.py`, `invoice_event_repository.py`, `user_repository.py`, `catalog_repository.py`, `ingestion_repository.py`, `worker_run_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`)
 - `src/models/` (`enums.py`, `schemas.py`, `orm.py`)
 - `src/parsers/` (`normalizers.py`, `pdf_parser.py`, `gaeb_parser.py`, `gaeb_validator.py`)
-- `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `password_service.py`, `mfa_service.py`, `token_maintenance.py`, `backup_service.py`, `embedding_service.py`, `ingestion_processor.py`, `worker_lock.py`, `worker_metrics.py`)
+- `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `password_service.py`, `mfa_service.py`, `token_maintenance.py`, `backup_service.py`, `embedding_service.py`, `embedding_pipeline.py`, `ingestion_processor.py`, `worker_lock.py`, `worker_metrics.py`)
 - `src/agents/` (`graph.py`, `checkpoint.py`, `nodes.py`, `state.py`, `deepseek.py`)
 - `src/integrations/` (`clamav_client.py`, `minio_client.py`, `erpnext_client.py`, `n8n_client.py`, `telegram_notifier.py`; Telegram approval bot planned)
 - `src/scrapers/` (`base_scraper.py`, `bayern_vergabe.py`, `oeffentlichevergabe.py`, `ingestion.py`)
@@ -47,7 +47,9 @@ When given an implementation task:
 - Setup: `python -m pip install -e ".[dev,parsing,ai,e-invoicing]"`; `.env` is created from `.env.example` on first preflight/API start (copy it manually for other tooling).
 - Tests: `python -m pytest -q` (config lives in `pyproject.toml`); live DB tests use `YASMINA_TEST_DATABASE_URL`.
 - Quality: `python -m ruff check .`, `python -m ruff format --check .`, `python -m mypy src`.
-- Catalogue: `python -m src.admin seed-catalog --file catalog.csv [--embedding-provider auto|local|hashing] [--dry-run]`; embeddings use an OpenAI-compatible endpoint, local sentence-transformers, or explicit hashing.
+- Catalogue: `python -m src.admin seed-catalog --file catalog.csv [--embedding-provider auto|local|hashing] [--dry-run] [--ignore-manual-overrides]`; re-imports merge by `(supplier, article_number)`, preserve pinned `catalog_articles.manual_overrides`, never clear omitted fields and collapse duplicate rows (last wins).
+- Catalogue reindex: `python -m src.admin reindex-catalog [--batch-size N] [--only-missing] [--respect-overrides] [--dry-run] [--json] [--embedding-provider …] [--allow-hash-embeddings]`; recomputes pgvector embeddings in place, never deletes rows, commits per page and audits `SYSTEM_CATALOG_REINDEXED`.
+- Embeddings: seeding/reindex share `src/services/embedding_pipeline.py` (batch size `EMBEDDING_BATCH_SIZE`, retries `EMBEDDING_MAX_RETRIES` with exponential backoff honouring `Retry-After` for 429/5xx, progress on stderr so `--json` stdout stays clean).
 - Extraction eval: `python -m pytest -q tests/evals/test_extraction_eval.py -s` (live accuracy gate when `DEEPSEEK_API_KEY` is set).
 - API: `python -m uvicorn src.main:app --host 127.0.0.1 --port 8000 --reload` (startup runs preflight).
 - Infrastructure: `docker compose up -d postgres minio clamav` (add `--profile automation` for n8n).

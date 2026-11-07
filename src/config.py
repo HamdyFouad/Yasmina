@@ -129,6 +129,8 @@ class Settings(BaseSettings):
     embedding_api_key: SecretStr | None = None
     embedding_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     embedding_batch_size: int = Field(default=32, ge=1, le=256)
+    embedding_max_retries: int = Field(default=4, ge=0, le=10)
+    embedding_retry_backoff_seconds: float = Field(default=1.0, ge=0.0, le=60.0)
 
     # --- n8n ---------------------------------------------------------------
     n8n_webhook_base_url: str = "http://localhost:5678"

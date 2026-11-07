@@ -1083,6 +1083,12 @@ class CatalogArticle(Base, TimestampMixin):
     attributes: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
+    # Field names an operator pinned manually; seed imports must not overwrite them.
+    manual_overrides: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    last_imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    embedding_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     embedding: Mapped[Any | None] = mapped_column(Vector(1024), nullable=True)
 
     supplier: Mapped[Supplier | None] = relationship(back_populates="catalog_articles")
@@ -1090,6 +1096,7 @@ class CatalogArticle(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("supplier_id", "article_number", name="uq_catalog_supplier_article"),
         CheckConstraint("unit_price_net IS NULL OR unit_price_net >= 0", name="unit_price_non_negative"),
+        CheckConstraint("jsonb_typeof(manual_overrides) = 'array'", name="manual_overrides_array"),
         Index(
             "ix_catalog_articles_embedding_hnsw",
             "embedding",
