@@ -6,6 +6,7 @@ import contextlib
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -18,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from src.agents.checkpoint import SqlAlchemyCheckpointSaver
 from src.agents.graph import run_agent_async
 from src.agents.nodes import price_offer
-from src.agents.state import initial_state
+from src.agents.state import AgentState, initial_state
 from src.api.context import build_agent_context
 from src.api.deps import (
     get_app_settings,
@@ -31,6 +32,7 @@ from src.api.deps import (
     get_workflow_checkpointer,
     require_roles,
 )
+from src.api.metrics import observe_workflow
 from src.api.schemas import (
     MatchPayload,
     PricePayload,
@@ -361,6 +363,25 @@ async def price_tender(
     }
 
 
+async def _run_workflow_observed(
+    state: AgentState,
+    context: Any,
+    *,
+    checkpointer: SqlAlchemyCheckpointSaver,
+    config: dict[str, Any],
+) -> AgentState:
+    """Run the LangGraph workflow and record its duration and outcome."""
+
+    started = perf_counter()
+    try:
+        result = await run_agent_async(state, context, checkpointer=checkpointer, config=config)
+    except Exception:
+        observe_workflow("error", perf_counter() - started)
+        raise
+    observe_workflow(str(result.get("status") or "other"), perf_counter() - started)
+    return result
+
+
 @router.post("/{tender_id}/workflow")
 async def run_tender_workflow(
     tender_id: UUID,
@@ -393,7 +414,7 @@ async def run_tender_workflow(
         gaeb_document=stored.document,
         export_path=str(export_path) if export_path else None,
     )
-    result = await run_agent_async(
+    result = await _run_workflow_observed(
         state,
         context,
         checkpointer=checkpointer,

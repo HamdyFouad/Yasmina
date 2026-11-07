@@ -476,6 +476,76 @@ reconciled with the authoritative spec later.
 - P4.8 brings the default suite to 339 tests and the live PostgreSQL suite to
   twenty tests.
 
+## Deployment & observability assumptions (P5.1)
+
+- The production image is a two-stage build on `python:3.12-slim`. The builder
+  resolves the selected extras into `/opt/venv`; the runtime stage keeps the
+  virtualenv, `/app/src`, Alembic files and `libpq5`/`postgresql-client`/`curl`/
+  `tini`. The application runs as UID/GID `10001` (`yasmina`) with `tini` as
+  PID 1.
+- `INSTALL_EXTRAS` defaults to `ai,e-invoicing,parsing` so the image supports
+  DeepSeek, Factur-X/XRechnung, Docling and pyGAEB out of the box. Because
+  Docling pulls PyTorch, the default image is large; the CI Docker job builds
+  `ai,e-invoicing` to keep the gate fast, and operators can drop `parsing` when
+  PDF/GAEB ingestion is not required.
+- Bytecode is compiled at build time (`compileall`) for both `src` and
+  site-packages; the runtime sets `PYTHONDONTWRITEBYTECODE=1` so the root
+  filesystem can be mounted read-only. Uvicorn runs with `--no-access-log`
+  because `RequestContextMiddleware` already emits one structured JSON access
+  line per request, avoiding duplicates.
+- `docker-compose.prod.yml` intentionally keeps secrets in a git-ignored
+  `.env.prod` (`env_file:`) rather than Docker secrets: the stack is designed
+  for a single-host Compose deployment, and Docker secrets require Swarm or
+  external secret drivers. The file also feeds `docker compose --env-file`, so
+  interpolation of `API_HOST_PORT` and `INSTALL_EXTRAS` works.
+- Only the API binds a host port (`127.0.0.1:8000` by default). PostgreSQL,
+  MinIO and ClamAV have no published ports and share the `internal: true`
+  `backend` network. Resource limits use `deploy.resources`, which `docker
+  compose up` honours for non-Swarm deployments (Compose v2).
+- The API container applies migrations before starting uvicorn. That is
+  convenient for single-host deployments but means a failed migration keeps the
+  API down (fail closed); multi-replica deployments should run
+  `alembic upgrade head` once as a separate job instead.
+- Logging defaults to JSON (`LOG_FORMAT=json`) with `timestamp`, `level`,
+  `logger`, `message` and any structured `extra=` fields. `X-Request-ID` is
+  honoured from incoming proxies or generated, echoed on the response and
+  included in the access log together with method, matched route template,
+  status, duration and client address. `LOG_FORMAT=text` remains available for
+  local terminals.
+- Metrics use the `prometheus-client` default registry, so the Python process
+  and platform collectors are exposed alongside the application metrics.
+  HTTP labels use the matched route template to bound cardinality (unmatched
+  paths become `unmatched`), and `/metrics` is excluded from its own counters.
+  The endpoint is unauthenticated like standard Prometheus scrape targets; it
+  must be restricted at the network/proxy layer. `METRICS_ENABLED=false` removes
+  both the middleware and the endpoint.
+- LangGraph metrics are recorded per workflow HTTP execution with a normalized
+  status (`pending_approval`, `approved`, `rejected`, `error`, `other`). They
+  cover end-to-end workflow duration, not individual node timings; per-node
+  tracing remains the job of the LangGraph checkpointer and application logs.
+- Backups use `pg_dump --format=custom` and encrypt the archive with Fernet
+  (AES-128-CBC + HMAC-SHA256) derived directly from `BACKUP_ENCRYPTION_KEY`, so
+  the key must be a valid Fernet key (`python -m src.admin generate-backup-key`).
+  Rotating the key makes old objects undecryptable unless the previous key is
+  retained out-of-band; there is deliberately no key hierarchy in this task.
+- The backup object key contains the UTC date and a random suffix; retention
+  deletes objects older than `BACKUP_RETENTION_DAYS` only after the new upload
+  succeeds, and prune failures are logged without failing the run. The dedicated
+  `BACKUP_BUCKET` is created by `minio-init` in the prod stack and on demand by
+  the storage client (`put_bytes` ensures the bucket exists).
+- A successful backup appends `SYSTEM_BACKUP_COMPLETED` to the audit log. If the
+  audit insert fails, the backup object is already stored; the CLI logs the
+  audit failure and still reports the upload, because the backup artifact is the
+  primary outcome.
+- `pg_dump`/`pg_restore` must match the PostgreSQL major version. The runtime
+  image installs Debian's `postgresql-client` (16 on `python:3.12-slim`), which
+  matches the pinned `pgvector/pgvector:pg16` server. Restores require
+  decrypting the object first and running `pg_restore` against a
+  `postgresql://` DSN.
+- P5.1 brings the default suite to 359 tests; the live PostgreSQL suite remains
+  at twenty tests, and CI additionally builds the production image and verifies
+  the non-root UID, importability and precompiled bytecode.
+
 ## E-invoicing assumptions (P2.1)
 
 - Invoice lines use the shared `UnitOfMeasure`; UBL/CII unit codes are mapped to

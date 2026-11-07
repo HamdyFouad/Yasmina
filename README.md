@@ -22,7 +22,9 @@ waste bags across all thicknesses, volumes and colour standards.
 > and credit notes, embedded-font PDF/A-3 output gated by veraPDF, a
 > GoBD-compliant append-only invoice event log, and an account-lifecycle layer
 > with TOTP MFA, password resets, global logout, hashed reset tokens and a
-> token-retention CLI are complete.
+> token-retention CLI are complete. P5 adds a hardened multi-stage production
+> image, an isolated compose stack, structured JSON logging with Prometheus
+> metrics, and encrypted PostgreSQL backups uploaded to MinIO.
 
 ---
 
@@ -71,11 +73,14 @@ src/
   config.py              # pydantic-settings configuration
   db.py                  # async SQLAlchemy engine/session factory
   main.py                # FastAPI app + startup preflight lifespan
-  admin.py               # yasmina-admin catalogue seeding CLI
+  admin.py               # yasmina-admin catalogue/backup/retention CLI
   preflight.py           # startup checks (config, DB, MinIO, ClamAV, n8n)
+  logging_config.py      # JSON log formatter + handler configuration
   api/
     security.py          # JWT jti issuance/validation + RBAC roles
     rate_limit.py        # token-bucket auth/upload/business rate limiter
+    observability.py     # X-Request-ID + structured access logging
+    metrics.py           # Prometheus counters/histograms + ASGI middleware
     deps.py              # auth, DB, ClamAV and repository dependencies
     schemas.py           # API request DTOs and payload parsers
     routes/
@@ -120,6 +125,7 @@ src/
     approval_service.py  # canonical payload, Ed25519 sign/verify/apply
     mfa_service.py       # RFC 6238 TOTP, sealed secrets and otpauth URIs
     token_maintenance.py # expired refresh/JTI/reset-token retention job
+    backup_service.py    # encrypted pg_dump → MinIO backups + retention
   scheduler.py           # dependency-free five-field cron scheduler
   worker.py              # scrape/process CLI, signals, locks, alerts
   agents/
@@ -144,13 +150,17 @@ src/
     schematron/          # vendored KoSIT EN16931 + XRechnung CIUS rules
     zugferd_generator.py # Factur-X/ZUGFeRD 2.2 CII + PDF embedding
     xrechnung_generator.py # XRechnung 3.0 UBL XML + KoSIT validation
-alembic/                 # async migrations (… 0008 identity/security, 0009 billing events)
+alembic/                 # async migrations (… 0009 billing events, 0010 account lifecycle)
 docker/                  # PostgreSQL bootstrap (pgvector, n8n database)
 docs/
   DETAILED_SPEC.md       # authoritative engineering specification
   ASSUMPTIONS.md         # inferred fields / open spec questions
 scripts/
   generate_sample_invoice.py # representative invoice PDF for the veraPDF CI gate
+Dockerfile               # multi-stage, non-root production image
+docker-compose.yml       # local infrastructure (PostgreSQL, MinIO, ClamAV, n8n)
+docker-compose.prod.yml  # isolated production stack (API + services + backup)
+.env.prod.example        # production environment template
 tests/                   # unit tests (no database required)
   integration/           # live PostgreSQL/MinIO/identity/catalogue tests
   evals/                 # DeepSeek extraction golden dataset + accuracy gate
@@ -306,6 +316,9 @@ refresh token. Approval of an offer whose owner is the authenticated principal
 (or whose signed `approved_by` equals the owner) is rejected with `403` by the
 four-eyes rule. Rate limits return `429` with `Retry-After` for `/auth` (20/min),
 `/tenders/upload` (30/min) and other `/api/v1` routes (300/min) by default.
+Requests carry an `X-Request-ID` (honoured when supplied by a proxy) and are
+logged as structured JSON. `GET /metrics` (outside `/api/v1`) exposes Prometheus
+metrics for scraping; see [Production deployment & observability](#production-deployment--observability).
 
 #### Account lifecycle, MFA and auth auditing
 
@@ -527,7 +540,7 @@ cron entry keeps both discovery and parsing moving.
 python -m pytest -q
 ```
 
-The current 339 tests pass (plus twenty-three optional tests — twenty live
+The current 359 tests pass (plus twenty-three optional tests — twenty live
 PostgreSQL tests, two MinIO/ClamAV smoke tests and the DeepSeek eval — that are
 skipped unless their environment variables are set) and cover normalizers, settings, strict schemas,
 ORM metadata, pgvector/HNSW configuration, GAEB parsing/validation, PDF table
@@ -547,7 +560,8 @@ shutdown, worker run metrics, Telegram delivery, ClamAV scanning and audit
 chaining, MinIO object flows, ERPNext retries/payload mapping, n8n HMAC
 callbacks and idempotency, portal robots/rate/UA/artifact handling,
 CPV-filtered HTML extraction, cron scheduling, FastAPI business routes, RBAC,
-tender persistence, e-invoicing and offline migration rendering.
+tender persistence, e-invoicing, JSON logging, Prometheus metrics, encrypted
+backups and offline migration rendering.
 
 ```powershell
 # optional live PostgreSQL offer/checkpoint, outbox/lock, invoice, identity,
@@ -758,6 +772,108 @@ CI uses `.[dev,e-invoicing]`; local installations may also add
 
 ---
 
+## Production deployment & observability
+
+### Container image
+
+```powershell
+docker build -t yasmina-api:prod .
+# slimmer image without Docling/pyGAEB parsing
+docker build --build-arg INSTALL_EXTRAS="ai,e-invoicing" -t yasmina-api:slim .
+```
+
+- Multi-stage build on `python:3.12-slim`: the builder resolves wheels into a
+  virtualenv, the runtime stage keeps only the virtualenv, the application and
+  `libpq5`/`postgresql-client`/`curl`/`tini`.
+- Runs as the fixed non-root user `yasmina` (UID/GID `10001`) with `tini` as PID 1.
+- Bytecode is pre-compiled with `compileall` during the build and
+  `PYTHONDONTWRITEBYTECODE=1` prevents runtime writes, so a read-only root
+  filesystem is safe.
+- The image healthcheck polls `/healthz`; the default command runs uvicorn with
+  `--no-access-log` because the structured request logger already emits access
+  log lines.
+- `INSTALL_EXTRAS` selects the installed extras. The default
+  `ai,e-invoicing,parsing` is the full feature set; drop `parsing` for a much
+  smaller image when PDF/Docling and GAEB ingestion are not needed.
+
+### Production compose stack
+
+```powershell
+cp .env.prod.example .env.prod    # fill every change-me secret
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+# optional daily encrypted backups sidecar
+docker compose --env-file .env.prod -f docker-compose.prod.yml --profile backup up -d
+```
+
+- `edge` network publishes only the API, bound to `127.0.0.1:8000` by default;
+  PostgreSQL, MinIO and ClamAV live exclusively on the `internal: true`
+  `backend` network with no host ports.
+- Every service has a healthcheck and `restart: unless-stopped`; the API waits
+  for PostgreSQL, MinIO (plus bucket bootstrap) and ClamAV.
+- Resource limits/reservations are declared under `deploy.resources`, logs are
+  rotated by the `json-file` driver, and the API runs with a read-only root
+  filesystem, `tmpfs` for `/tmp`, `cap_drop: [ALL]` and
+  `no-new-privileges:true`.
+- The API container runs `alembic upgrade head` before starting uvicorn.
+- The optional `backup` service loops `backup-postgres` every
+  `BACKUP_INTERVAL_SECONDS` (default one day).
+
+### Structured logging
+
+- `LOG_FORMAT=json` (default) emits one JSON object per line with `timestamp`,
+  `level`, `logger`, `message` plus structured extras. `LOG_FORMAT=text` keeps
+  the human-readable format for local terminals.
+- Every HTTP request is logged with `request_id`, `method`, `path`, matched
+  route template, `status`, `duration_ms` and client metadata. Incoming
+  `X-Request-ID` values are honoured; generated ids are returned in the
+  response header so traces can be correlated across services.
+- uvicorn's own loggers are wired to the same JSON handler, so startup and error
+  messages use the same schema as application logs.
+
+### Prometheus metrics
+
+`GET /metrics` exposes the Prometheus text format:
+
+| Metric | Type | Labels |
+|---|---|---|
+| `yasmina_http_requests_total` | counter | `method`, `route`, `status` |
+| `yasmina_http_errors_total` | counter | `method`, `route`, `status` |
+| `yasmina_http_request_duration_seconds` | histogram | `method`, `route` |
+| `yasmina_workflow_runs_total` | counter | `status` (`pending_approval`, `approved`, `rejected`, `error`, `other`) |
+| `yasmina_workflow_duration_seconds` | histogram | `status` |
+| `yasmina_workflow_errors_total` | counter | – |
+
+HTTP labels use the matched route template (for example
+`/api/v1/invoices/{invoice_id}`) rather than raw paths, keeping cardinality
+bounded; unmatched requests are folded into `unmatched`. The `/metrics` scrape
+itself is excluded from the counters. The endpoint is unauthenticated by design
+(Prometheus scrapers rarely carry JWTs) and should be reachable only from the
+monitoring network; set `METRICS_ENABLED=false` to remove it entirely.
+
+### Encrypted backups
+
+```powershell
+python -m src.admin generate-backup-key            # store the value as BACKUP_ENCRYPTION_KEY
+python -m src.admin backup-postgres --dry-run --json
+python -m src.admin backup-postgres --json
+```
+
+- `pg_dump --format=custom` streams a consistent archive; it is encrypted with
+  Fernet (AES-128-CBC + HMAC-SHA256) in memory before upload, so plaintext dumps
+  never touch disk or the object store.
+- Objects are written to the dedicated `BACKUP_BUCKET` (default
+  `yasmina-backups`) under
+  `postgres/YYYY/MM/DD/yasmina-<UTC timestamp>-<random>.dump.fernet`; the
+  SHA-256 of the ciphertext is returned and audited.
+- Retention keeps `BACKUP_RETENTION_DAYS` (default 14) of backups and prunes
+  older objects only after a successful upload. Every run appends a
+  `SYSTEM_BACKUP_COMPLETED` entry to the hash-chained audit log.
+- Restore by downloading the object, decrypting it with the same
+  `BACKUP_ENCRYPTION_KEY` (`src.services.backup_service.decrypt_backup`) and
+  running `pg_restore --clean --if-exists --no-owner --dbname <postgresql://…>`.
+
+---
+
 ## Configuration
 
 All settings live in `src/config.py` and are documented in `.env.example`.
@@ -768,6 +884,8 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | API / JWT | `JWT_SECRET_KEY`, `JWT_ALGORITHM`, `JWT_EXPIRY_MINUTES`, `REFRESH_TOKEN_EXPIRY_DAYS`, `API_ADMIN_*`, `PASSWORD_MIN_LENGTH`, `PASSWORD_HASH_ALGORITHM`, `PASSWORD_RESET_TOKEN_EXPIRY_MINUTES`, `MAX_UPLOAD_SIZE_MB` |
 | MFA / retention | `MFA_ISSUER`, `MFA_TOTP_INTERVAL_SECONDS`, `MFA_TOTP_DIGITS`, `MFA_TOTP_WINDOW`, `AUTH_TOKEN_RETENTION_DAYS` |
 | Rate limiting | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_AUTH_PER_MINUTE`, `RATE_LIMIT_UPLOAD_PER_MINUTE`, `RATE_LIMIT_BUSINESS_PER_MINUTE` |
+| Observability | `LOG_LEVEL`, `LOG_FORMAT` (`json`/`text`), `METRICS_ENABLED` |
+| Backups | `BACKUP_BUCKET`, `BACKUP_PREFIX`, `BACKUP_ENCRYPTION_KEY`, `BACKUP_RETENTION_DAYS`, `BACKUP_TIMEOUT_SECONDS`, `PG_DUMP_BINARY` |
 | Invoice seller | `COMPANY_NAME`, `COMPANY_STREET`, `COMPANY_CITY`, `COMPANY_POSTAL_CODE`, `COMPANY_VAT_ID`, `COMPANY_IBAN`, `COMPANY_EMAIL`, `COMPANY_PHONE` |
 | PostgreSQL | `POSTGRES_*`, optional `DATABASE_URL`, `DATABASE_ECHO` |
 | MinIO | `MINIO_*` |
@@ -899,6 +1017,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P4.6 — CI real-service containers (PostgreSQL/pgvector, MinIO, ClamAV), ruff/mypy quality gates, pgvector catalogue seeding CLI and DeepSeek extraction evals
 - [x] P4.7 — embedded-font PDF/A-3 with a veraPDF CI gate, `GET /invoices` + payment and credit-note REST endpoints, gapless `GS-YYYY-XXXX` credit notes and a GoBD append-only hash-chained invoice event log
 - [x] P4.8 — password change/reset flows, TOTP MFA with replay protection, logout-all, identity audit events and a refresh-token/token-blocklist retention CLI
+- [x] P5.1 — multi-stage non-root production image, isolated compose stack with resource limits, structured JSON logging, Prometheus `/metrics` (HTTP latency/errors and LangGraph durations), encrypted `pg_dump` backups to MinIO and a CI Docker build gate
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

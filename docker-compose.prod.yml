@@ -1,0 +1,232 @@
+# Project Yasmina — production compose stack.
+#
+# Usage:
+#   cp .env.prod.example .env.prod      # then set real secrets
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml --profile backup up -d
+#
+# Only the API binds a host port (loopback by default). PostgreSQL, MinIO and
+# ClamAV are reachable exclusively on the internal `backend` network.
+
+name: yasmina-prod
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-api-build: &api-build
+  context: .
+  args:
+    INSTALL_EXTRAS: ${INSTALL_EXTRAS:-ai,e-invoicing,parsing}
+
+x-api-image: &api-image
+  image: yasmina-api:prod
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    env_file: .env.prod
+    shm_size: 256mb
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - max_connections=100
+      - -c
+      - log_min_duration_statement=1000
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+        reservations:
+          memory: 512m
+    logging: *default-logging
+    networks:
+      - backend
+
+  minio:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    env_file: .env.prod
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+    logging: *default-logging
+    networks:
+      - backend
+
+  minio-init:
+    image: pgsty/mc:RELEASE.2026-10-26T00-00-00Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file: .env.prod
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" &&
+        mc mb --ignore-existing "local/$$MINIO_BUCKET" &&
+        mc mb --ignore-existing "local/$$BACKUP_BUCKET" &&
+        mc anonymous set none "local/$$MINIO_BUCKET" &&
+        mc anonymous set none "local/$$BACKUP_BUCKET"
+    restart: "no"
+    logging: *default-logging
+    networks:
+      - backend
+
+  clamav:
+    image: clamav/clamav:1.5.4-debian
+    restart: unless-stopped
+    environment:
+      CLAMAV_NO_MILTERD: "true"
+    volumes:
+      - clamav_data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+    logging: *default-logging
+    networks:
+      - backend
+
+  api:
+    <<: *api-image
+    build: *api-build
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      clamav:
+        condition: service_healthy
+    env_file: .env.prod
+    environment:
+      APP_ENV: production
+      LOG_FORMAT: json
+      METRICS_ENABLED: "true"
+      GAEB_EXPORT_DIR: /tmp/exports/gaeb
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        python -m alembic upgrade head
+        exec python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --no-access-log
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1536m
+        reservations:
+          memory: 256m
+    logging: *default-logging
+    networks:
+      - edge
+      - backend
+
+  backup:
+    <<: *api-image
+    build: *api-build
+    profiles: ["backup"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    env_file: .env.prod
+    environment:
+      APP_ENV: production
+      LOG_FORMAT: json
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        while true; do
+          python -m src.admin backup-postgres --json \
+            || echo '{"level":"ERROR","event":"backup_failed","message":"backup run failed"}'
+          sleep "$${BACKUP_INTERVAL_SECONDS:-86400}"
+        done
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+    logging: *default-logging
+    networks:
+      - backend
+
+networks:
+  edge:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres_data:
+  minio_data:
+  clamav_data:

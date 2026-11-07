@@ -18,6 +18,7 @@ from src.config import Settings, get_settings
 from src.db import dispose_engine, get_engine, get_session_factory
 from src.integrations.minio_client import MinioObjectStorage
 from src.integrations.telegram_notifier import TelegramNotifier
+from src.logging_config import configure_logging
 from src.repositories.ingestion_repository import (
     IngestionJobView,
     ScraperStateRepository,
@@ -663,9 +664,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     args = build_parser().parse_args(argv)
     settings = get_settings()
+    configure_logging(settings.log_level, json_format=settings.log_format == "json")
 
     try:
         if args.command == "scrape":

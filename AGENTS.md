@@ -22,13 +22,14 @@
 Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 10):
 - `src/config.py` (pydantic-settings)
 - `src/db.py` (async SQLAlchemy session factory)
-- `src/admin.py` (`yasmina-admin` catalogue seeding and auth-token retention CLI)
+- `src/admin.py` (`yasmina-admin` catalogue seeding, token retention and encrypted-backup CLI)
 - `src/main.py` (FastAPI app + startup preflight lifespan)
-- `src/api/` (`security.py`, `rate_limit.py`, `deps.py`, `schemas.py`, `routes/tenders.py`, `routes/approvals.py`, `routes/offers.py`, `routes/invoices.py`, `routes/ops.py`, `routes/auth.py`)
+- `src/logging_config.py` (JSON log formatter and handler configuration)
+- `src/api/` (`security.py`, `rate_limit.py`, `observability.py`, `metrics.py`, `deps.py`, `schemas.py`, `routes/tenders.py`, `routes/approvals.py`, `routes/offers.py`, `routes/invoices.py`, `routes/ops.py`, `routes/auth.py`)
 - `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `invoice_repository.py`, `credit_note_repository.py`, `invoice_event_repository.py`, `user_repository.py`, `catalog_repository.py`, `ingestion_repository.py`, `worker_run_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`)
 - `src/models/` (`enums.py`, `schemas.py`, `orm.py`)
 - `src/parsers/` (`normalizers.py`, `pdf_parser.py`, `gaeb_parser.py`, `gaeb_validator.py`)
-- `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `password_service.py`, `mfa_service.py`, `token_maintenance.py`, `embedding_service.py`, `ingestion_processor.py`, `worker_lock.py`, `worker_metrics.py`)
+- `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `password_service.py`, `mfa_service.py`, `token_maintenance.py`, `backup_service.py`, `embedding_service.py`, `ingestion_processor.py`, `worker_lock.py`, `worker_metrics.py`)
 - `src/agents/` (`graph.py`, `checkpoint.py`, `nodes.py`, `state.py`, `deepseek.py`)
 - `src/integrations/` (`clamav_client.py`, `minio_client.py`, `erpnext_client.py`, `n8n_client.py`, `telegram_notifier.py`; Telegram approval bot planned)
 - `src/scrapers/` (`base_scraper.py`, `bayern_vergabe.py`, `oeffentlichevergabe.py`, `ingestion.py`)
@@ -58,6 +59,10 @@ When given an implementation task:
 - Token retention: `python -m src.admin purge-auth-tokens [--retention-days N] [--dry-run] [--json]` purges expired refresh tokens, stale revoked sessions, expired JTIs and used/expired reset tokens, and appends a `SYSTEM_TOKEN_CLEANUP` audit entry.
 - Auth audit: `AuditService` records `USER_LOGIN_SUCCEEDED|FAILED`, `USER_LOGOUT`, `USER_LOGGED_OUT_ALL_DEVICES`, `USER_CREATED`, `USER_PASSWORD_CHANGED`, `USER_PASSWORD_RESET_REQUESTED|COMPLETED`, `USER_MFA_ENABLED|DISABLED`; never include passwords, reset tokens or TOTP secrets.
 - Rate limits: `/auth` 20/min, `/upload` 30/min, other `/api/v1` 300/min by default; adjust `RATE_LIMIT_*` settings.
+- Observability: `LOG_FORMAT=json` emits structured JSON (request id, method, route, status, duration); `GET /metrics` exposes `yasmina_http_*` and `yasmina_workflow_*` Prometheus metrics; middlewares live in `src/api/observability.py` and `src/api/metrics.py`.
+- Production image: `docker build -t yasmina-api:prod .` (multi-stage, non-root UID 10001, precompiled bytecode); `docker build --build-arg INSTALL_EXTRAS="ai,e-invoicing" -t yasmina-api:slim .` skips Docling/pyGAEB.
+- Production stack: `cp .env.prod.example .env.prod` then `docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build`; add `--profile backup` for the daily encrypted-backup sidecar. API on loopback:8000, services on the internal `backend` network.
+- Backups: `python -m src.admin generate-backup-key` writes `BACKUP_ENCRYPTION_KEY`; `python -m src.admin backup-postgres [--dry-run] [--retention-days N] [--json]` runs Fernet-encrypted `pg_dump` uploads to `BACKUP_BUCKET` and appends `SYSTEM_BACKUP_COMPLETED`.
 - E-invoicing: `XRechnungGenerator` runs KoSIT EN16931 + XRechnung CIUS Schematron via `saxonche`; `ZUGFeRDGenerator` embeds CII XML in the branded PDF/A-3 carrier; `InvoiceRepository` owns gapless `INV-YYYY-XXXX` numbering and multi-rate VAT rows.
 - Billing: `GET /api/v1/invoices[/{id}]` (owner-scoped for sales), `POST /invoices/{id}/payments` and `POST /invoices/{id}/credits` (admin-only); `CreditNoteRepository` allocates a gapless `GS-YYYY-XXXX` credit number across the invoice VAT buckets and applies it atomically.
 - GoBD event log: `InvoiceEventRepository` appends hash-chained `invoice_events` for issuance/payment/credit/status changes; PostgreSQL triggers block UPDATE/DELETE/TRUNCATE, and `verify_chain()` re-derives every hash.

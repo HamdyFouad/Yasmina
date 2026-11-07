@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from src.config import Settings
 
-__all__ = ["MinioObjectStorage", "ObjectStorageError"]
+__all__ = ["MinioObjectStorage", "ObjectStorageError", "StoredObject"]
 
 
 class ObjectStorageError(RuntimeError):
     """Raised when an object cannot be stored or retrieved."""
+
+
+@dataclass(frozen=True, slots=True)
+class StoredObject:
+    name: str
+    size: int
+    last_modified: datetime
 
 
 def _endpoint(settings: Settings) -> tuple[str, bool]:
@@ -27,14 +35,14 @@ def _endpoint(settings: Settings) -> tuple[str, bool]:
 class MinioObjectStorage:
     """Thin async wrapper around the synchronous MinIO SDK."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, bucket: str | None = None) -> None:
         try:
             from minio import Minio
         except ImportError as exc:  # pragma: no cover - mandatory dependency
             raise ObjectStorageError("minio client is not installed") from exc
 
         endpoint, secure = _endpoint(settings)
-        self.bucket = settings.minio_bucket
+        self.bucket = bucket or settings.minio_bucket
         self._client = Minio(
             endpoint,
             access_key=settings.minio_access_key.get_secret_value(),
@@ -90,6 +98,29 @@ class MinioObjectStorage:
             await asyncio.to_thread(self._client.remove_object, self.bucket, object_name)
         except Exception as exc:
             raise ObjectStorageError(f"cannot delete object {object_name!r}: {exc}") from exc
+
+    async def list_objects(self, prefix: str = "") -> list[StoredObject]:
+        try:
+            objects = await asyncio.to_thread(
+                lambda: list(self._client.list_objects(self.bucket, prefix=prefix, recursive=True))
+            )
+        except Exception as exc:
+            raise ObjectStorageError(f"cannot list objects in {self.bucket!r}: {exc}") from exc
+        return [
+            StoredObject(
+                name=obj.object_name,
+                size=int(getattr(obj, "size", 0) or 0),
+                last_modified=obj.last_modified,
+            )
+            for obj in objects
+        ]
+
+    async def delete_many(self, object_names: list[str]) -> int:
+        deleted = 0
+        for name in object_names:
+            await self.delete(name)
+            deleted += 1
+        return deleted
 
     async def presigned_get_url(self, object_name: str, *, expires_seconds: int = 3600) -> str:
         try:

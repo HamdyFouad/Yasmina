@@ -100,6 +100,14 @@ jobs:
           fi
           echo ".env is not tracked."
 
+      - name: Validate compose stacks
+        run: |
+          cp .env.prod.example .env.prod
+          docker compose -f docker-compose.yml config -q
+          docker compose --env-file .env.prod -f docker-compose.prod.yml config -q
+          rm -f .env.prod
+          echo "Compose stacks are valid."
+
   tests:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -205,3 +213,30 @@ jobs:
 
       - name: Compile sources
         run: python -m compileall -q src alembic tests
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build production image (slim extras)
+        # The full default image also bundles Docling/pygaeb; CI builds the
+        # invoice + LLM variant to keep the gate fast while exercising the same
+        # Dockerfile stages, non-root user and bytecode compilation.
+        run: docker build --build-arg INSTALL_EXTRAS="ai,e-invoicing" -t yasmina-api:ci .
+
+      - name: Verify runtime contract
+        run: |
+          uid=$(docker run --rm yasmina-api:ci id -u)
+          test "$uid" = "10001"
+          echo "non-root uid: $uid"
+          docker run --rm yasmina-api:ci python -c "import src.main; print('app imports cleanly')"
+          pyc=$(docker run --rm yasmina-api:ci sh -c 'find /app/src -name "*.pyc" | wc -l')
+          test "$pyc" -gt 40
+          echo "precompiled modules: $pyc"
+          docker run --rm yasmina-api:ci python -m src.admin generate-backup-key \
+            | grep -Eq '^[A-Za-z0-9_-]{43}=$'
+          echo "backup key generation works in the runtime image."

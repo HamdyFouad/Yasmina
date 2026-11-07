@@ -15,7 +15,8 @@ from typing import Any
 
 from src.config import Settings, get_settings
 from src.db import dispose_engine, get_session_factory
-from src.models.enums import GloveSize, MaterialType, StandardizedColor, UnitOfMeasure
+from src.logging_config import configure_logging
+from src.models.enums import AuditEventType, GloveSize, MaterialType, StandardizedColor, UnitOfMeasure
 from src.parsers.normalizers import (
     normalize_color,
     normalize_glove_size,
@@ -24,6 +25,13 @@ from src.parsers.normalizers import (
     normalize_unit_of_measure,
 )
 from src.repositories.catalog_repository import CatalogRepository, CatalogSeedItem
+from src.services.audit_service import AuditService
+from src.services.backup_service import (
+    BackupError,
+    BackupResult,
+    generate_backup_key,
+    run_postgres_backup,
+)
 from src.services.embedding_service import (
     EmbeddingError,
     HashingEmbeddingProvider,
@@ -34,6 +42,7 @@ from src.services.token_maintenance import TokenCleanupResult, purge_auth_tokens
 
 __all__ = [
     "CatalogSeedError",
+    "backup_postgres",
     "load_catalog_rows",
     "main",
     "parse_catalog_rows",
@@ -271,6 +280,48 @@ async def purge_tokens(
         await dispose_engine()
 
 
+async def backup_postgres(
+    *,
+    settings: Settings,
+    dry_run: bool = False,
+    retention_days: int | None = None,
+) -> BackupResult:
+    """Encrypt a pg_dump archive, upload it to MinIO and prune old backups."""
+
+    if retention_days is not None:
+        settings = settings.model_copy(
+            update={"backup_retention_days": max(0, retention_days)},
+        )
+    try:
+        result = await run_postgres_backup(settings, dry_run=dry_run)
+        if not dry_run:
+            await _audit_backup(settings, result)
+        return result
+    finally:
+        await dispose_engine()
+
+
+async def _audit_backup(settings: Settings, result: BackupResult) -> None:
+    factory = get_session_factory(settings)
+    try:
+        async with factory() as session:
+            await AuditService(session).append(
+                event_type=AuditEventType.SYSTEM_BACKUP_COMPLETED,
+                actor="yasmina-admin",
+                entity_type="database_backup",
+                entity_id=result.key[:64],
+                payload={
+                    "bucket": result.bucket,
+                    "key": result.key,
+                    "size_bytes": result.size_bytes,
+                    "sha256": result.sha256,
+                    "pruned": list(result.pruned),
+                },
+            )
+    except Exception:  # pragma: no cover - the uploaded backup is the primary artifact
+        logger.exception("backup audit entry could not be recorded")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="yasmina-admin", description="Project Yasmina administration")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -301,18 +352,41 @@ def _parser() -> argparse.ArgumentParser:
     )
     purge.add_argument("--dry-run", action="store_true", help="count rows without deleting")
     purge.add_argument("--json", action="store_true", dest="as_json")
+    backup = subparsers.add_parser(
+        "backup-postgres",
+        help="encrypt a pg_dump archive, upload it to MinIO and prune old backups",
+    )
+    backup.add_argument(
+        "--retention-days",
+        type=int,
+        default=None,
+        help="keep backups this many days (default: BACKUP_RETENTION_DAYS)",
+    )
+    backup.add_argument("--dry-run", action="store_true", help="show the target key without dumping")
+    backup.add_argument("--json", action="store_true", dest="as_json")
+    key = subparsers.add_parser(
+        "generate-backup-key",
+        help="print a fresh Fernet key for BACKUP_ENCRYPTION_KEY",
+    )
+    key.add_argument("--json", action="store_true", dest="as_json")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     args = _parser().parse_args(argv)
+    try:
+        settings = get_settings()
+    except Exception as exc:
+        configure_logging("INFO", json_format=False)
+        print(f"admin configuration error: {exc}", file=sys.stderr)
+        return 2
+    configure_logging(settings.log_level, json_format=settings.log_format == "json")
     try:
         if args.command == "seed-catalog":
             summary = asyncio.run(
                 seed_catalog(
                     file_path=args.file,
-                    settings=get_settings(),
+                    settings=settings,
                     supplier=args.supplier,
                     embedding_provider=args.embedding_provider,
                     allow_hash_embeddings=args.allow_hash_embeddings,
@@ -331,7 +405,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "purge-auth-tokens":
             cleanup = asyncio.run(
                 purge_tokens(
-                    settings=get_settings(),
+                    settings=settings,
                     retention_days=args.retention_days,
                     dry_run=args.dry_run,
                 )
@@ -347,7 +421,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"(retention {cleanup.retention_days} days)"
                 )
             return 0
-    except (CatalogSeedError, EmbeddingError, ValueError) as exc:
+        if args.command == "backup-postgres":
+            backup = asyncio.run(
+                backup_postgres(
+                    settings=settings,
+                    dry_run=args.dry_run,
+                    retention_days=args.retention_days,
+                )
+            )
+            if args.as_json:
+                print(json.dumps(backup.as_dict(), indent=2, ensure_ascii=False))
+            else:
+                action = "would create" if backup.dry_run else "uploaded"
+                print(
+                    f"{action} {backup.key} ({backup.size_bytes} bytes) to bucket {backup.bucket}; "
+                    f"pruned {len(backup.pruned)} old backup(s)"
+                )
+            return 0
+        if args.command == "generate-backup-key":
+            key = generate_backup_key()
+            if args.as_json:
+                print(json.dumps({"backup_encryption_key": key}, indent=2))
+            else:
+                print(key)
+            return 0
+    except (BackupError, CatalogSeedError, EmbeddingError, ValueError) as exc:
         print(f"admin configuration error: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:  # pragma: no cover - CLI boundary

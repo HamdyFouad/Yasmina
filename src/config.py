@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     rate_limit_upload_per_minute: int = Field(default=30, ge=1, le=10000)
     rate_limit_business_per_minute: int = Field(default=300, ge=1, le=100000)
 
+    # --- Observability -----------------------------------------------------
+    log_format: Literal["json", "text"] = "json"
+    metrics_enabled: bool = True
+
     # --- Company / invoice seller -----------------------------------------
     company_name: str = "BayerClean"
     company_street: str | None = "Reithmayrstraße 52"
@@ -103,6 +107,14 @@ class Settings(BaseSettings):
     clamav_port: int = Field(default=3310, ge=1, le=65535)
     clamav_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     preflight_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+
+    # --- Encrypted PostgreSQL backups --------------------------------------
+    backup_bucket: str = "yasmina-backups"
+    backup_prefix: str = "postgres"
+    backup_encryption_key: SecretStr | None = None
+    backup_retention_days: int = Field(default=14, ge=0, le=3650)
+    backup_timeout_seconds: int = Field(default=1800, ge=30, le=14400)
+    pg_dump_binary: str = "pg_dump"
 
     # --- LLM / embeddings --------------------------------------------------
     deepseek_enabled: bool = True
