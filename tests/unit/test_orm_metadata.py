@@ -25,6 +25,7 @@ EXPECTED_TABLES = {
     "tender_ingestion_jobs",
     "scraper_states",
     "worker_runs",
+    "quotation_sync_jobs",
     "invoice_number_sequences",
     "invoices",
     "invoice_lines",
@@ -166,6 +167,19 @@ def test_ingestion_outbox_and_watermark_shape() -> None:
     assert "ix_tender_ingestion_jobs_status_available" in {index.name for index in jobs.indexes}
     assert states.c.portal_name.primary_key is True
     assert states.c.last_success_at.nullable is True
+
+
+def test_quotation_sync_outbox_shape() -> None:
+    jobs = Base.metadata.tables["quotation_sync_jobs"]
+
+    assert jobs.c.offer_id.unique is True
+    assert jobs.c.status.nullable is False
+    assert jobs.c.max_attempts.server_default is not None
+    assert {
+        "ck_quotation_sync_jobs_status_valid",
+        "ck_quotation_sync_jobs_attempts_non_negative",
+    } <= {constraint.name for constraint in jobs.constraints}
+    assert "ix_quotation_sync_jobs_status_available" in {index.name for index in jobs.indexes}
 
 
 def test_worker_run_history_shape() -> None:

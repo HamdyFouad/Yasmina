@@ -10,6 +10,8 @@ from typing import Any, Protocol
 from src.agents.nodes import enrich_specs
 from src.agents.state import AgentContext
 from src.config import Settings
+from src.integrations.clamav_client import ClamAVError, ClamAVScanner
+from src.models.enums import AuditEventType
 from src.models.schemas import Tender, TenderItem
 from src.parsers.gaeb_parser import GaebParseResult, parse_gaeb
 from src.parsers.pdf_parser import parse_pdf
@@ -19,13 +21,18 @@ from src.repositories.ingestion_repository import (
 )
 from src.repositories.tender_repository import TenderRepository, TenderRepositoryError
 from src.services.approval_service import ApprovalService
+from src.services.audit_service import AuditService, AuditServiceError
 from src.services.unit_converter import UnitConverter
 
-__all__ = ["IngestionProcessingError", "TenderIngestionProcessor"]
+__all__ = ["IngestionProcessingError", "SecurityRejectedError", "TenderIngestionProcessor"]
 
 
 class IngestionProcessingError(RuntimeError):
     """Raised when a queued tender cannot be processed."""
+
+
+class SecurityRejectedError(IngestionProcessingError):
+    """Raised when malware is detected in a downloaded attachment."""
 
 
 class ObjectReader(Protocol):
@@ -40,8 +47,14 @@ class _AttachmentSpec:
     kind: str
 
 
+@dataclass(frozen=True, slots=True)
+class _ScannedAttachment:
+    spec: _AttachmentSpec
+    data: bytes
+
+
 class TenderIngestionProcessor:
-    """Download archived attachments, parse them and enrich the tender."""
+    """Download archived attachments, scan them and parse them."""
 
     def __init__(
         self,
@@ -51,6 +64,8 @@ class TenderIngestionProcessor:
         settings: Settings,
         *,
         llm: Any | None = None,
+        scanner: ClamAVScanner | None = None,
+        audit: AuditService | None = None,
         work_dir: Path | None = None,
         pdf_parser: Callable[[Path], Any] = parse_pdf,
         gaeb_parser: Callable[[Path], Any] = parse_gaeb,
@@ -60,6 +75,12 @@ class TenderIngestionProcessor:
         self.storage = storage
         self.settings = settings
         self.llm = llm
+        self.scanner = scanner or ClamAVScanner(
+            settings.clamav_host,
+            settings.clamav_port,
+            timeout=settings.clamav_timeout_seconds,
+        )
+        self.audit = audit or AuditService(jobs.session)
         self.work_dir = work_dir or Path("var/ingestion")
         self.pdf_parser = pdf_parser
         self.gaeb_parser = gaeb_parser
@@ -124,17 +145,51 @@ class TenderIngestionProcessor:
             return items, list(result.get("warnings", []))
         return list(enriched_tender.items), list(result.get("warnings", []))
 
-    async def _parse_attachments(
-        self, tender: Tender, job: IngestionJobView
-    ) -> tuple[list[TenderItem], list[str]]:
-        items: list[TenderItem] = []
-        warnings: list[str] = []
-        seen: set[tuple[str, str]] = set()
-        specs = self._attachment_specs(job)
-        if not specs:
-            return items, ["no PDF/GAEB attachments supplied"]
+    async def _handle_malware(
+        self,
+        job: IngestionJobView,
+        spec: _AttachmentSpec,
+        *,
+        signature: str | None,
+        raw: str,
+    ) -> None:
+        """Quarantine a job and append the tamper-evident security alert."""
 
-        self.work_dir.mkdir(parents=True, exist_ok=True)
+        signature_text = signature or "unknown signature"
+        error = f"malware detected in {spec.filename} ({signature_text})"
+        try:
+            await self.audit.append(
+                event_type=AuditEventType.SYSTEM_SECURITY_ALERT,
+                actor="ingestion_processor",
+                entity_type="tender_ingestion_job",
+                entity_id=str(job.id),
+                payload={
+                    "tender_id": str(job.tender_id),
+                    "portal": job.portal_name,
+                    "filename": spec.filename,
+                    "object_name": spec.object_name,
+                    "content_type": spec.content_type,
+                    "signature": signature_text,
+                    "clamav_response": raw[:500],
+                    "action": "quarantined",
+                },
+            )
+        except AuditServiceError as exc:
+            raise IngestionProcessingError(
+                f"cannot persist security alert for {spec.filename}: {exc}"
+            ) from exc
+        await self.jobs.security_fail(job.id, error)
+        raise SecurityRejectedError(error)
+
+    async def _download_and_scan(
+        self,
+        job: IngestionJobView,
+        specs: list[_AttachmentSpec],
+    ) -> tuple[list[_ScannedAttachment], list[str]]:
+        scanned: list[_ScannedAttachment] = []
+        warnings: list[str] = []
+        if not specs:
+            warnings.append("no PDF/GAEB attachments supplied")
         for spec in specs:
             if spec.kind not in {"pdf", "gaeb"}:
                 warnings.append(f"{spec.filename}: unsupported attachment type")
@@ -144,6 +199,39 @@ class TenderIngestionProcessor:
             except Exception as exc:
                 warnings.append(f"{spec.filename}: cannot download from object storage: {exc}")
                 continue
+            try:
+                result = await self.scanner.scan_bytes(data)
+            except ClamAVError as exc:
+                # Fail closed: never hand unscanned bytes to a parser.
+                raise IngestionProcessingError(
+                    f"malware scanner unavailable for {spec.filename}: {exc}"
+                ) from exc
+            if not result.clean:
+                await self._handle_malware(
+                    job,
+                    spec,
+                    signature=result.signature,
+                    raw=result.raw,
+                )
+            scanned.append(_ScannedAttachment(spec=spec, data=data))
+        return scanned, warnings
+
+    async def _parse_attachments(
+        self,
+        tender: Tender,
+        job: IngestionJobView,
+        scanned: list[_ScannedAttachment],
+        warnings: list[str],
+    ) -> tuple[list[TenderItem], list[str]]:
+        items: list[TenderItem] = []
+        seen: set[tuple[str, str]] = set()
+        if not scanned:
+            return items, warnings
+
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        for attachment in scanned:
+            spec = attachment.spec
+            data = attachment.data
             suffix = Path(spec.filename).suffix or (".pdf" if spec.kind == "pdf" else ".x83")
             temp_path = self.work_dir / f"{job.id}-{Path(spec.object_name).stem}{suffix}"
             temp_path.write_bytes(data)
@@ -185,7 +273,12 @@ class TenderIngestionProcessor:
             await self.jobs.skip(job.id, "no supported PDF/GAEB attachments")
             return "skipped"
 
-        items, warnings = await self._parse_attachments(stored.tender, job)
+        try:
+            scanned, warnings = await self._download_and_scan(job, specs)
+        except SecurityRejectedError:
+            return "rejected"
+
+        items, warnings = await self._parse_attachments(stored.tender, job, scanned, warnings)
         if not items and job.attachments:
             if warnings:
                 raise IngestionProcessingError("; ".join(warnings))

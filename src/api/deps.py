@@ -16,12 +16,14 @@ from src.integrations.clamav_client import ClamAVScanner
 from src.integrations.erpnext_client import ERPNextClient
 from src.integrations.minio_client import MinioObjectStorage
 from src.integrations.n8n_client import N8nClient
+from src.repositories.catalog_repository import CatalogRepository
 from src.repositories.credit_note_repository import CreditNoteRepository
 from src.repositories.ingestion_repository import TenderIngestionJobRepository
 from src.repositories.integration_repository import IntegrationRepository
 from src.repositories.invoice_repository import InvoiceRepository
 from src.repositories.offer_repository import OfferRepository
 from src.repositories.ops_repository import OpsRepository
+from src.repositories.quotation_sync_repository import QuotationSyncJobRepository
 from src.repositories.supplier_quote_repository import SupplierQuoteRepository
 from src.repositories.tender_repository import TenderRepository
 from src.repositories.user_repository import (
@@ -38,6 +40,7 @@ __all__ = [
     "bearer_scheme",
     "get_app_settings",
     "get_audit_service",
+    "get_catalog_repository",
     "get_clamav_scanner",
     "get_credit_note_repository",
     "get_erpnext_client",
@@ -50,6 +53,7 @@ __all__ = [
     "get_optional_principal",
     "get_password_reset_repository",
     "get_principal",
+    "get_quotation_sync_repository",
     "get_refresh_token_repository",
     "get_session",
     "get_supplier_quote_repository",
@@ -194,6 +198,18 @@ def get_offer_repository(
     session: AsyncSession = Depends(get_session),
 ) -> OfferRepository:
     return OfferRepository(session)
+
+
+def get_catalog_repository(
+    session: AsyncSession = Depends(get_session),
+) -> CatalogRepository:
+    return CatalogRepository(session)
+
+
+def get_quotation_sync_repository(
+    session: AsyncSession = Depends(get_session),
+) -> QuotationSyncJobRepository:
+    return QuotationSyncJobRepository(session)
 
 
 def get_invoice_repository(

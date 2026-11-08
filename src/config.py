@@ -169,6 +169,9 @@ class Settings(BaseSettings):
     erpnext_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     erpnext_max_retries: int = Field(default=2, ge=0, le=5)
     erpnext_retry_backoff_seconds: float = Field(default=0.5, ge=0, le=10)
+    quotation_sync_max_attempts: int = Field(default=6, ge=1, le=20)
+    quotation_sync_backoff_seconds: int = Field(default=60, ge=1, le=3600)
+    quotation_sync_batch_size: int = Field(default=10, ge=1, le=100)
 
     # --- Telegram alerts ---------------------------------------------------
     telegram_bot_token: SecretStr | None = None

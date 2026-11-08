@@ -179,6 +179,24 @@ class TenderIngestionJobRepository:
         await self.session.commit()
         return row.status
 
+    async def security_fail(self, job_id: UUID, error: str) -> None:
+        """Move a malware-positive job directly to the terminal failed state.
+
+        Security rejections must never be retried: re-downloading the same
+        infected object would only repeat the scan. The error is prefixed so
+        operators and the worker health endpoint can distinguish a security
+        quarantine from an ordinary parsing failure.
+        """
+
+        row = await self.session.get(TenderIngestionJob, job_id)
+        if row is None:
+            raise IngestionRepositoryError(f"ingestion job {job_id} does not exist")
+        row.status = "failed"
+        row.locked_at = None
+        row.locked_by = None
+        row.last_error = f"SECURITY: {error}"[:8000]
+        await self.session.commit()
+
     async def release(self, job_id: UUID, *, now: datetime | None = None) -> None:
         """Return a claimed-but-unstarted job to the queue (graceful shutdown)."""
 

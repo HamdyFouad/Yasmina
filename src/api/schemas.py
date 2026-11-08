@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, EmailStr, Field
+from pydantic import AwareDatetime, BaseModel, EmailStr, Field, model_validator
 
 from src.agents.state import OfferRequest
 from src.api.security import Role
@@ -16,6 +16,7 @@ from src.models.schemas import CustomerOffer, SupplierQuote
 
 __all__ = [
     "ApprovalPayload",
+    "CatalogOverridePayload",
     "InvoiceBuyerPayload",
     "InvoiceCreditPayload",
     "InvoicePaymentPayload",
@@ -83,6 +84,23 @@ class UserCreatePayload(BaseModel):
     password: str = Field(min_length=1, max_length=256)
     email: EmailStr | None = None
     roles: list[Role] = Field(min_length=1)
+
+
+class CatalogOverridePayload(BaseModel):
+    """Pin, replace or clear manual merge overrides for one catalogue article."""
+
+    supplier_name: str = Field(min_length=1, max_length=256)
+    article_number: str = Field(min_length=1, max_length=128)
+    fields: list[str] = Field(default_factory=list, max_length=32)
+    mode: Literal["add", "replace", "clear"] = "add"
+
+    @model_validator(mode="after")
+    def _validate_fields(self) -> CatalogOverridePayload:
+        cleaned = [field.strip() for field in self.fields if field.strip()]
+        if self.mode != "clear" and not cleaned:
+            raise ValueError("fields must contain at least one catalogue field")
+        self.fields = list(dict.fromkeys(cleaned))
+        return self
 
 
 class OfferRequestPayload(BaseModel):

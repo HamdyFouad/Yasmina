@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from src.api.metrics import MetricsMiddleware, render_metrics
 from src.api.observability import RequestContextMiddleware
 from src.api.rate_limit import RateLimitMiddleware
-from src.api.routes import approvals, auth, integrations, invoices, offers, ops, tenders
+from src.api.routes import admin_catalog, approvals, auth, integrations, invoices, offers, ops, tenders
 from src.api.security import validate_security_configuration
 from src.config import Settings, ensure_env_file, get_settings, reset_settings_cache
 from src.db import dispose_engine
@@ -117,6 +117,7 @@ def create_app(settings: Settings | None = None, *, run_startup_checks: bool = T
     application.include_router(approvals.router, prefix="/api/v1")
     application.include_router(offers.router, prefix="/api/v1")
     application.include_router(invoices.router, prefix="/api/v1")
+    application.include_router(admin_catalog.router, prefix="/api/v1")
     application.include_router(integrations.router, prefix="/api/v1")
     application.include_router(ops.api_router, prefix="/api/v1")
     application.include_router(ops.router)

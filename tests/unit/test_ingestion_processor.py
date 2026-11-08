@@ -12,7 +12,8 @@ import pytest
 
 from src.agents.deepseek import TenderTriage
 from src.config import Settings
-from src.models.enums import ProcurementProcedure, TenderSourceFormat, UnitOfMeasure
+from src.integrations.clamav_client import ClamAVError, ClamAVResult
+from src.models.enums import AuditEventType, ProcurementProcedure, TenderSourceFormat, UnitOfMeasure
 from src.models.schemas import Tender, TenderItem
 from src.repositories.ingestion_repository import IngestionJobView
 from src.repositories.tender_repository import StoredTender
@@ -46,6 +47,7 @@ class FakeJobs:
         self.completed: list[UUID] = []
         self.skipped: list[tuple[UUID, str | None]] = []
         self.failed: list[tuple[UUID, str]] = []
+        self.security_failed: list[tuple[UUID, str]] = []
 
     async def complete(self, job_id: UUID) -> None:
         self.completed.append(job_id)
@@ -55,6 +57,35 @@ class FakeJobs:
 
     async def fail(self, job_id: UUID, error: str, **kwargs: Any) -> None:
         self.failed.append((job_id, error))
+
+    async def security_fail(self, job_id: UUID, error: str) -> None:
+        self.security_failed.append((job_id, error))
+
+
+class FakeScanner:
+    def __init__(
+        self,
+        *,
+        clean: bool = True,
+        signature: str | None = None,
+        raw: str = "stream: OK",
+    ) -> None:
+        self.clean = clean
+        self.signature = signature
+        self.raw = raw
+        self.scanned: list[bytes] = []
+
+    async def scan_bytes(self, data: bytes) -> ClamAVResult:
+        self.scanned.append(data)
+        return ClamAVResult(clean=self.clean, signature=self.signature, raw=self.raw)
+
+
+class FakeAudit:
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+
+    async def append(self, **kwargs: Any) -> None:
+        self.events.append(kwargs)
 
 
 class FakeStorage:
@@ -130,6 +161,9 @@ def make_processor(
     llm: Any | None = None,
     parser_items: list[TenderItem] | None = None,
     kind: str = "pdf",
+    scanner: FakeScanner | None = None,
+    audit: FakeAudit | None = None,
+    parsed: list[str] | None = None,
 ) -> tuple[TenderIngestionProcessor, FakeRepository, FakeJobs]:
     repository = FakeRepository(tender)
     jobs = FakeJobs()
@@ -137,9 +171,13 @@ def make_processor(
     storage = FakeStorage({job.attachments[0]["object_name"]: b"attachment"})
 
     def pdf_parser(path):  # type: ignore[no-untyped-def]
+        if parsed is not None:
+            parsed.append("pdf")
         return SimpleNamespace(items=parser_items if parser_items is not None else [make_item()], warnings=[])
 
     def gaeb_parser(path):  # type: ignore[no-untyped-def]
+        if parsed is not None:
+            parsed.append("gaeb")
         return SimpleNamespace(
             tender=tender.model_copy(update={"items": parser_items or [make_item()]}), warnings=[]
         )
@@ -150,6 +188,8 @@ def make_processor(
         storage,
         Settings(_env_file=None, database_url=None),
         llm=llm,
+        scanner=scanner or FakeScanner(),  # type: ignore[arg-type]
+        audit=audit or FakeAudit(),  # type: ignore[arg-type]
         work_dir=workspace_tmp,
         pdf_parser=pdf_parser,
         gaeb_parser=gaeb_parser,
@@ -206,3 +246,59 @@ async def test_processor_fails_when_no_parseable_positions(workspace_tmp) -> Non
     processor, _, _ = make_processor(workspace_tmp, tender, parser_items=[])
     with pytest.raises(IngestionProcessingError, match="no parseable"):
         await processor.process(make_job(tender.id))
+
+
+async def test_processor_quarantines_malware_before_parsing(workspace_tmp) -> None:  # type: ignore[no-untyped-def]
+    tender = make_tender()
+    scanner = FakeScanner(
+        clean=False,
+        signature="Eicar-Test-Signature",
+        raw="stream: Win.Test.EICAR_HDB-1 FOUND",
+    )
+    audit = FakeAudit()
+    parsed: list[str] = []
+    processor, repository, jobs = make_processor(
+        workspace_tmp,
+        tender,
+        scanner=scanner,
+        audit=audit,
+        parsed=parsed,
+    )
+    job = make_job(tender.id)
+
+    status = await processor.process(job)
+
+    assert status == "rejected"
+    assert parsed == []
+    assert repository.replaced == []
+    assert jobs.completed == []
+    assert jobs.security_failed
+    failed_job_id, error = jobs.security_failed[0]
+    assert failed_job_id == job.id
+    assert "Eicar-Test-Signature" in error
+    assert audit.events
+    event = audit.events[0]
+    assert event["event_type"] is AuditEventType.SYSTEM_SECURITY_ALERT
+    assert event["entity_id"] == str(job.id)
+    assert event["payload"]["signature"] == "Eicar-Test-Signature"
+    assert event["payload"]["action"] == "quarantined"
+    assert "attachment" in scanner.scanned[0].decode()
+
+
+async def test_processor_fails_closed_when_clamav_is_unavailable(workspace_tmp) -> None:  # type: ignore[no-untyped-def]
+    tender = make_tender()
+
+    class BrokenScanner(FakeScanner):
+        async def scan_bytes(self, data: bytes):  # type: ignore[no-untyped-def]
+            raise ClamAVError("clamd connection refused")
+
+    processor, repository, jobs = make_processor(
+        workspace_tmp,
+        tender,
+        scanner=BrokenScanner(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(IngestionProcessingError, match="scanner unavailable"):
+        await processor.process(make_job(tender.id))
+    assert repository.replaced == []
+    assert jobs.completed == []

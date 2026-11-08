@@ -704,8 +704,7 @@ reconciled with the authoritative spec later.
   Query keys are namespaced by resource; server state is cached for 30 seconds.
 - The frontend CI job runs `npm ci`, `oxlint` and `tsc -b && vite build`. It does
   not yet run browser end-to-end tests or a production static host deployment.
-- The suite runs 461 tests with live PostgreSQL and Redis enabled, plus the
-  MinIO/ClamAV smoke tests in CI.
+- The suite runs 477 tests with live PostgreSQL, Redis, MinIO and ClamAV enabled.
 
 ## E-invoicing assumptions (P2.1)
 
@@ -780,5 +779,35 @@ for deterministic fixture and chain-verification tests.
   persistence and outbox writes stay sequential on one session. A portal
   failure is isolated and logged; other targets and the ingestion pass continue.
 - Attachment harvesting remains enabled by default but scraped files are not
-  passed through ClamAV (only `POST /tenders/upload` is scanned). This remains
-  an explicit security follow-up for untrusted portal files.
+  passed through ClamAV (only `POST /tenders/upload` is scanned). This remained
+  a P6.3 follow-up and is closed by P6.4 below.
+
+## Ingestion security and ERP hardening assumptions (P6.4)
+
+- Scraped PDF/GAEB attachments are downloaded into memory, streamed through
+  ClamAV INSTREAM, and only then written to the ingestion work directory. A
+  scanner/connection error fails closed and leaves the job retryable; a
+  positive scan discards the bytes before Docling/pyGAEB, marks the
+  `TenderIngestionJob` terminal `failed` with a `SECURITY:` error, and appends
+  `SYSTEM_SECURITY_ALERT` to the hash-chained audit log. The audit payload
+  contains the filename/object key/signature/job/portal, never file bytes.
+- Malware rejections count as hard failures for the run record so operators
+  notice them; they are not retried.
+- Approval no longer calls ERPNext inline. It writes one unique
+  `quotation_sync_jobs` row per offer and returns `erpnext.status = "queued"`
+  with the job id. The background worker claims with
+  `FOR UPDATE SKIP LOCKED`, retries `ERPNextError` with exponential backoff
+  (`QUOTATION_SYNC_BACKOFF_SECONDS`, capped at one hour) and moves the job to
+  `failed` after `QUOTATION_SYNC_MAX_ATTEMPTS`. Missing credentials leave the
+  queue untouched; jobs that become unconfigured are marked `skipped`.
+- The offer's `erpnext_quotation_name` is only updated after a successful
+  quotation creation. The worker stages the offer update and
+  `ERP_QUOTATION_CREATED` audit event in the same transaction as the job
+  completion; a failure rolls back and retries. The deterministic ERPNext
+  quotation title keeps retries idempotent.
+- Admin catalogue overrides are exposed at
+  `GET/POST /api/v1/admin/catalog/overrides`. The POST payload resolves the
+  article by `(supplier_name, article_number)`, validates fields against
+  `MERGEABLE_FIELDS`, and supports `add`, `replace` and `clear` modes. An
+  empty `clear` removes every pin. Responses include the current override list
+  and article metadata.

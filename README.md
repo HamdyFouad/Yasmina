@@ -53,8 +53,10 @@ Core principles:
 - **Normalize before validation.** Every Pydantic model is
   `strict=True, extra="forbid"`; raw extraction text must pass through
   `src/parsers/normalizers.py` first.
-- **Scan uploads first.** ClamAV is provisioned as the mandatory virus-scanning
-  gate before any parser or LLM sees an uploaded document.
+- **Scan uploads and scraped attachments first.** ClamAV is the mandatory
+  virus-scanning gate before any parser or LLM sees an uploaded document or a
+  harvested portal attachment. A positive scan quarantines the ingestion job,
+  emits `SYSTEM_SECURITY_ALERT` and never invokes Docling/pyGAEB.
 - **Human-in-the-loop is cryptographic.** An offer cannot be approved, exported
   to GAEB, or pushed to ERPNext without an Ed25519 human approval signature.
 - **Audit everything.** `audit_logs` is append-only and hash-chained; the
@@ -110,6 +112,7 @@ src/
                          # password-reset tokens and MFA state
     catalog_repository.py # supplier catalogue + embedding upserts
     ingestion_repository.py # outbox jobs + scraper watermarks
+    quotation_sync_repository.py # durable ERPNext quotation outbox
     worker_run_repository.py # run history for scrapes and ingestion batches
     integration_repository.py # durable idempotency-key ledger
     supplier_quote_repository.py # inbound n8n quote persistence
@@ -128,8 +131,9 @@ src/
     password_service.py  # Argon2id hashing and password policy
     embedding_service.py # OpenAI-compatible / local / hashing embeddings
     embedding_pipeline.py # batching, 429/5xx retries and progress reporting
-    ingestion_processor.py # PDF/GAEB parsing + triage worker
-    worker_lock.py       # PostgreSQL advisory locks per portal
+    ingestion_processor.py # ClamAV gate + PDF/GAEB parsing/triage worker
+    quotation_sync.py    # durable ERPNext quotation outbox worker
+    worker_lock.py       # PostgreSQL portal + Redis per-domain locks
     worker_metrics.py    # worker health snapshot aggregation
     matching_service.py  # pgvector retrieval + lexical/embedding ranking
     approval_service.py  # canonical payload, Ed25519 sign/verify/apply
@@ -341,6 +345,8 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | GET | `/invoices/{id}/credit-notes` | sales (own), viewer/admin (all) |
 | GET | `/ops/summary` | sales (owner-scoped), viewer/admin (global) |
 | GET | `/ops/activity` | admin/viewer only |
+| GET | `/admin/catalog/overrides` | admin only; list pinned catalogue fields |
+| POST | `/admin/catalog/overrides` | admin only; add/replace/clear pins |
 | POST | `/invoices/{id}/payments` | admin only |
 | POST | `/invoices/{id}/credits` | admin only |
 | POST | `/integrations/rfq/dispatch` | sales/admin |
@@ -430,8 +436,11 @@ ZUGFeRD PDF and stores them under `offers/{offer_number}/` in MinIO. The invoice
 row receives a transactionally allocated `INV-YYYY-XXXX` number, line-level VAT
 rates, persisted VAT splits and payment/credit status. The download endpoint
 serves `format=xrechnung|zugferd`. If ERPNext credentials are configured,
-approval also creates (or returns) the matching ERPNext Quotation and stores its
-name on the offer.
+approval persists the offer and enqueues a durable `quotation_sync_jobs` row;
+the background worker creates (or returns) the matching ERPNext Quotation
+asynchronously, then records its name on the offer and audits
+`ERP_QUOTATION_CREATED`. The approval response reports
+`erpnext.status = "queued"` and the job id.
 
 Approval is now idempotent by `offer_number`: the approved state is persisted
 before invoice/ERP side effects, retries return the same offer and artifacts,
@@ -473,6 +482,12 @@ state machine.
   `supplier_name`; quotations are looked up by the deterministic
   `Yasmina <offer-number> | <customer>` title before creation. Transient HTTP
   429/5xx responses are retried with exponential backoff.
+- Approval writes one `quotation_sync_jobs` row per offer (unique `offer_id`), so
+  a slow or unavailable ERPNext never blocks the HTTP request. The worker claims
+  jobs with `FOR UPDATE SKIP LOCKED`, retries with exponential backoff
+  (`QUOTATION_SYNC_BACKOFF_SECONDS`, capped at one hour, max
+  `QUOTATION_SYNC_MAX_ATTEMPTS`), updates the offer only after success, and records
+  `ERP_QUOTATION_CREATED` in the audit chain. Re-approval returns the existing job.
 - `POST /integrations/rfq/dispatch` requires an `Idempotency-Key` header. The
   key, request hash and cached response are persisted in
   `integration_idempotency`, so a replay returns the original result without
@@ -490,6 +505,18 @@ Invoke-RestMethod -Method Post `
   -Headers @{ Authorization = "Bearer $token"; "Idempotency-Key" = "rfq-2026-0001" } `
   -ContentType "application/json" -Body $body
 ```
+
+### Catalogue override API
+
+Operators no longer need the CLI to pin catalogue values. Both routes require
+`admin`:
+
+- `GET /api/v1/admin/catalog/overrides?supplier=Bayer&article_number=ART-100`
+  lists articles with non-empty `manual_overrides` and paginates the result.
+- `POST /api/v1/admin/catalog/overrides` accepts
+  `{supplier_name, article_number, fields, mode}` where `mode` is `add`,
+  `replace` or `clear`. Fields are validated against the mergeable catalogue
+  columns; clearing without `fields` removes all pins for that article.
 
 ### Portal scrapers (config-driven engine catalogue)
 
@@ -545,6 +572,11 @@ Discovery guardrails are shared by every engine:
   `SCRAPER_MAX_ATTACHMENTS` files of `SCRAPER_MAX_ATTACHMENT_MB` MiB, and
   archived to MinIO under
   `scrapers/<portal>/attachments/<sha256>.<ext>`.
+- Every PDF/GAEB attachment is streamed through ClamAV **before** Docling or
+  pyGAEB sees it. A positive result discards the bytes, moves the
+  `TenderIngestionJob` to terminal `failed` with a `SECURITY:` error, and appends
+  a hash-chained `SYSTEM_SECURITY_ALERT` (filename, object key, signature, job,
+  portal) to `audit_logs`. A scanner outage fails closed and retries the job.
 - If a target has an `api` block, the worker tries the JSON/XML feed first
   (TED, XVergabe/DTVP or a portal's open-data export) and falls back to the
   selected HTML engine only when the feed fails and `fallback_to_html` is true.
@@ -616,9 +648,10 @@ python -m src.worker process --interval 30
 The scheduler is dependency-free and logs job failures without terminating.
 Network discovery runs in batches of `SCRAPER_MAX_CONCURRENT_PORTALS` (default 6)
 across different domains; persistence and outbox writes remain sequential. Each
-scheduled scrape is followed by one `process_jobs_once()` pass, so a single cron
-entry keeps both discovery and parsing moving. A failed portal does not block
-the remaining targets or the ingestion pass.
+scheduled scrape is followed by one `process_jobs_once()` pass and one
+`process_quotation_sync_jobs_once()` pass, so discovery, document parsing and
+ERPNext quotation syncing all advance from a single cron entry. A failed portal
+does not block the remaining targets or the ingestion pass.
 
 #### Production hardening and observability
 
@@ -966,11 +999,11 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml --profile backup 
 - Every service has a healthcheck and `restart: unless-stopped`; the API waits
   for PostgreSQL, MinIO (plus bucket bootstrap), ClamAV and Redis.
 - A `worker` service runs `python -m src.worker schedule --portal all` after the
-  API is healthy. It uses the same image, the internal network, Redis per-domain
-  locks/spacing and the `config/portals.yaml` catalogue; scale it with
-  `docker compose ... up -d --scale worker=N` only when the per-domain locks are
-  active. The worker has a writable `/app/var/ingestion` tmpfs for PDF/GAEB
-  parsing.
+  API is healthy, and a `sync-worker` service drains ingestion/quotation jobs
+  every 30 seconds. Both use the same image, the internal network, Redis
+  per-domain locks/spacing and the `config/portals.yaml` catalogue; scale them
+  only when the per-domain/durable locks are active. Each worker has a writable
+  `/app/var/ingestion` tmpfs for PDF/GAEB parsing.
 - Redis runs with `--appendonly yes` and password authentication
   (`REDIS_PASSWORD`), and the API connects through `REDIS_URL` with
   `RATE_LIMIT_BACKEND=redis` so all replicas share one token bucket.
@@ -1108,7 +1141,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | Embeddings | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` (BGE-M3, 1024) |
 | n8n | `N8N_WEBHOOK_BASE_URL`, `N8N_WEBHOOK_HMAC_SECRET`, `N8N_RFQ_WEBHOOK_PATH`, `N8N_CALLBACK_URL`, `N8N_CALLBACK_MAX_AGE_SECONDS` |
 | Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_APPROVAL_CHAT_ID`, `TELEGRAM_ALERTS_ENABLED`, `TELEGRAM_TIMEOUT_SECONDS`, `TELEGRAM_MAX_RETRIES`, `TELEGRAM_RETRY_BACKOFF_SECONDS` |
-| ERPNext | `ERPNEXT_BASE_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `ERPNEXT_ITEM_GROUP`, `ERPNEXT_SELLING_PRICE_LIST`, `ERPNEXT_QUOTATION_SERIES` |
+| ERPNext | `ERPNEXT_BASE_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `ERPNEXT_ITEM_GROUP`, `ERPNEXT_SELLING_PRICE_LIST`, `ERPNEXT_QUOTATION_SERIES`, `QUOTATION_SYNC_MAX_ATTEMPTS`, `QUOTATION_SYNC_BACKOFF_SECONDS`, `QUOTATION_SYNC_BATCH_SIZE` |
 | Portal scrapers | `PORTAL_CONFIG_FILE`, `SCRAPER_REQUEST_DELAY_SECONDS`, `SCRAPER_ROBOTS_CACHE_SECONDS`, `SCRAPER_MAX_PAGES`, `SCRAPER_MAX_CONCURRENT_PORTALS`, `SCRAPER_DOMAIN_LOCK_TTL_SECONDS`, `SCRAPER_PREFER_API`, `SCRAPER_ARCHIVE_RAW`, `SCRAPER_ARCHIVE_PREFIX`, `SCRAPER_USER_AGENTS`, `SCRAPER_HARVEST_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENT_MB`, `SCRAPER_SCHEDULE_CRON` |
 | HITL | `ED25519_APPROVAL_PUBLIC_KEY`, `APPROVAL_SIGNATURE_REQUIRED` |
 | Pricing | `DEFAULT_VAT_RATE`, `DEFAULT_MARGIN_RATE`, `OFFER_VALIDITY_DAYS` |
@@ -1235,6 +1268,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P5.4 — operations dashboard foundation: Vite/React 18/TypeScript/Tailwind/shadcn shell, branded MFA login, Axios JWT + single-flight refresh interceptors, typed API layer, RBAC-aware user menu and live overview counts
 - [x] P5.5 — dashboard views: owner-scoped tender board with a detail sheet (document download, hybrid catalogue matching, linked-offer pricing), paginated invoice table with ZUGFeRD/XRechnung downloads and an admin-only payment dialog, plus the ops KPI/activity feed; backend adds tender read/document routes, `/ops/summary`, `/ops/activity`, `/offers?tender_id=`, invoice document downloads and HttpOnly refresh cookies
 - [x] P6.3 — config-driven portal expansion: 120-target `portals.yaml`, engine-based cosinex/RIB/standard scrapers, JSON/XML/TED API preference with HTML fallback, cross-portal `dedup_hash` (title + client + deadline), Redis per-domain spacing/locks and bounded concurrent portal scraping
+- [x] P6.4 — ingestion security and ERP hardening: mandatory ClamAV scanning of scraped attachments with terminal job quarantine + `SYSTEM_SECURITY_ALERT`, durable `quotation_sync_jobs` ERPNext outbox with exponential-backoff worker, and admin catalogue override GET/POST APIs
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

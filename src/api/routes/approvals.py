@@ -7,16 +7,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import ValidationError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import (
     get_app_settings,
-    get_audit_service,
     get_erpnext_client,
     get_invoice_repository,
     get_object_storage,
     get_offer_repository,
-    get_session,
+    get_quotation_sync_repository,
     get_tender_repository,
     require_roles,
 )
@@ -24,13 +22,12 @@ from src.api.invoices import InvoiceWiringError, generate_invoice_artifacts
 from src.api.schemas import ApprovalPayload, VerifyPayload, parse_customer_offer
 from src.api.security import Principal, Role
 from src.config import Settings
-from src.integrations.erpnext_client import ERPNextClient, ERPNextError
+from src.integrations.erpnext_client import ERPNextClient
 from src.integrations.minio_client import (
     MinioObjectStorage,
     ObjectStorageError,
     object_name_for_invoice,
 )
-from src.models.enums import AuditEventType
 from src.models.schemas import CustomerOffer
 from src.repositories.invoice_repository import InvoiceRepository
 from src.repositories.offer_repository import (
@@ -39,9 +36,9 @@ from src.repositories.offer_repository import (
     OfferRepositoryError,
     StoredOffer,
 )
+from src.repositories.quotation_sync_repository import QuotationSyncJobRepository
 from src.repositories.tender_repository import TenderRepository
 from src.services.approval_service import ApprovalError, ApprovalService
-from src.services.audit_service import AuditService, AuditServiceError
 
 __all__ = ["router"]
 
@@ -113,8 +110,7 @@ async def approve_offer_endpoint(
     repository: OfferRepository = Depends(get_offer_repository),
     invoices: InvoiceRepository = Depends(get_invoice_repository),
     tenders: TenderRepository = Depends(get_tender_repository),
-    audit: AuditService = Depends(get_audit_service),
-    session: AsyncSession = Depends(get_session),
+    sync_jobs: QuotationSyncJobRepository = Depends(get_quotation_sync_repository),
     principal: Principal = Depends(require_roles(Role.APPROVER, Role.ADMIN)),
 ) -> dict[str, Any]:
     """Verify, persist and complete an approval idempotently by offer number."""
@@ -227,41 +223,20 @@ async def approve_offer_endpoint(
             "created": False,
         }
     elif erpnext.configured:
-        try:
-            quotation = await erpnext.create_quotation(persisted)
-        except ERPNextError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"offer approved and persisted, but ERPNext quotation creation failed: {exc}",
-            ) from exc
-
-        persisted = persisted.model_copy(update={"erpnext_quotation_name": quotation.name})
-        persisted = (await _persist(persisted)).offer
+        # The external call is deliberately not made in the request path. A
+        # durable outbox row is committed with the approval, and the worker
+        # retries ERPNext with exponential backoff independently of the client.
+        job, queued = await sync_jobs.enqueue(
+            persisted.id,
+            offer_number=persisted.offer_number,
+            max_attempts=settings.quotation_sync_max_attempts,
+        )
         erpnext_result = {
-            "status": "created" if quotation.created else "existing",
-            **quotation.as_dict(),
+            "status": "queued",
+            "job_id": str(job.id),
+            "created": queued,
+            "offer_number": persisted.offer_number,
         }
-        try:
-            await audit.append(
-                event_type=AuditEventType.ERP_QUOTATION_CREATED,
-                actor=principal.sub,
-                entity_type="customer_offer",
-                entity_id=str(persisted.id),
-                payload={
-                    "offer_number": persisted.offer_number,
-                    "quotation_name": quotation.name,
-                    "created": quotation.created,
-                    "approved_by": persisted.approved_by,
-                },
-                commit=False,
-            )
-            await session.commit()
-        except AuditServiceError as exc:
-            await session.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"ERPNext quotation created but audit log is unavailable: {exc}",
-            ) from exc
     else:
         erpnext_result = {
             "status": "skipped",

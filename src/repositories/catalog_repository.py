@@ -16,6 +16,7 @@ from src.models.enums import GloveSize, MaterialType, StandardizedColor, UnitOfM
 from src.models.orm import CatalogArticle, Supplier
 
 __all__ = [
+    "CatalogOverrideView",
     "CatalogRepository",
     "CatalogReindexItem",
     "CatalogSeedItem",
@@ -75,6 +76,42 @@ class ExistingArticle:
     pack_size: int | None
     attributes: dict[str, Any]
     manual_overrides: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogOverrideView:
+    """One article and its manually pinned merge fields."""
+
+    id: UUID
+    supplier_id: UUID
+    supplier_name: str
+    article_number: str
+    description: str
+    material: MaterialType | None
+    color: StandardizedColor | None
+    glove_size: GloveSize
+    unit: UnitOfMeasure | None
+    unit_price_net: Decimal | None
+    pack_size: int | None
+    manual_overrides: tuple[str, ...]
+    updated_at: datetime
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": str(self.id),
+            "supplier_id": str(self.supplier_id),
+            "supplier_name": self.supplier_name,
+            "article_number": self.article_number,
+            "description": self.description,
+            "material": self.material.value if self.material else None,
+            "color": self.color.value if self.color else None,
+            "glove_size": self.glove_size.value,
+            "unit": self.unit.value if self.unit else None,
+            "unit_price_net": format(self.unit_price_net, "f") if self.unit_price_net is not None else None,
+            "pack_size": self.pack_size,
+            "manual_overrides": list(self.manual_overrides),
+            "updated_at": self.updated_at.isoformat(),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +230,25 @@ def _existing_article(row: CatalogArticle) -> ExistingArticle:
         pack_size=row.pack_size,
         attributes=dict(row.attributes or {}),
         manual_overrides=tuple(row.manual_overrides or ()),
+    )
+
+
+def _override_view(row: CatalogArticle, supplier_name: str) -> CatalogOverrideView:
+    assert row.supplier_id is not None
+    return CatalogOverrideView(
+        id=row.id,
+        supplier_id=row.supplier_id,
+        supplier_name=supplier_name,
+        article_number=row.article_number,
+        description=row.description,
+        material=row.material,
+        color=row.color,
+        glove_size=row.glove_size,
+        unit=row.unit,
+        unit_price_net=row.unit_price_net,
+        pack_size=row.pack_size,
+        manual_overrides=tuple(row.manual_overrides or ()),
+        updated_at=row.updated_at,
     )
 
 
@@ -451,3 +507,66 @@ class CatalogRepository:
 
     async def count(self) -> int:
         return await self.count_articles()
+
+    @staticmethod
+    def _override_statement(
+        *,
+        supplier: str | None,
+        article_number: str | None,
+    ) -> Any:
+        statement = (
+            select(CatalogArticle, Supplier.name)
+            .join(Supplier, CatalogArticle.supplier_id == Supplier.id)
+            .where(func.jsonb_array_length(CatalogArticle.manual_overrides) > 0)
+        )
+        if supplier:
+            statement = statement.where(Supplier.name.ilike(f"%{supplier.strip()}%"))
+        if article_number:
+            statement = statement.where(CatalogArticle.article_number.ilike(f"%{article_number.strip()}%"))
+        return statement
+
+    async def list_manual_overrides(
+        self,
+        *,
+        supplier: str | None = None,
+        article_number: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[CatalogOverrideView], int]:
+        statement = self._override_statement(
+            supplier=supplier,
+            article_number=article_number,
+        )
+        rows = (
+            await self.session.execute(
+                statement.order_by(Supplier.name, CatalogArticle.article_number)
+                .offset(offset)
+                .limit(max(1, limit))
+            )
+        ).all()
+        count_statement = self._override_statement(
+            supplier=supplier,
+            article_number=article_number,
+        ).with_only_columns(func.count())
+        total = int((await self.session.execute(count_statement)).scalar_one())
+        return [_override_view(article, name) for article, name in rows], total
+
+    async def get_by_supplier_article(
+        self,
+        supplier_name: str,
+        article_number: str,
+    ) -> CatalogOverrideView | None:
+        row = (
+            await self.session.execute(
+                select(CatalogArticle, Supplier.name)
+                .join(Supplier, CatalogArticle.supplier_id == Supplier.id)
+                .where(
+                    Supplier.name == supplier_name.strip(),
+                    CatalogArticle.article_number == article_number.strip(),
+                )
+            )
+        ).first()
+        if row is None:
+            return None
+        article, supplier = row
+        return _override_view(article, supplier)

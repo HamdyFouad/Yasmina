@@ -1189,6 +1189,45 @@ class TenderIngestionJob(Base, TimestampMixin):
     )
 
 
+class QuotationSyncJob(Base, TimestampMixin):
+    """Durable outbox row for asynchronous ERPNext quotation creation."""
+
+    __tablename__ = "quotation_sync_jobs"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    offer_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("customer_offers.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    offer_number: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default=text("'pending'")
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=6, server_default=text("6"))
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    locked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    quotation_name: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'succeeded', 'failed', 'skipped')",
+            name="status_valid",
+        ),
+        CheckConstraint("attempts >= 0", name="attempts_non_negative"),
+        Index("ix_quotation_sync_jobs_status_available", "status", "available_at"),
+    )
+
+
 class ScraperState(Base, TimestampMixin):
     """Per-portal watermark used to avoid re-fetching old listing pages."""
 

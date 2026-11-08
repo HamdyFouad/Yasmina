@@ -18,6 +18,7 @@ from typing import Any, TypeVar
 from src.api.context import build_agent_context
 from src.config import Settings, get_settings
 from src.db import dispose_engine, get_engine, get_session_factory
+from src.integrations.clamav_client import ClamAVScanner
 from src.integrations.minio_client import MinioObjectStorage
 from src.integrations.telegram_notifier import TelegramNotifier
 from src.logging_config import configure_logging
@@ -42,6 +43,7 @@ from src.scrapers.oeffentlichevergabe import OeffentlicheVergabeScraper
 from src.scrapers.portal_config import PortalTarget, load_portal_targets
 from src.services.audit_service import AuditService
 from src.services.ingestion_processor import TenderIngestionProcessor
+from src.services.quotation_sync import process_quotation_sync_jobs_once
 from src.services.worker_lock import (
     DatabasePortalLock,
     DomainLocker,
@@ -686,6 +688,12 @@ async def process_jobs_once(
                 storage,
                 settings,
                 llm=build_agent_context(settings).llm,
+                scanner=ClamAVScanner(
+                    settings.clamav_host,
+                    settings.clamav_port,
+                    timeout=settings.clamav_timeout_seconds,
+                ),
+                audit=AuditService(session),
             )
             processed = 0
             errors = 0
@@ -733,6 +741,9 @@ async def process_jobs_once(
                     )
                 else:
                     processed += 1
+                    if status == "rejected":
+                        errors += 1
+                        hard_failures += 1
                     summaries.append(
                         {
                             "job_id": str(job.id),
@@ -828,6 +839,17 @@ async def run_scheduled(
                         item["tender_id"],
                         item["status"],
                     )
+                synced = await process_quotation_sync_jobs_once(
+                    settings=settings,
+                    worker_id=active_worker,
+                )
+                for item in synced:
+                    logger.info(
+                        "quotation sync job=%s offer=%s status=%s",
+                        item["job_id"],
+                        item["offer_number"],
+                        item["status"],
+                    )
         except Exception as exc:
             logger.exception("scheduled scrape failed portal=%s", portal)
             try:
@@ -859,6 +881,7 @@ async def _process_loop(
     stop_event: asyncio.Event | None = None,
     notifier: TelegramNotifier | None = None,
     process_once: Callable[..., Awaitable[list[dict[str, Any]]]] | None = None,
+    quotation_runner: Callable[..., Awaitable[list[dict[str, Any]]]] | None = None,
 ) -> None:
     if interval <= 0:
         raise ValueError("process interval must be positive")
@@ -878,6 +901,15 @@ async def _process_loop(
                 summary["tender_id"],
                 summary["status"],
             )
+        if quotation_runner is not None and (stop_event is None or not stop_event.is_set()):
+            synced = await quotation_runner(settings=settings, stop_event=stop_event)
+            for summary in synced:
+                logger.info(
+                    "quotation sync job=%s offer=%s status=%s",
+                    summary["job_id"],
+                    summary["offer_number"],
+                    summary["status"],
+                )
         if stop_event is not None and stop_event.is_set():
             break
         await wait_for_stop(interval, stop_event)
@@ -963,6 +995,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             args.limit,
                             args.interval,
                             stop_event=stop,
+                            quotation_runner=process_quotation_sync_jobs_once,
                         )
                     )
                 )
@@ -976,11 +1009,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 )
             )
+            synced = asyncio.run(
+                _run_with_shutdown(
+                    lambda stop: process_quotation_sync_jobs_once(
+                        settings=settings,
+                        stop_event=stop,
+                    )
+                )
+            )
             if args.as_json:
-                print(json.dumps(summaries, indent=2, ensure_ascii=False))
+                print(
+                    json.dumps(
+                        {"ingestion": summaries, "quotation_sync": synced},
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                )
             else:
                 for summary in summaries:
                     print(f"{summary['job_id']}: {summary['status']}")
+                for summary in synced:
+                    print(f"{summary['job_id']}: {summary['status']} (quotation sync)")
             return 0
 
         runs = asyncio.run(

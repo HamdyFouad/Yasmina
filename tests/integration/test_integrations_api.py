@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,6 +20,7 @@ from src.api.deps import (
     get_integration_repository,
     get_n8n_client,
     get_offer_repository,
+    get_quotation_sync_repository,
     get_session,
     get_supplier_quote_repository,
     get_tender_repository,
@@ -302,6 +303,33 @@ class FakeOfferRepository:
         return len(self.offers)
 
 
+class FakeQuotationSyncRepository:
+    def __init__(self) -> None:
+        self.jobs: dict[UUID, Any] = {}
+
+    async def enqueue(
+        self,
+        offer_id: UUID,
+        *,
+        offer_number: str,
+        max_attempts: int = 6,
+        commit: bool = True,
+    ) -> tuple[Any, bool]:
+        existing = self.jobs.get(offer_id)
+        if existing is not None:
+            return existing, False
+        job = SimpleNamespace(
+            id=uuid4(),
+            offer_id=offer_id,
+            offer_number=offer_number,
+            status="pending",
+            attempts=0,
+            max_attempts=max_attempts,
+        )
+        self.jobs[offer_id] = job
+        return job, True
+
+
 @pytest.fixture()
 def api() -> Any:
     app = create_app(SETTINGS, run_startup_checks=False)
@@ -313,6 +341,7 @@ def api() -> Any:
     n8n = FakeN8n(SETTINGS)
     erpnext = FakeERPNext()
     offers = FakeOfferRepository()
+    sync_jobs = FakeQuotationSyncRepository()
 
     async def fake_session() -> Any:
         yield session
@@ -325,6 +354,7 @@ def api() -> Any:
     app.dependency_overrides[get_n8n_client] = lambda: n8n
     app.dependency_overrides[get_erpnext_client] = lambda: erpnext
     app.dependency_overrides[get_offer_repository] = lambda: offers
+    app.dependency_overrides[get_quotation_sync_repository] = lambda: sync_jobs
     app.dependency_overrides[get_workflow_checkpointer] = lambda: None
 
     with TestClient(app) as client:
@@ -339,6 +369,7 @@ def api() -> Any:
             n8n=n8n,
             erpnext=erpnext,
             offers=offers,
+            sync_jobs=sync_jobs,
         )
 
 
@@ -483,7 +514,8 @@ def test_approval_creates_erpnext_quotation(api: Any) -> None:
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["erpnext"]["status"] == "created"
-    assert response.json()["offer"]["erpnext_quotation_name"] == "QTN-2026-0001"
-    assert len(api.erpnext.offers) == 1
-    assert api.audit.entries[-1]["event_type"].value == "ERP_QUOTATION_CREATED"
+    assert response.json()["erpnext"]["status"] == "queued"
+    assert response.json()["offer"]["erpnext_quotation_name"] is None
+    assert len(api.erpnext.offers) == 0
+    assert len(api.sync_jobs.jobs) == 1
+    assert api.audit.entries == []

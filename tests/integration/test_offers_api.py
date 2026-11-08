@@ -17,6 +17,7 @@ from src.api.deps import (
     get_invoice_repository,
     get_object_storage,
     get_offer_repository,
+    get_quotation_sync_repository,
     get_session,
     get_workflow_checkpointer,
 )
@@ -233,6 +234,33 @@ class FakeAudit:
         return None
 
 
+class FakeQuotationSyncRepository:
+    def __init__(self) -> None:
+        self.jobs: dict[UUID, Any] = {}
+
+    async def enqueue(
+        self,
+        offer_id: UUID,
+        *,
+        offer_number: str,
+        max_attempts: int = 6,
+        commit: bool = True,
+    ) -> tuple[Any, bool]:
+        existing = self.jobs.get(offer_id)
+        if existing is not None:
+            return existing, False
+        job = SimpleNamespace(
+            id=uuid4(),
+            offer_id=offer_id,
+            offer_number=offer_number,
+            status="pending",
+            attempts=0,
+            max_attempts=max_attempts,
+        )
+        self.jobs[offer_id] = job
+        return job, True
+
+
 @pytest.fixture()
 def api() -> Any:
     app = create_app(SETTINGS, run_startup_checks=False)
@@ -240,6 +268,7 @@ def api() -> Any:
     storage = FakeStorage()
     erpnext = FakeERPNext()
     session = FakeSession()
+    sync_jobs = FakeQuotationSyncRepository()
 
     async def fake_session() -> Any:
         yield session
@@ -250,6 +279,7 @@ def api() -> Any:
     app.dependency_overrides[get_object_storage] = lambda: storage
     app.dependency_overrides[get_erpnext_client] = lambda: erpnext
     app.dependency_overrides[get_audit_service] = lambda: FakeAudit()
+    app.dependency_overrides[get_quotation_sync_repository] = lambda: sync_jobs
     app.dependency_overrides[get_workflow_checkpointer] = lambda: None
 
     with TestClient(app) as client:
@@ -258,6 +288,7 @@ def api() -> Any:
             repository=repository,
             storage=storage,
             erpnext=erpnext,
+            sync_jobs=sync_jobs,
         )
 
 
@@ -317,15 +348,19 @@ def test_approval_persists_and_replays_idempotently(api: Any) -> None:
     assert first.json()["created"] is True
     assert second.json()["created"] is False
     assert first.json()["offer"]["owner"] == "sales-a"
-    assert first.json()["erpnext"]["status"] == "created"
-    assert second.json()["erpnext"]["status"] == "existing"
-    assert len(api.erpnext.calls) == 1
+    assert first.json()["erpnext"]["status"] == "queued"
+    assert first.json()["erpnext"]["created"] is True
+    assert second.json()["erpnext"]["status"] == "queued"
+    assert second.json()["erpnext"]["created"] is False
+    assert first.json()["erpnext"]["job_id"] == second.json()["erpnext"]["job_id"]
+    assert len(api.erpnext.calls) == 0
+    assert len(api.sync_jobs.jobs) == 1
     assert len(api.storage.objects) == 2  # XRechnung XML + ZUGFeRD PDF
 
     persisted = api.repository.offers[offer.offer_number]
     assert persisted.status is CustomerOfferStatus.APPROVED
     assert persisted.owner == "sales-a"
-    assert persisted.erpnext_quotation_name == "QTN-2026-0001"
+    assert persisted.erpnext_quotation_name is None
     assert set(persisted.invoice_artifacts) == {"xrechnung", "zugferd"}
     assert api.storage.objects[persisted.invoice_artifacts["xrechnung"]["object_name"]]
     assert api.storage.objects[persisted.invoice_artifacts["zugferd"]["object_name"]].startswith(b"%PDF-")
