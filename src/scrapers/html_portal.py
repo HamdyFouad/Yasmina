@@ -241,7 +241,7 @@ def _cpvs(element: Tag, text: str) -> tuple[str, ...]:
     return tuple(result)
 
 
-def _detail_link(element: Tag, page_url: str) -> str | None:
+def _detail_link(element: Tag, page_url: str, hints: tuple[str, ...] = _DETAIL_HINTS) -> str | None:
     candidates: list[str] = []
     for anchor in element.select("a[href]"):
         href = str(anchor.get("href", "")).strip()
@@ -254,7 +254,7 @@ def _detail_link(element: Tag, page_url: str) -> str | None:
     if not candidates:
         return None
     preferred = next(
-        (href for href in candidates if any(hint in href.casefold() for hint in _DETAIL_HINTS)),
+        (href for href in candidates if any(hint in href.casefold() for hint in hints)),
         candidates[0],
     )
     return urljoin(page_url, preferred)
@@ -321,6 +321,8 @@ class HTMLPortalScraper(BaseScraper):
     start_url: str = ""
     follow_iframe: ClassVar[bool] = False
     fetch_details: bool = True
+    card_selectors: ClassVar[tuple[str, ...]] = _CARD_SELECTORS
+    detail_hints: ClassVar[tuple[str, ...]] = _DETAIL_HINTS
 
     def __init__(
         self, *args: Any, start_url: str | None = None, fetch_details: bool | None = None, **kwargs: Any
@@ -357,14 +359,14 @@ class HTMLPortalScraper(BaseScraper):
             return page
         return await self.fetch(iframe_url)
 
-    @staticmethod
-    def _select_cards(soup: BeautifulSoup) -> list[Tag]:
-        for selector in _CARD_SELECTORS:
+    @classmethod
+    def _select_cards(cls, soup: BeautifulSoup) -> list[Tag]:
+        for selector in cls.card_selectors:
             try:
                 elements = [
                     element
                     for element in soup.select(selector)
-                    if _detail_link(element, "https://placeholder.invalid")
+                    if _detail_link(element, "https://placeholder.invalid", cls.detail_hints)
                 ]
             except (ValueError, TypeError):
                 continue
@@ -372,14 +374,14 @@ class HTMLPortalScraper(BaseScraper):
                 return elements
         return []
 
-    @staticmethod
-    def parse_cards(html: str, page_url: str, *, raw_object: str | None = None) -> list[_ParsedCard]:
+    @classmethod
+    def parse_cards(cls, html: str, page_url: str, *, raw_object: str | None = None) -> list[_ParsedCard]:
         page_url = str(page_url)
         soup = BeautifulSoup(html, "html.parser")
-        elements = HTMLPortalScraper._select_cards(soup)
+        elements = cls._select_cards(soup)
         cards: dict[str, _ParsedCard] = {}
         for element in elements:
-            url = _detail_link(element, page_url)
+            url = _detail_link(element, page_url, cls.detail_hints)
             if url is None:
                 continue
             text = _text(element)

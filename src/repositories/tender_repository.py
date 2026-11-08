@@ -18,6 +18,7 @@ from src.models.orm import Tender as TenderORM
 from src.models.orm import TenderItem as TenderItemORM
 from src.models.schemas import Tender, TenderItem
 from src.parsers.gaeb_parser import parse_gaeb
+from src.services.tender_dedup import tender_fingerprint
 
 __all__ = ["StoredTender", "TenderRepository", "TenderRepositoryError"]
 
@@ -91,7 +92,7 @@ def _item_to_schema(item: TenderItemORM) -> TenderItem:
     )
 
 
-def tender_to_orm(tender: Tender) -> TenderORM:
+def tender_to_orm(tender: Tender, *, dedup_hash: str | None = None) -> TenderORM:
     """Map a strict schema tender to its SQLAlchemy row graph."""
 
     orm = TenderORM(
@@ -105,6 +106,7 @@ def tender_to_orm(tender: Tender) -> TenderORM:
         source_format=tender.source_format,
         source_reference=tender.source_reference,
         owner=tender.owner,
+        dedup_hash=dedup_hash,
         cpv_codes=list(tender.cpv_codes),
         publication_date=tender.publication_date,
         submission_deadline=tender.submission_deadline,
@@ -170,7 +172,7 @@ class TenderRepository:
         if source_object:
             metadata["_source_object"] = source_object
         stored_tender = tender.model_copy(update={"metadata": metadata})
-        orm = tender_to_orm(stored_tender)
+        orm = tender_to_orm(stored_tender, dedup_hash=tender_fingerprint(stored_tender))
         self.session.add(orm)
         try:
             if commit:
@@ -233,6 +235,15 @@ class TenderRepository:
             select(TenderORM)
             .where(TenderORM.tender_number == tender_number)
             .options(selectinload(TenderORM.items))
+        )
+        orm = (await self.session.execute(statement)).scalars().first()
+        return self._stored(orm) if orm is not None else None
+
+    async def get_by_dedup_hash(self, dedup_hash: str) -> StoredTender | None:
+        """Look up the same notice syndicated under a different portal number."""
+
+        statement = (
+            select(TenderORM).where(TenderORM.dedup_hash == dedup_hash).options(selectinload(TenderORM.items))
         )
         orm = (await self.session.execute(statement)).scalars().first()
         return self._stored(orm) if orm is not None else None

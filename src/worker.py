@@ -11,6 +11,8 @@ import signal
 import socket
 import sys
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any, TypeVar
 
 from src.api.context import build_agent_context
@@ -25,15 +27,27 @@ from src.repositories.ingestion_repository import (
     TenderIngestionJobRepository,
 )
 from src.repositories.tender_repository import TenderRepository
-from src.repositories.worker_run_repository import WorkerRunRepository, WorkerRunView
+from src.repositories.worker_run_repository import WorkerRunRepository
 from src.scheduler import CronExpression, CronScheduleError, run_scheduler, wait_for_stop
-from src.scrapers.base_scraper import BaseScraper, ObjectWriter
+from src.scrapers.api_feeds import build_api_scraper
+from src.scrapers.base_scraper import BaseScraper, ObjectWriter, ScrapeReport
 from src.scrapers.bayern_vergabe import BayernVergabeScraper
+from src.scrapers.domain_limits import (
+    DomainRateLimiter,
+    build_domain_rate_limiter,
+)
+from src.scrapers.engines import build_engine_scraper
 from src.scrapers.ingestion import IngestionPipeline, PortalIngestionBridge, PortalIngestionResult
 from src.scrapers.oeffentlichevergabe import OeffentlicheVergabeScraper
+from src.scrapers.portal_config import PortalTarget, load_portal_targets
 from src.services.audit_service import AuditService
 from src.services.ingestion_processor import TenderIngestionProcessor
-from src.services.worker_lock import DatabasePortalLock, PortalLocker
+from src.services.worker_lock import (
+    DatabasePortalLock,
+    DomainLocker,
+    PortalLocker,
+    build_domain_locker,
+)
 
 __all__ = [
     "PORTALS",
@@ -54,8 +68,19 @@ PORTALS: dict[str, type[BaseScraper]] = {
     "bayern": BayernVergabeScraper,
     "bund": OeffentlicheVergabeScraper,
 }
-ALL_PORTALS = ("bayern", "bund")
 ScraperFactory = Callable[[str, Settings, ObjectWriter], BaseScraper]
+
+
+@dataclass(slots=True)
+class _PreparedPortal:
+    target: PortalTarget
+    max_pages: int | None
+    since: datetime | None
+    scraper: BaseScraper | None = None
+    run_id: Any = None
+    report: ScrapeReport | None = None
+    used_api: bool = False
+    error: Exception | None = None
 
 
 def worker_identity() -> str:
@@ -194,20 +219,50 @@ async def _notify_dead_letter(
     )
 
 
-def build_scraper(portal: str, settings: Settings, storage: ObjectWriter) -> BaseScraper:
-    try:
-        scraper_type = PORTALS[portal]
-    except KeyError as exc:
-        raise ValueError(f"unknown portal {portal!r}; expected one of {sorted(PORTALS)}") from exc
-    return scraper_type(settings, storage)
+def _load_targets(
+    settings: Settings,
+    *,
+    enabled_only: bool = True,
+) -> list[PortalTarget]:
+    return load_portal_targets(settings.portal_config_file, enabled_only=enabled_only)
 
 
-def _portal_names(portal: str) -> tuple[str, ...]:
+def _targets_for(
+    portal: str,
+    targets: Sequence[PortalTarget] | None,
+    *,
+    settings: Settings,
+) -> list[PortalTarget]:
+    available = list(targets) if targets is not None else _load_targets(settings)
     if portal == "all":
-        return ALL_PORTALS
-    if portal not in PORTALS:
-        raise ValueError(f"unknown portal {portal!r}; expected one of all, {sorted(PORTALS)}")
-    return (portal,)
+        return available
+    selected = next((target for target in available if target.id == portal), None)
+    if selected is None:
+        raise ValueError(
+            f"unknown portal {portal!r}; expected one of all, {sorted(target.id for target in available)}"
+        )
+    return [selected]
+
+
+def build_engine_portal_scraper(
+    target: PortalTarget,
+    settings: Settings,
+    storage: ObjectWriter | None = None,
+    *,
+    rate_limiter: DomainRateLimiter | None = None,
+) -> BaseScraper:
+    return build_engine_scraper(target, settings, storage, rate_limiter=rate_limiter)
+
+
+def build_scraper(portal: str, settings: Settings, storage: ObjectWriter) -> BaseScraper:
+    """Legacy id-based factory kept for callers and tests.
+
+    The worker itself prefers ``build_engine_portal_scraper``/API adapters via a
+    ``PortalTarget``; this helper resolves the id from the YAML catalogue.
+    """
+
+    target = _targets_for(portal, None, settings=settings)[0]
+    return build_engine_portal_scraper(target, settings, storage)
 
 
 def _result_dict(result: PortalIngestionResult) -> dict[str, Any]:
@@ -215,9 +270,77 @@ def _result_dict(result: PortalIngestionResult) -> dict[str, Any]:
         "tender_id": str(result.tender_id),
         "tender_number": result.tender_number,
         "created": result.created,
+        "deduplicated": result.deduplicated,
+        "duplicate_of": str(result.duplicate_of) if result.duplicate_of is not None else None,
+        "duplicate_reason": result.duplicate_reason,
         "pipeline_triggered": result.pipeline_triggered,
         "raw_object": result.raw_object,
         "job_id": str(result.job_id) if result.job_id is not None else None,
+    }
+
+
+async def _finish_run(
+    runs: WorkerRunRepository,
+    run_id: Any,
+    **kwargs: Any,
+) -> None:
+    try:
+        await runs.finish(run_id, **kwargs)
+    except Exception:  # pragma: no cover - metrics must not mask the scrape outcome
+        logger.exception("could not record scrape run id=%s", run_id)
+
+
+async def _record_locked(
+    target: PortalTarget,
+    worker_id: str,
+    runs: WorkerRunRepository | None,
+    summaries: list[dict[str, Any]],
+    *,
+    domain: str | None = None,
+) -> None:
+    if runs is not None:
+        try:
+            run = await runs.start(
+                run_type="scrape",
+                resource=target.id,
+                worker_id=worker_id,
+                details={"locked": True, "domain": domain},
+            )
+            await _finish_run(
+                runs,
+                run.id,
+                status="skipped",
+                details={"locked": True, "portal": target.id, "domain": domain},
+            )
+        except Exception:  # pragma: no cover - metrics must not stop the worker
+            logger.exception("could not record locked scrape run portal=%s", target.id)
+    summary = _locked_summary(target.id)
+    if domain is not None:
+        summary["domain"] = domain
+        summary["domain_locked"] = True
+    summaries.append(summary)
+
+
+def _error_summary(
+    target: PortalTarget,
+    error: Exception,
+    *,
+    report: ScrapeReport | None = None,
+) -> dict[str, Any]:
+    return {
+        "portal": target.id,
+        "target": target.id,
+        "engine": target.engine,
+        "domain": target.effective_domain,
+        "pages_fetched": report.pages_fetched if report is not None else 0,
+        "discovered": len(report.discovered) if report is not None else 0,
+        "skipped_cpv": report.skipped_cpv if report is not None else 0,
+        "skipped_invalid": report.skipped_invalid if report is not None else 0,
+        "skipped_stale": report.skipped_stale if report is not None else 0,
+        "errors": [*report.errors, str(error)] if report is not None else [str(error)],
+        "results": [],
+        "since": None,
+        "error": str(error),
     }
 
 
@@ -237,113 +360,244 @@ async def run_scrape_once(
     scraper_factory: ScraperFactory | None = None,
     stop_event: asyncio.Event | None = None,
     worker_id: str | None = None,
+    targets: Sequence[PortalTarget] | None = None,
+    domain_limiter: DomainRateLimiter | None = None,
+    domain_locker: DomainLocker | None = None,
+    concurrency: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Run ``ingest_scraper`` for one portal (or ``all``).
+    """Scrape every selected target and persist results in source order.
 
-    A PostgreSQL advisory lock is held for each portal while it is scraped.
-    When ``stop_event`` is set, no new portal scrape starts; the in-flight
-    portal finishes and releases its lock before this function returns.
+    Network discovery runs in bounded batches. A slow portal therefore does not
+    block the others, while attachment persistence and the outbox stay
+    sequential on the caller's SQLAlchemy session. Each portal has its own
+    PostgreSQL advisory lock and each HTTP domain a Redis-backed lock and
+    spacing limiter, so replicas can scale out safely.
     """
 
-    active_storage = storage if storage is not None else MinioObjectStorage(settings)
-    factory = scraper_factory or build_scraper
+    active_storage: ObjectWriter = storage if storage is not None else MinioObjectStorage(settings)
     active_worker = worker_id or worker_identity()
+    chosen = _targets_for(portal, targets, settings=settings)
+    parallelism = max(1, concurrency or settings.scraper_max_concurrent_portals)
+    owns_limiter = domain_limiter is None
+    owns_locker = domain_locker is None
+    active_limiter = domain_limiter or build_domain_rate_limiter(settings)
+    active_locker = domain_locker or build_domain_locker(settings)
     summaries: list[dict[str, Any]] = []
-    for name in _portal_names(portal):
-        if stop_event is not None and stop_event.is_set():
-            logger.info("shutdown requested; skipping remaining portal scrapes")
-            break
+    failures: list[Exception] = []
+
+    async def release_portal(name: str) -> None:
+        if locks is not None:
+            await locks.release(name)
+
+    async def prepare(target: PortalTarget) -> _PreparedPortal | None:
+        name = target.id
         acquired = await locks.acquire(name) if locks is not None else True
-        run: WorkerRunView | None = None
         if not acquired:
-            if runs is not None:
-                try:
-                    run = await runs.start(
-                        run_type="scrape",
-                        resource=name,
-                        worker_id=active_worker,
-                        details={"locked": True},
-                    )
-                    await runs.finish(
-                        run.id,
-                        status="skipped",
-                        details={"locked": True, "portal": name},
-                    )
-                except Exception:  # pragma: no cover - metrics must not stop the worker
-                    logger.exception("could not record locked scrape run portal=%s", name)
-            logger.warning("portal %s is already being scraped by another worker", name)
-            summaries.append(_locked_summary(name))
-            continue
+            await _record_locked(target, active_worker, runs, summaries)
+            return None
+
+        domain = target.effective_domain
+        domain_acquired = await active_locker.acquire(domain)
+        if not domain_acquired:
+            logger.warning("domain %s is already being scraped by another worker", domain)
+            await _record_locked(target, active_worker, runs, summaries, domain=domain)
+            await release_portal(name)
+            return None
 
         try:
+            run = None
             if runs is not None:
                 run = await runs.start(
                     run_type="scrape",
                     resource=name,
                     worker_id=active_worker,
+                    details={"engine": target.engine, "domain": domain},
                 )
-            scraper = factory(name, settings, active_storage)
-            bridge = PortalIngestionBridge(
-                repository,
-                pipeline=pipeline,
-                audit=audit,
-                jobs=jobs,
-            )
             state = await states.get(name) if states is not None else None
             since = state.last_success_at if state is not None else None
             if states is not None:
                 await states.mark_started(name)
-            try:
-                report, results = await bridge.ingest_scraper(
-                    scraper,
-                    max_pages=max_pages,
-                    since=since,
-                )
-            except Exception as exc:
-                if states is not None:
-                    await states.mark_failure(name, str(exc))
-                raise
-            if states is not None:
-                await states.mark_success(name)
-            summary = {
-                "portal": name,
-                "pages_fetched": report.pages_fetched,
-                "discovered": len(report.discovered),
-                "skipped_cpv": report.skipped_cpv,
-                "skipped_invalid": report.skipped_invalid,
-                "skipped_stale": report.skipped_stale,
-                "errors": list(report.errors),
-                "results": [_result_dict(result) for result in results],
-                "since": since.isoformat() if since is not None else None,
-            }
-            summaries.append(summary)
-            if runs is not None and run is not None:
-                try:
-                    await runs.finish(
-                        run.id,
-                        status="succeeded",
-                        items_processed=len(results),
-                        errors_count=len(report.errors),
-                        details=summary,
-                    )
-                except Exception:  # pragma: no cover - metrics must not mask a successful scrape
-                    logger.exception("could not record scrape run portal=%s", name)
-        except Exception as exc:
-            if runs is not None and run is not None:
-                try:
-                    await runs.finish(
-                        run.id,
-                        status="failed",
-                        errors_count=1,
-                        error=str(exc),
-                        details={"portal": name},
-                    )
-                except Exception:  # pragma: no cover - metrics must not mask the scrape error
-                    logger.exception("could not record failed scrape run portal=%s", name)
+            scraper = scraper_factory(name, settings, active_storage) if scraper_factory else None
+            effective_max_pages = max_pages if max_pages is not None else target.max_pages
+            return _PreparedPortal(
+                target=target,
+                max_pages=effective_max_pages,
+                since=since,
+                scraper=scraper,
+                run_id=run.id if run is not None else None,
+            )
+        except Exception:
+            await active_locker.release(domain)
+            await release_portal(name)
             raise
+
+    async def scrape(prepared: _PreparedPortal) -> None:
+        target = prepared.target
+        try:
+            report: ScrapeReport
+            if prepared.scraper is not None:
+                report = await prepared.scraper.scrape(
+                    max_pages=prepared.max_pages,
+                    since=prepared.since,
+                )
+            elif settings.scraper_prefer_api and target.api is not None:
+                try:
+                    api_scraper = build_api_scraper(
+                        target,
+                        settings,
+                        active_storage,
+                        rate_limiter=active_limiter,
+                    )
+                    report = await api_scraper.scrape(
+                        max_pages=prepared.max_pages,
+                        since=prepared.since,
+                    )
+                    prepared.used_api = True
+                except Exception as exc:
+                    if not target.api.fallback_to_html:
+                        raise
+                    logger.warning(
+                        "API feed failed for portal=%s; falling back to HTML: %s",
+                        target.id,
+                        exc,
+                    )
+                    html_scraper = build_engine_portal_scraper(
+                        target,
+                        settings,
+                        active_storage,
+                        rate_limiter=active_limiter,
+                    )
+                    report = await html_scraper.scrape(
+                        max_pages=prepared.max_pages,
+                        since=prepared.since,
+                    )
+                    report = replace(
+                        report,
+                        errors=(f"API feed failed, HTML fallback used: {exc}", *report.errors),
+                    )
+            else:
+                scraper = build_engine_portal_scraper(
+                    target,
+                    settings,
+                    active_storage,
+                    rate_limiter=active_limiter,
+                )
+                report = await scraper.scrape(
+                    max_pages=prepared.max_pages,
+                    since=prepared.since,
+                )
+            prepared.report = report
+        except Exception as exc:
+            prepared.error = exc
         finally:
-            if locks is not None:
-                await locks.release(name)
+            await active_locker.release(target.effective_domain)
+
+    async def persist(prepared: _PreparedPortal) -> None:
+        target = prepared.target
+        name = target.id
+        if prepared.error is not None or prepared.report is None:
+            error = prepared.error or RuntimeError("scrape produced no report")
+            failures.append(error)
+            if states is not None:
+                await states.mark_failure(name, str(error))
+            if runs is not None and prepared.run_id is not None:
+                await _finish_run(
+                    runs,
+                    prepared.run_id,
+                    status="failed",
+                    errors_count=1,
+                    error=str(error),
+                    details={"portal": name},
+                )
+            summaries.append(_error_summary(target, error))
+            await release_portal(name)
+            return
+
+        report = prepared.report
+        bridge = PortalIngestionBridge(
+            repository,
+            pipeline=pipeline,
+            audit=audit,
+            jobs=jobs,
+        )
+        try:
+            results = await bridge.ingest_many(list(report.discovered))
+        except Exception as exc:
+            failures.append(exc)
+            if states is not None:
+                await states.mark_failure(name, str(exc))
+            if runs is not None and prepared.run_id is not None:
+                await _finish_run(
+                    runs,
+                    prepared.run_id,
+                    status="failed",
+                    errors_count=1,
+                    error=str(exc),
+                    details={"portal": name},
+                )
+            summaries.append(_error_summary(target, exc, report=report))
+            await release_portal(name)
+            return
+
+        if states is not None:
+            await states.mark_success(name)
+        summary = {
+            "portal": name,
+            "target": target.id,
+            "engine": target.engine,
+            "domain": target.effective_domain,
+            "used_api": prepared.used_api,
+            "pages_fetched": report.pages_fetched,
+            "discovered": len(report.discovered),
+            "skipped_cpv": report.skipped_cpv,
+            "skipped_invalid": report.skipped_invalid,
+            "skipped_stale": report.skipped_stale,
+            "errors": list(report.errors),
+            "results": [_result_dict(result) for result in results],
+            "since": prepared.since.isoformat() if prepared.since is not None else None,
+        }
+        summaries.append(summary)
+        if runs is not None and prepared.run_id is not None:
+            await _finish_run(
+                runs,
+                prepared.run_id,
+                status="succeeded",
+                items_processed=len(results),
+                errors_count=len(report.errors),
+                details=summary,
+            )
+        await release_portal(name)
+
+    try:
+        for start in range(0, len(chosen), parallelism):
+            if stop_event is not None and stop_event.is_set():
+                logger.info("shutdown requested; skipping remaining portal scrapes")
+                break
+            prepared_batch: list[_PreparedPortal] = []
+            for target in chosen[start : start + parallelism]:
+                if stop_event is not None and stop_event.is_set():
+                    break
+                prepared = await prepare(target)
+                if prepared is not None:
+                    prepared_batch.append(prepared)
+            if not prepared_batch:
+                continue
+            await asyncio.gather(*(scrape(prepared) for prepared in prepared_batch))
+            for prepared in prepared_batch:
+                await persist(prepared)
+            if stop_event is not None and stop_event.is_set():
+                logger.info("shutdown requested after in-flight portal batch")
+                break
+    finally:
+        if owns_locker:
+            await active_locker.aclose()
+        if owns_limiter:
+            await active_limiter.aclose()
+
+    if failures:
+        # One broken portal must not block the rest of a 100-target run or the
+        # follow-up ingestion pass; errors are persisted in the summaries/logs.
+        logger.error("%d portal scrape(s) failed", len(failures))
     return summaries
 
 
@@ -355,10 +609,12 @@ async def _run_once_with_db(
     max_pages: int | None = None,
     scraper_factory: ScraperFactory | None = None,
     stop_event: asyncio.Event | None = None,
+    include_unverified: bool = False,
 ) -> list[dict[str, Any]]:
     storage = MinioObjectStorage(settings)
     factory = get_session_factory(settings)
     locker = DatabasePortalLock(get_engine(settings))
+    targets = _load_targets(settings, enabled_only=not include_unverified)
     try:
         async with factory() as session:
             return await run_scrape_once(
@@ -375,6 +631,7 @@ async def _run_once_with_db(
                 max_pages=max_pages,
                 scraper_factory=scraper_factory,
                 stop_event=stop_event,
+                targets=targets,
             )
     finally:
         await locker.release_all()
@@ -635,8 +892,13 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     scrape = subparsers.add_parser("scrape", help="run one scrape immediately")
-    scrape.add_argument("--portal", choices=("all", *PORTALS), default="all")
+    scrape.add_argument("--portal", default="all", help="target id from portals.yaml, or all")
     scrape.add_argument("--max-pages", type=int, default=None)
+    scrape.add_argument(
+        "--include-unverified",
+        action="store_true",
+        help="pilot disabled catalogue entries (does not affect the daily scheduler)",
+    )
     scrape.add_argument("--json", action="store_true", dest="as_json")
 
     process = subparsers.add_parser("process", help="process queued ingestion jobs")
@@ -650,7 +912,7 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--json", action="store_true", dest="as_json")
 
     schedule = subparsers.add_parser("schedule", help="run the daily cron scheduler")
-    schedule.add_argument("--portal", choices=("all", *PORTALS), default="all")
+    schedule.add_argument("--portal", default="all", help="target id from portals.yaml, or all")
     schedule.add_argument("--cron", default=None, help="five-field cron expression")
     schedule.add_argument("--max-pages", type=int, default=None)
     schedule.add_argument(
@@ -677,6 +939,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         settings=settings,
                         max_pages=args.max_pages,
                         stop_event=stop,
+                        include_unverified=args.include_unverified,
                     )
                 )
             )

@@ -16,6 +16,7 @@ from urllib.robotparser import RobotFileParser
 import httpx
 
 from src.config import Settings
+from src.scrapers.domain_limits import DomainRateLimiter, InMemoryDomainRateLimiter
 from src.scrapers.models import DiscoveredTender
 
 __all__ = [
@@ -166,6 +167,8 @@ class BaseScraper:
         sleep: Callable[[float], Awaitable[None]] | None = None,
         clock: Callable[[], float] | None = None,
         user_agents: Sequence[str] | None = None,
+        request_delay_seconds: float | None = None,
+        rate_limiter: DomainRateLimiter | None = None,
     ) -> None:
         self.settings = settings
         self._storage = storage
@@ -178,8 +181,18 @@ class BaseScraper:
         self._user_agents = agents
         self._user_agent_index = 0
         self._robots: dict[tuple[str, str], _RobotsEntry] = {}
-        self._next_allowed: dict[str, float] = {}
-        self._throttle_lock = asyncio.Lock()
+        self._rate_limiter = rate_limiter or InMemoryDomainRateLimiter(
+            clock=self._clock,
+            sleep=self._sleep,
+        )
+        self._request_delay = max(
+            0.0,
+            (
+                request_delay_seconds
+                if request_delay_seconds is not None
+                else settings.scraper_request_delay_seconds
+            ),
+        )
         self.last_report: ScrapeReport | None = None
 
     @property
@@ -199,14 +212,8 @@ class BaseScraper:
 
     async def _throttle(self, url: str, crawl_delay: float | None) -> None:
         host = urlsplit(url).netloc.lower()
-        delay = max(self.settings.scraper_request_delay_seconds, crawl_delay or 0.0)
-        async with self._throttle_lock:
-            now = self._clock()
-            next_at = self._next_allowed.get(host, now)
-            if next_at > now:
-                await self._sleep(next_at - now)
-                now = self._clock()
-            self._next_allowed[host] = now + delay
+        delay = max(self._request_delay, crawl_delay or 0.0)
+        await self._rate_limiter.wait(host, delay)
 
     async def _send(self, url: str, user_agent: str) -> httpx.Response:
         headers = {

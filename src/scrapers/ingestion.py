@@ -15,6 +15,7 @@ from src.repositories.tender_repository import StoredTender, TenderRepository, T
 from src.scrapers.base_scraper import BaseScraper, ScrapeReport
 from src.scrapers.models import DiscoveredTender
 from src.services.audit_service import AuditService, AuditServiceError
+from src.services.tender_dedup import tender_fingerprint
 
 __all__ = [
     "IngestionPipeline",
@@ -43,6 +44,9 @@ class PortalIngestionResult:
     raw_object: str | None
     pipeline_result: Any = None
     job_id: UUID | None = None
+    deduplicated: bool = False
+    duplicate_of: UUID | None = None
+    duplicate_reason: str | None = None
 
 
 class PortalIngestionBridge:
@@ -75,6 +79,23 @@ class PortalIngestionBridge:
                 created=False,
                 pipeline_triggered=False,
                 raw_object=existing.source_object,
+                duplicate_of=existing.tender.id,
+                duplicate_reason="tender_number",
+            )
+
+        fingerprint = tender_fingerprint(tender)
+        lookup = getattr(self.repository, "get_by_dedup_hash", None)
+        syndicated = await lookup(fingerprint) if callable(lookup) else None
+        if syndicated is not None:
+            return PortalIngestionResult(
+                tender_id=syndicated.tender.id,
+                tender_number=syndicated.tender.tender_number,
+                created=False,
+                pipeline_triggered=False,
+                raw_object=syndicated.source_object,
+                deduplicated=True,
+                duplicate_of=syndicated.tender.id,
+                duplicate_reason="cross_portal_fingerprint",
             )
 
         job_view = None
@@ -95,6 +116,20 @@ class PortalIngestionBridge:
                 )
                 await self.repository.session.commit()
         except TenderRepositoryError as exc:
+            # A concurrent worker may have inserted the same fingerprint after
+            # our pre-check; the unique constraint is the authoritative guard.
+            concurrent = await lookup(fingerprint) if callable(lookup) else None
+            if concurrent is not None:
+                return PortalIngestionResult(
+                    tender_id=concurrent.tender.id,
+                    tender_number=concurrent.tender.tender_number,
+                    created=False,
+                    pipeline_triggered=False,
+                    raw_object=concurrent.source_object,
+                    deduplicated=True,
+                    duplicate_of=concurrent.tender.id,
+                    duplicate_reason="cross_portal_fingerprint",
+                )
             raise PortalIngestionError(f"cannot persist portal tender: {exc}") from exc
         except Exception as exc:
             if self.jobs is not None:

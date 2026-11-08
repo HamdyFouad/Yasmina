@@ -184,6 +184,8 @@ class Tender(Base, TimestampMixin):
     )
     source_reference: Mapped[str | None] = mapped_column(String(512), nullable=True)
     owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Normalized title/client/deadline fingerprint for cross-portal dedupe.
+    dedup_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     cpv_codes: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
     )
@@ -224,6 +226,7 @@ class Tender(Base, TimestampMixin):
         Index("ix_tenders_submission_deadline", "submission_deadline"),
         Index("ix_tenders_status", "status"),
         Index("ix_tenders_owner", "owner"),
+        UniqueConstraint("dedup_hash", name="uq_tenders_dedup_hash"),
     )
 
 

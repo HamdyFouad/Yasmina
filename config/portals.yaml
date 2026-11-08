@@ -1,0 +1,1110 @@
+# Yasmina portal catalogue (P6.3).
+#
+# The worker reads this file, selects the engine and scrapes every target with
+# enabled: true. Entries marked verified:false are discovery targets whose
+# start_url and engine must be validated against the live portal before they
+# are enabled. Only verified portals are enabled by default so a scheduled run
+# never hammers an unverified endpoint.
+version: 1
+defaults:
+  engine: standard
+  country: DE
+  enabled: false
+  metadata:
+    verified: false
+portals:
+  - id: bayern
+    name: "Vergabe Bayern"
+    start_url: https://www.vergabe.bayern.de/veroeffentlichungen/auftragsbekanntmachungen/index.html
+    engine: rib
+    portal_code: "BY"
+    portal_name: "bayern"
+    region: "Bayern"
+    enabled: true
+    metadata:
+      verified: true
+      domain: public-procurement
+
+  - id: bund
+    name: "Öffentliche Vergabe des Bundes"
+    start_url: https://oeffentlichevergabe.de/ui/search
+    engine: standard
+    portal_code: "OV"
+    portal_name: "bund"
+    region: "Bund"
+    enabled: true
+    metadata:
+      verified: true
+      domain: public-procurement
+
+  - id: nrw
+    name: "e-Vergabe NRW"
+    start_url: https://www.evergabe.nrw.de/startseite
+    engine: cosinex
+    portal_code: "NW"
+    portal_name: "nrw"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: hessen
+    name: "Vergabe Hessen"
+    start_url: https://vergabe.hessen.de/
+    engine: cosinex
+    portal_code: "HE"
+    portal_name: "hessen"
+    region: "Hessen"
+    enabled: false
+
+  - id: charite
+    name: "Charité Einkauf"
+    start_url: https://einkauf.charite.de/
+    engine: standard
+    portal_code: "CH"
+    portal_name: "charite"
+    region: "Berlin"
+    enabled: false
+
+  - id: berlin
+    name: "Vergabeplattform Berlin"
+    start_url: https://www.vergabeplattform.berlin.de/
+    engine: cosinex
+    portal_code: "BE"
+    portal_name: "berlin"
+    region: "Berlin"
+    enabled: false
+
+  - id: hamburg
+    name: "Vergabe Hamburg"
+    start_url: https://www.vergabe.hamburg.de/
+    engine: cosinex
+    portal_code: "HH"
+    portal_name: "hamburg"
+    region: "Hamburg"
+    enabled: false
+
+  - id: bremen
+    name: "Vergabe Bremen"
+    start_url: https://www.vergabe.bremen.de/
+    engine: cosinex
+    portal_code: "HB"
+    portal_name: "bremen"
+    region: "Bremen"
+    enabled: false
+
+  - id: niedersachsen
+    name: "Vergabe Niedersachsen"
+    start_url: https://www.vergabe.niedersachsen.de/
+    engine: cosinex
+    portal_code: "NI"
+    portal_name: "niedersachsen"
+    region: "Niedersachsen"
+    enabled: false
+
+  - id: sachsen
+    name: "Vergabe Sachsen"
+    start_url: https://www.vergabe.sachsen.de/
+    engine: cosinex
+    portal_code: "SN"
+    portal_name: "sachsen"
+    region: "Sachsen"
+    enabled: false
+
+  - id: sachsen-anhalt
+    name: "Vergabe Sachsen-Anhalt"
+    start_url: https://www.vergabe.sachsen-anhalt.de/
+    engine: cosinex
+    portal_code: "ST"
+    portal_name: "sachsen-anhalt"
+    region: "Sachsen-Anhalt"
+    enabled: false
+
+  - id: thueringen
+    name: "Vergabe Thüringen"
+    start_url: https://www.vergabe.thueringen.de/
+    engine: cosinex
+    portal_code: "TH"
+    portal_name: "thueringen"
+    region: "Thüringen"
+    enabled: false
+
+  - id: brandenburg
+    name: "Vergabe Brandenburg"
+    start_url: https://www.vergabe.brandenburg.de/
+    engine: cosinex
+    portal_code: "BB"
+    portal_name: "brandenburg"
+    region: "Brandenburg"
+    enabled: false
+
+  - id: mv
+    name: "Vergabe Mecklenburg-Vorpommern"
+    start_url: https://www.vergabe.mv-regierung.de/
+    engine: cosinex
+    portal_code: "MV"
+    portal_name: "mv"
+    region: "Mecklenburg-Vorpommern"
+    enabled: false
+
+  - id: saarland
+    name: "Vergabe Saarland"
+    start_url: https://www.vergabe.saarland/
+    engine: cosinex
+    portal_code: "SL"
+    portal_name: "saarland"
+    region: "Saarland"
+    enabled: false
+
+  - id: rlp
+    name: "Vergabe Rheinland-Pfalz"
+    start_url: https://www.vergabe.rlp.de/
+    engine: cosinex
+    portal_code: "RP"
+    portal_name: "rlp"
+    region: "Rheinland-Pfalz"
+    enabled: false
+
+  - id: sh
+    name: "Vergabe Schleswig-Holstein"
+    start_url: https://www.vergabe-sh.de/
+    engine: cosinex
+    portal_code: "SH"
+    portal_name: "sh"
+    region: "Schleswig-Holstein"
+    enabled: false
+
+  - id: bw
+    name: "Vergabe Baden-Württemberg"
+    start_url: https://www.vergabe.baden-wuerttemberg.de/
+    engine: cosinex
+    portal_code: "BW"
+    portal_name: "bw"
+    region: "Baden-Württemberg"
+    enabled: false
+
+  - id: stuttgart
+    name: "Landeshauptstadt Stuttgart"
+    start_url: https://www.stuttgart.de/vergabe
+    engine: cosinex
+    portal_code: "STG"
+    portal_name: "stuttgart"
+    region: "Baden-Württemberg"
+    enabled: false
+
+  - id: muenchen
+    name: "Landeshauptstadt München"
+    start_url: https://www.vergabe.muenchen.de/
+    engine: cosinex
+    portal_code: "MUC"
+    portal_name: "muenchen"
+    region: "Bayern"
+    enabled: false
+
+  - id: koeln
+    name: "Stadt Köln"
+    start_url: https://www.vergabe.koeln/
+    engine: cosinex
+    portal_code: "CGN"
+    portal_name: "koeln"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: frankfurt
+    name: "Stadt Frankfurt am Main"
+    start_url: https://www.vergabe.frankfurt.de/
+    engine: cosinex
+    portal_code: "FRA"
+    portal_name: "frankfurt"
+    region: "Hessen"
+    enabled: false
+
+  - id: dresden
+    name: "Landeshauptstadt Dresden"
+    start_url: https://www.vergabe.dresden.de/
+    engine: cosinex
+    portal_code: "DD"
+    portal_name: "dresden"
+    region: "Sachsen"
+    enabled: false
+
+  - id: leipzig
+    name: "Stadt Leipzig"
+    start_url: https://www.vergabe.leipzig.de/
+    engine: cosinex
+    portal_code: "L"
+    portal_name: "leipzig"
+    region: "Sachsen"
+    enabled: false
+
+  - id: duesseldorf
+    name: "Landeshauptstadt Düsseldorf"
+    start_url: https://www.vergabe.duesseldorf.de/
+    engine: cosinex
+    portal_code: "DUS"
+    portal_name: "duesseldorf"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: dortmund
+    name: "Stadt Dortmund"
+    start_url: https://www.vergabe.dortmund.de/
+    engine: cosinex
+    portal_code: "DO"
+    portal_name: "dortmund"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: essen
+    name: "Stadt Essen"
+    start_url: https://www.vergabe.essen.de/
+    engine: cosinex
+    portal_code: "E"
+    portal_name: "essen"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: hannover
+    name: "Landeshauptstadt Hannover"
+    start_url: https://www.vergabe.hannover.de/
+    engine: cosinex
+    portal_code: "H"
+    portal_name: "hannover"
+    region: "Niedersachsen"
+    enabled: false
+
+  - id: nuernberg
+    name: "Stadt Nürnberg"
+    start_url: https://www.vergabe.nuernberg.de/
+    engine: rib
+    portal_code: "N"
+    portal_name: "nuernberg"
+    region: "Bayern"
+    enabled: false
+
+  - id: bielefeld
+    name: "Stadt Bielefeld"
+    start_url: https://www.vergabe.bielefeld.de/
+    engine: cosinex
+    portal_code: "BI"
+    portal_name: "bielefeld"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: bonn
+    name: "Bundesstadt Bonn"
+    start_url: https://www.vergabe.bonn.de/
+    engine: cosinex
+    portal_code: "BN"
+    portal_name: "bonn"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: muenster
+    name: "Stadt Münster"
+    start_url: https://www.vergabe.muenster.de/
+    engine: cosinex
+    portal_code: "MS"
+    portal_name: "muenster"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: karlsruhe
+    name: "Stadt Karlsruhe"
+    start_url: https://www.vergabe.karlsruhe.de/
+    engine: cosinex
+    portal_code: "KA"
+    portal_name: "karlsruhe"
+    region: "Baden-Württemberg"
+    enabled: false
+
+  - id: mannheim
+    name: "Stadt Mannheim"
+    start_url: https://www.vergabe.mannheim.de/
+    engine: cosinex
+    portal_code: "MA"
+    portal_name: "mannheim"
+    region: "Baden-Württemberg"
+    enabled: false
+
+  - id: augsburg
+    name: "Stadt Augsburg"
+    start_url: https://www.vergabe.augsburg.de/
+    engine: rib
+    portal_code: "A"
+    portal_name: "augsburg"
+    region: "Bayern"
+    enabled: false
+
+  - id: wiesbaden
+    name: "Landeshauptstadt Wiesbaden"
+    start_url: https://www.vergabe.wiesbaden.de/
+    engine: cosinex
+    portal_code: "WI"
+    portal_name: "wiesbaden"
+    region: "Hessen"
+    enabled: false
+
+  - id: mainz
+    name: "Landeshauptstadt Mainz"
+    start_url: https://www.vergabe.mainz.de/
+    engine: cosinex
+    portal_code: "MZ"
+    portal_name: "mainz"
+    region: "Rheinland-Pfalz"
+    enabled: false
+
+  - id: kiel
+    name: "Landeshauptstadt Kiel"
+    start_url: https://www.vergabe.kiel.de/
+    engine: cosinex
+    portal_code: "KI"
+    portal_name: "kiel"
+    region: "Schleswig-Holstein"
+    enabled: false
+
+  - id: magdeburg
+    name: "Landeshauptstadt Magdeburg"
+    start_url: https://www.vergabe.magdeburg.de/
+    engine: cosinex
+    portal_code: "MD"
+    portal_name: "magdeburg"
+    region: "Sachsen-Anhalt"
+    enabled: false
+
+  - id: erfurt
+    name: "Landeshauptstadt Erfurt"
+    start_url: https://www.vergabe.erfurt.de/
+    engine: cosinex
+    portal_code: "EF"
+    portal_name: "erfurt"
+    region: "Thüringen"
+    enabled: false
+
+  - id: potsdam
+    name: "Landeshauptstadt Potsdam"
+    start_url: https://www.vergabe.potsdam.de/
+    engine: cosinex
+    portal_code: "P"
+    portal_name: "potsdam"
+    region: "Brandenburg"
+    enabled: false
+
+  - id: saarbruecken
+    name: "Landeshauptstadt Saarbrücken"
+    start_url: https://www.vergabe.saarbruecken.de/
+    engine: cosinex
+    portal_code: "SB"
+    portal_name: "saarbruecken"
+    region: "Saarland"
+    enabled: false
+
+  - id: rostock
+    name: "Hansestadt Rostock"
+    start_url: https://www.vergabe.rostock.de/
+    engine: cosinex
+    portal_code: "HRO"
+    portal_name: "rostock"
+    region: "Mecklenburg-Vorpommern"
+    enabled: false
+
+  - id: freiburg
+    name: "Stadt Freiburg"
+    start_url: https://www.vergabe.freiburg.de/
+    engine: cosinex
+    portal_code: "FR"
+    portal_name: "freiburg"
+    region: "Baden-Württemberg"
+    enabled: false
+
+  - id: heidelberg
+    name: "Stadt Heidelberg"
+    start_url: https://www.vergabe.heidelberg.de/
+    engine: cosinex
+    portal_code: "HD"
+    portal_name: "heidelberg"
+    region: "Baden-Württemberg"
+    enabled: false
+
+  - id: regensburg
+    name: "Stadt Regensburg"
+    start_url: https://www.vergabe.regensburg.de/
+    engine: rib
+    portal_code: "R"
+    portal_name: "regensburg"
+    region: "Bayern"
+    enabled: false
+
+  - id: ingolstadt
+    name: "Stadt Ingolstadt"
+    start_url: https://www.vergabe.ingolstadt.de/
+    engine: rib
+    portal_code: "IN"
+    portal_name: "ingolstadt"
+    region: "Bayern"
+    enabled: false
+
+  - id: ulm
+    name: "Stadt Ulm"
+    start_url: https://www.vergabe.ulm.de/
+    engine: cosinex
+    portal_code: "UL"
+    portal_name: "ulm"
+    region: "Baden-Württemberg"
+    enabled: false
+
+  - id: pforzheim
+    name: "Stadt Pforzheim"
+    start_url: https://www.vergabe.pforzheim.de/
+    engine: cosinex
+    portal_code: "PF"
+    portal_name: "pforzheim"
+    region: "Baden-Württemberg"
+    enabled: false
+
+  - id: heilbronn
+    name: "Stadt Heilbronn"
+    start_url: https://www.vergabe.heilbronn.de/
+    engine: cosinex
+    portal_code: "HN"
+    portal_name: "heilbronn"
+    region: "Baden-Württemberg"
+    enabled: false
+
+  - id: darmstadt
+    name: "Wissenschaftsstadt Darmstadt"
+    start_url: https://www.vergabe.darmstadt.de/
+    engine: cosinex
+    portal_code: "DA"
+    portal_name: "darmstadt"
+    region: "Hessen"
+    enabled: false
+
+  - id: trier
+    name: "Stadt Trier"
+    start_url: https://www.vergabe.trier.de/
+    engine: cosinex
+    portal_code: "TR"
+    portal_name: "trier"
+    region: "Rheinland-Pfalz"
+    enabled: false
+
+  - id: koblenz
+    name: "Stadt Koblenz"
+    start_url: https://www.vergabe.koblenz.de/
+    engine: cosinex
+    portal_code: "KO"
+    portal_name: "koblenz"
+    region: "Rheinland-Pfalz"
+    enabled: false
+
+  - id: aachen
+    name: "Stadt Aachen"
+    start_url: https://www.vergabe.aachen.de/
+    engine: cosinex
+    portal_code: "AC"
+    portal_name: "aachen"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: moenchengladbach
+    name: "Stadt Mönchengladbach"
+    start_url: https://www.vergabe.moenchengladbach.de/
+    engine: cosinex
+    portal_code: "MG"
+    portal_name: "moenchengladbach"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: duisburg
+    name: "Stadt Duisburg"
+    start_url: https://www.vergabe.duisburg.de/
+    engine: cosinex
+    portal_code: "DU"
+    portal_name: "duisburg"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: bochum
+    name: "Stadt Bochum"
+    start_url: https://www.vergabe.bochum.de/
+    engine: cosinex
+    portal_code: "BO"
+    portal_name: "bochum"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: wuppertal
+    name: "Stadt Wuppertal"
+    start_url: https://www.vergabe.wuppertal.de/
+    engine: cosinex
+    portal_code: "W"
+    portal_name: "wuppertal"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: gelsenkirchen
+    name: "Stadt Gelsenkirchen"
+    start_url: https://www.vergabe.gelsenkirchen.de/
+    engine: cosinex
+    portal_code: "GE"
+    portal_name: "gelsenkirchen"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: oberhausen
+    name: "Stadt Oberhausen"
+    start_url: https://www.vergabe.oberhausen.de/
+    engine: cosinex
+    portal_code: "OB"
+    portal_name: "oberhausen"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: hagen
+    name: "Stadt Hagen"
+    start_url: https://www.vergabe.hagen.de/
+    engine: cosinex
+    portal_code: "HA"
+    portal_name: "hagen"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: hamm
+    name: "Stadt Hamm"
+    start_url: https://www.vergabe.hamm.de/
+    engine: cosinex
+    portal_code: "HAM"
+    portal_name: "hamm"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: leverkusen
+    name: "Stadt Leverkusen"
+    start_url: https://www.vergabe.leverkusen.de/
+    engine: cosinex
+    portal_code: "LEV"
+    portal_name: "leverkusen"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: solingen
+    name: "Stadt Solingen"
+    start_url: https://www.vergabe.solingen.de/
+    engine: cosinex
+    portal_code: "SG"
+    portal_name: "solingen"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: osnabrueck
+    name: "Stadt Osnabrück"
+    start_url: https://www.vergabe.osnabrueck.de/
+    engine: cosinex
+    portal_code: "OS"
+    portal_name: "osnabrueck"
+    region: "Niedersachsen"
+    enabled: false
+
+  - id: oldenburg
+    name: "Stadt Oldenburg"
+    start_url: https://www.vergabe.oldenburg.de/
+    engine: cosinex
+    portal_code: "OL"
+    portal_name: "oldenburg"
+    region: "Niedersachsen"
+    enabled: false
+
+  - id: braunschweig
+    name: "Stadt Braunschweig"
+    start_url: https://www.vergabe.braunschweig.de/
+    engine: cosinex
+    portal_code: "BS"
+    portal_name: "braunschweig"
+    region: "Niedersachsen"
+    enabled: false
+
+  - id: wolfsburg
+    name: "Stadt Wolfsburg"
+    start_url: https://www.vergabe.wolfsburg.de/
+    engine: cosinex
+    portal_code: "WOB"
+    portal_name: "wolfsburg"
+    region: "Niedersachsen"
+    enabled: false
+
+  - id: salzgitter
+    name: "Stadt Salzgitter"
+    start_url: https://www.vergabe.salzgitter.de/
+    engine: cosinex
+    portal_code: "SZ"
+    portal_name: "salzgitter"
+    region: "Niedersachsen"
+    enabled: false
+
+  - id: hildesheim
+    name: "Stadt Hildesheim"
+    start_url: https://www.vergabe.hildesheim.de/
+    engine: cosinex
+    portal_code: "HI"
+    portal_name: "hildesheim"
+    region: "Niedersachsen"
+    enabled: false
+
+  - id: goettingen
+    name: "Stadt Göttingen"
+    start_url: https://www.vergabe.goettingen.de/
+    engine: cosinex
+    portal_code: "GÖ"
+    portal_name: "goettingen"
+    region: "Niedersachsen"
+    enabled: false
+
+  - id: kassel
+    name: "Stadt Kassel"
+    start_url: https://www.vergabe.kassel.de/
+    engine: cosinex
+    portal_code: "KS"
+    portal_name: "kassel"
+    region: "Hessen"
+    enabled: false
+
+  - id: marburg
+    name: "Stadt Marburg"
+    start_url: https://www.vergabe.marburg.de/
+    engine: cosinex
+    portal_code: "MR"
+    portal_name: "marburg"
+    region: "Hessen"
+    enabled: false
+
+  - id: fulda
+    name: "Stadt Fulda"
+    start_url: https://www.vergabe.fulda.de/
+    engine: cosinex
+    portal_code: "FD"
+    portal_name: "fulda"
+    region: "Hessen"
+    enabled: false
+
+  - id: jena
+    name: "Stadt Jena"
+    start_url: https://www.vergabe.jena.de/
+    engine: cosinex
+    portal_code: "J"
+    portal_name: "jena"
+    region: "Thüringen"
+    enabled: false
+
+  - id: chemnitz
+    name: "Stadt Chemnitz"
+    start_url: https://www.vergabe.chemnitz.de/
+    engine: cosinex
+    portal_code: "C"
+    portal_name: "chemnitz"
+    region: "Sachsen"
+    enabled: false
+
+  - id: zwickau
+    name: "Stadt Zwickau"
+    start_url: https://www.vergabe.zwickau.de/
+    engine: cosinex
+    portal_code: "Z"
+    portal_name: "zwickau"
+    region: "Sachsen"
+    enabled: false
+
+  - id: halle
+    name: "Stadt Halle (Saale)"
+    start_url: https://www.vergabe.halle.de/
+    engine: cosinex
+    portal_code: "HAL"
+    portal_name: "halle"
+    region: "Sachsen-Anhalt"
+    enabled: false
+
+  - id: dessau
+    name: "Stadt Dessau-Roßlau"
+    start_url: https://www.vergabe.dessau.de/
+    engine: cosinex
+    portal_code: "DE"
+    portal_name: "dessau"
+    region: "Sachsen-Anhalt"
+    enabled: false
+
+  - id: cottbus
+    name: "Stadt Cottbus"
+    start_url: https://www.vergabe.cottbus.de/
+    engine: cosinex
+    portal_code: "CB"
+    portal_name: "cottbus"
+    region: "Brandenburg"
+    enabled: false
+
+  - id: frankfurt-oder
+    name: "Stadt Frankfurt (Oder)"
+    start_url: https://www.vergabe.frankfurt-oder.de/
+    engine: cosinex
+    portal_code: "FFO"
+    portal_name: "frankfurt-oder"
+    region: "Brandenburg"
+    enabled: false
+
+  - id: schwerin
+    name: "Landeshauptstadt Schwerin"
+    start_url: https://www.vergabe.schwerin.de/
+    engine: cosinex
+    portal_code: "SN"
+    portal_name: "schwerin"
+    region: "Mecklenburg-Vorpommern"
+    enabled: false
+
+  - id: neubrandenburg
+    name: "Stadt Neubrandenburg"
+    start_url: https://www.vergabe.neubrandenburg.de/
+    engine: cosinex
+    portal_code: "NB"
+    portal_name: "neubrandenburg"
+    region: "Mecklenburg-Vorpommern"
+    enabled: false
+
+  - id: luebeck
+    name: "Hansestadt Lübeck"
+    start_url: https://www.vergabe.luebeck.de/
+    engine: cosinex
+    portal_code: "HL"
+    portal_name: "luebeck"
+    region: "Schleswig-Holstein"
+    enabled: false
+
+  - id: flensburg
+    name: "Stadt Flensburg"
+    start_url: https://www.vergabe.flensburg.de/
+    engine: cosinex
+    portal_code: "FL"
+    portal_name: "flensburg"
+    region: "Schleswig-Holstein"
+    enabled: false
+
+  - id: uke
+    name: "Universitätsklinikum Hamburg-Eppendorf"
+    start_url: https://www.uke.de/einkauf/vergabe
+    engine: standard
+    portal_code: "UKE"
+    portal_name: "uke"
+    region: "Hamburg"
+    enabled: false
+
+  - id: uniklinik-koeln
+    name: "Universitätsklinikum Köln"
+    start_url: https://www.uk-koeln.de/vergabe
+    engine: standard
+    portal_code: "UKK"
+    portal_name: "uniklinik-koeln"
+    region: "Nordrhein-Westfalen"
+    enabled: false
+
+  - id: uniklinik-frankfurt
+    name: "Universitätsklinikum Frankfurt"
+    start_url: https://www.uniklinikum-frankfurt.de/vergabe
+    engine: standard
+    portal_code: "UKF"
+    portal_name: "uniklinik-frankfurt"
+    region: "Hessen"
+    enabled: false
+
+  - id: mhh
+    name: "Medizinische Hochschule Hannover"
+    start_url: https://www.mhh.de/vergabe
+    engine: standard
+    portal_code: "MHH"
+    portal_name: "mhh"
+    region: "Niedersachsen"
+    enabled: false
+
+  - id: uniklinik-heidelberg
+    name: "Universitätsklinikum Heidelberg"
+    start_url: https://www.klinikum.uni-heidelberg.de/vergabe
+    engine: standard
+    portal_code: "UKHD"
+    portal_name: "uniklinik-heidelberg"
+    region: "Baden-Württemberg"
+    enabled: false
+
+  - id: uniklinik-tuebingen
+    name: "Universitätsklinikum Tübingen"
+    start_url: https://www.medizin.uni-tuebingen.de/vergabe
+    engine: standard
+    portal_code: "UKT"
+    portal_name: "uniklinik-tuebingen"
+    region: "Baden-Württemberg"
+    enabled: false
+
+  - id: uniklinik-freiburg
+    name: "Universitätsklinikum Freiburg"
+    start_url: https://www.uniklinik-freiburg.de/vergabe
+    engine: standard
+    portal_code: "UKF"
+    portal_name: "uniklinik-freiburg"
+    region: "Baden-Württemberg"
+    enabled: false
+
+  - id: dkfz
+    name: "Deutsches Krebsforschungszentrum"
+    start_url: https://www.dkfz.de/vergabe
+    engine: standard
+    portal_code: "DKFZ"
+    portal_name: "dkfz"
+    region: "Baden-Württemberg"
+    enabled: false
+
+  - id: fraunhofer
+    name: "Fraunhofer-Gesellschaft"
+    start_url: https://www.fraunhofer.de/vergabe
+    engine: standard
+    portal_code: "FhG"
+    portal_name: "fraunhofer"
+    region: "Deutschland"
+    enabled: false
+
+  - id: helmholtz
+    name: "Helmholtz-Gemeinschaft"
+    start_url: https://www.helmholtz.de/vergabe
+    engine: standard
+    portal_code: "HGF"
+    portal_name: "helmholtz"
+    region: "Deutschland"
+    enabled: false
+
+  - id: max-planck
+    name: "Max-Planck-Gesellschaft"
+    start_url: https://www.mpg.de/vergabe
+    engine: standard
+    portal_code: "MPG"
+    portal_name: "max-planck"
+    region: "Deutschland"
+    enabled: false
+
+  - id: bundesagentur-arbeit
+    name: "Bundesagentur für Arbeit"
+    start_url: https://www.arbeitsagentur.de/vergabe
+    engine: standard
+    portal_code: "BA"
+    portal_name: "bundesagentur-arbeit"
+    region: "Bund"
+    enabled: false
+
+  - id: bundeswehr
+    name: "Bundeswehr"
+    start_url: https://www.bundeswehr.de/vergabe
+    engine: standard
+    portal_code: "Bw"
+    portal_name: "bundeswehr"
+    region: "Bund"
+    enabled: false
+
+  - id: bmi
+    name: "Bundesministerium des Innern"
+    start_url: https://www.bmi.bund.de/vergabe
+    engine: standard
+    portal_code: "BMI"
+    portal_name: "bmi"
+    region: "Bund"
+    enabled: false
+
+  - id: bmf
+    name: "Bundesministerium der Finanzen"
+    start_url: https://www.bundesfinanzministerium.de/vergabe
+    engine: standard
+    portal_code: "BMF"
+    portal_name: "bmf"
+    region: "Bund"
+    enabled: false
+
+  - id: bmvg
+    name: "Bundesministerium der Verteidigung"
+    start_url: https://www.bmvg.de/vergabe
+    engine: standard
+    portal_code: "BMVg"
+    portal_name: "bmvg"
+    region: "Bund"
+    enabled: false
+
+  - id: auswaertiges-amt
+    name: "Auswärtiges Amt"
+    start_url: https://www.auswaertiges-amt.de/vergabe
+    engine: standard
+    portal_code: "AA"
+    portal_name: "auswaertiges-amt"
+    region: "Bund"
+    enabled: false
+
+  - id: bmz
+    name: "Bundesministerium für wirtschaftliche Zusammenarbeit"
+    start_url: https://www.bmz.de/vergabe
+    engine: standard
+    portal_code: "BMZ"
+    portal_name: "bmz"
+    region: "Bund"
+    enabled: false
+
+  - id: bmuv
+    name: "Bundesministerium für Umwelt"
+    start_url: https://www.bmuv.de/vergabe
+    engine: standard
+    portal_code: "BMUV"
+    portal_name: "bmuv"
+    region: "Bund"
+    enabled: false
+
+  - id: bmwk
+    name: "Bundesministerium für Wirtschaft"
+    start_url: https://www.bmwk.de/vergabe
+    engine: standard
+    portal_code: "BMWK"
+    portal_name: "bmwk"
+    region: "Bund"
+    enabled: false
+
+  - id: bmel
+    name: "Bundesministerium für Ernährung und Landwirtschaft"
+    start_url: https://www.bmel.de/vergabe
+    engine: standard
+    portal_code: "BMEL"
+    portal_name: "bmel"
+    region: "Bund"
+    enabled: false
+
+  - id: bmg
+    name: "Bundesministerium für Gesundheit"
+    start_url: https://www.bundesgesundheitsministerium.de/vergabe
+    engine: standard
+    portal_code: "BMG"
+    portal_name: "bmg"
+    region: "Bund"
+    enabled: false
+
+  - id: bmfsfj
+    name: "Bundesministerium für Familie, Senioren, Frauen und Jugend"
+    start_url: https://www.bmfsfj.de/vergabe
+    engine: standard
+    portal_code: "BMFSFJ"
+    portal_name: "bmfsfj"
+    region: "Bund"
+    enabled: false
+
+  - id: bmwsb
+    name: "Bundesministerium für Wohnen, Stadtentwicklung und Bauwesen"
+    start_url: https://www.bmwsb.bund.de/vergabe
+    engine: standard
+    portal_code: "BMWSB"
+    portal_name: "bmwsb"
+    region: "Bund"
+    enabled: false
+
+  - id: bmj
+    name: "Bundesministerium der Justiz"
+    start_url: https://www.bmj.de/vergabe
+    engine: standard
+    portal_code: "BMJ"
+    portal_name: "bmj"
+    region: "Bund"
+    enabled: false
+
+  - id: bmbf
+    name: "Bundesministerium für Bildung und Forschung"
+    start_url: https://www.bmbf.de/vergabe
+    engine: standard
+    portal_code: "BMBF"
+    portal_name: "bmbf"
+    region: "Bund"
+    enabled: false
+
+  - id: ted
+    name: "TED – Tenders Electronic Daily"
+    start_url: https://ted.europa.eu/en/
+    engine: standard
+    portal_code: "TED"
+    portal_name: "ted"
+    country: EU
+    region: "Europa"
+    enabled: false
+    api:
+      type: ted
+      url: https://api.ted.europa.eu/v3/notices/search
+      format: json
+      fallback_to_html: true
+      detail_url_template: "https://ted.europa.eu/en/notice/-/detail/{id}"
+
+  - id: eu-supply
+    name: "EU-Supply"
+    start_url: https://www.eu-supply.com/
+    engine: standard
+    portal_code: "EUS"
+    portal_name: "eu-supply"
+    region: "Europa"
+    enabled: false
+
+  - id: eop
+    name: "eOP – Elektronische Vergabe"
+    start_url: https://www.eop.bund.de/
+    engine: standard
+    portal_code: "EOP"
+    portal_name: "eop"
+    region: "Bund"
+    enabled: false
+
+  - id: seda
+    name: "SEDA – Vergabeplattform"
+    start_url: https://seda.bund.de/
+    engine: standard
+    portal_code: "SEDA"
+    portal_name: "seda"
+    region: "Bund"
+    enabled: false
+
+  - id: vergabe24
+    name: "Vergabe24"
+    start_url: https://www.vergabe24.de/
+    engine: standard
+    portal_code: "V24"
+    portal_name: "vergabe24"
+    region: "Deutschland"
+    enabled: false
+
+  - id: ausschreibungen-deutschland
+    name: "Ausschreibungen Deutschland"
+    start_url: https://www.ausschreibungen-deutschland.de/
+    engine: standard
+    portal_code: "AD"
+    portal_name: "ausschreibungen-deutschland"
+    region: "Deutschland"
+    enabled: false
+
+  - id: dtad
+    name: "DTAD – Deutsche Ausschreibungen"
+    start_url: https://www.dtad.de/
+    engine: standard
+    portal_code: "DTAD"
+    portal_name: "dtad"
+    region: "Deutschland"
+    enabled: false
+
+  - id: vergabeportal
+    name: "Vergabeportal"
+    start_url: https://www.vergabeportal.de/
+    engine: standard
+    portal_code: "VP"
+    portal_name: "vergabeportal"
+    region: "Deutschland"
+    enabled: false
+
+  - id: bieterportal
+    name: "Bieterportal"
+    start_url: https://www.bieterportal.de/
+    engine: standard
+    portal_code: "BP"
+    portal_name: "bieterportal"
+    region: "Deutschland"
+    enabled: false
+
+# Add verified targets above; the loader rejects duplicate ids and
+# non-HTTP(S) start URLs. Enable a target only after a live parse succeeds.

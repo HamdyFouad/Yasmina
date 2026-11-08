@@ -2,21 +2,18 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
-
-from src.scrapers.html_portal import HTMLPortalScraper
+from src.scrapers.engines import RibEngineScraper
 
 __all__ = ["BayernVergabeScraper"]
 
 
-class BayernVergabeScraper(HTMLPortalScraper):
+class BayernVergabeScraper(RibEngineScraper):
     """Scrape the Bavarian announcement portal's publication iframe.
 
-    The public page embeds the RIB publication list in an iframe; the generic
-    parser follows that iframe and then extracts the ordinary HTML items.
+    The public page embeds the RIB publication list in an iframe; the engine
+    follows that iframe and then extracts the ordinary HTML items.
     """
 
-    portal_name: ClassVar[str] = "vergabe.bayern"
-    portal_code: ClassVar[str] = "BY"
-    start_url: str = "https://www.vergabe.bayern.de/veroeffentlichungen/auftragsbekanntmachungen/index.html"
-    follow_iframe: ClassVar[bool] = True
+    portal_name = "vergabe.bayern"
+    portal_code = "BY"
+    start_url = "https://www.vergabe.bayern.de/veroeffentlichungen/auftragsbekanntmachungen/index.html"

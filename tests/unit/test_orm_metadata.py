@@ -236,6 +236,9 @@ def test_identity_and_refresh_token_tables_shape() -> None:
     assert "ck_users_mfa_last_step_non_negative" in {constraint.name for constraint in users.constraints}
     assert tenders.c.owner.nullable is True
     assert "ix_tenders_owner" in {index.name for index in tenders.indexes}
+    assert tenders.c.dedup_hash.nullable is True
+    assert tenders.c.dedup_hash.type.length == 64
+    assert "uq_tenders_dedup_hash" in {constraint.name for constraint in tenders.constraints}
 
 
 def test_password_reset_token_shape() -> None:

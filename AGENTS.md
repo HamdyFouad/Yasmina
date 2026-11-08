@@ -29,10 +29,10 @@ Maintain the exact directory layout defined in `docs/DETAILED_SPEC.md` (Section 
 - `src/repositories/` (`tender_repository.py`, `offer_repository.py`, `invoice_repository.py`, `credit_note_repository.py`, `invoice_event_repository.py`, `user_repository.py`, `catalog_repository.py`, `ingestion_repository.py`, `worker_run_repository.py`, `integration_repository.py`, `supplier_quote_repository.py`, `ops_repository.py`)
 - `src/models/` (`enums.py`, `schemas.py`, `orm.py`)
 - `src/parsers/` (`normalizers.py`, `pdf_parser.py`, `gaeb_parser.py`, `gaeb_validator.py`)
-- `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `password_service.py`, `mfa_service.py`, `token_maintenance.py`, `backup_service.py`, `embedding_service.py`, `embedding_pipeline.py`, `ingestion_processor.py`, `worker_lock.py`, `worker_metrics.py`)
+- `src/services/` (`matching_service.py`, `pricing_service.py`, `approval_service.py`, `unit_converter.py`, `password_service.py`, `mfa_service.py`, `token_maintenance.py`, `backup_service.py`, `embedding_service.py`, `embedding_pipeline.py`, `ingestion_processor.py`, `worker_lock.py`, `worker_metrics.py`, `tender_dedup.py`)
 - `src/agents/` (`graph.py`, `checkpoint.py`, `nodes.py`, `state.py`, `deepseek.py`)
 - `src/integrations/` (`clamav_client.py`, `minio_client.py`, `erpnext_client.py`, `n8n_client.py`, `telegram_notifier.py`; Telegram approval bot planned)
-- `src/scrapers/` (`base_scraper.py`, `bayern_vergabe.py`, `oeffentlichevergabe.py`, `ingestion.py`)
+- `src/scrapers/` (`base_scraper.py`, `engines.py`, `portal_config.py`, `api_feeds.py`, `domain_limits.py`, `html_portal.py`, `bayern_vergabe.py`, `oeffentlichevergabe.py`, `ingestion.py`, `models.py`); targets live in `config/portals.yaml`
 - `src/scheduler.py` and `src/worker.py` (cron scheduler, scrape/ingestion CLI, advisory locks and shutdown signals)
 - `src/generators/` (`invoice_models.py`, `leitweg.py`, `pdf_template.py`, `fonts/`, `schematron/`, `zugferd_generator.py`, `xrechnung_generator.py`)
 - `tests/` (unit, integration, evals with German golden fixtures)
@@ -73,8 +73,8 @@ When given an implementation task:
 - Billing: `GET /api/v1/invoices[/{id}]` (owner-scoped for sales), `POST /invoices/{id}/payments` and `POST /invoices/{id}/credits` (admin-only); `CreditNoteRepository` allocates a gapless `GS-YYYY-XXXX` credit number across the invoice VAT buckets and applies it atomically.
 - GoBD event log: `InvoiceEventRepository` appends hash-chained `invoice_events` for issuance/payment/credit/status changes; PostgreSQL triggers block UPDATE/DELETE/TRUNCATE, and `verify_chain()` re-derives every hash.
 - PDF/A-3 gate: `python scripts/generate_sample_invoice.py sample-invoice.pdf` then `docker run --rm -v "$PWD:/data" verapdf/cli:latest -f 3b /data/sample-invoice.pdf`; the report must contain `isCompliant="true"`. The carrier embeds DejaVu TrueType faces from `src/generators/fonts/`.
-- Scrape worker: `python -m src.worker scrape|schedule` (daily cron via `SCRAPER_SCHEDULE_CRON`).
+- Scrape worker: `python -m src.worker scrape|schedule --portal <id|all>`; targets/engines/APIs are configured in `config/portals.yaml` (120 targets, only verified ones enabled), with bounded concurrency, per-domain Redis locks/spacing, JSON/XML/TED API preference and cross-portal `dedup_hash` (title + client + deadline). Daily cron via `SCRAPER_SCHEDULE_CRON`.
 - Ingestion worker: `python -m src.worker process [--limit N] [--interval SECONDS]` drains `tender_ingestion_jobs` with `DeepSeek` triage and Docling/GAEB parsing.
-- Worker operations: portal locks use `pg_try_advisory_lock`; SIGINT/SIGTERM finish in-flight work; `GET /healthz/worker` exposes `worker_runs` history and outbox counts; Telegram alerts use `TELEGRAM_BOT_TOKEN` + `TELEGRAM_APPROVAL_CHAT_ID`.
+- Worker operations: portal locks use `pg_try_advisory_lock`; per-domain locks/spacing use Redis (`yasmina:scrape:domain*`); SIGINT/SIGTERM finish in-flight work; `GET /healthz/worker` exposes `worker_runs` history and outbox counts; Telegram alerts use `TELEGRAM_BOT_TOKEN` + `TELEGRAM_APPROVAL_CHAT_ID`.
 - Migrations: `python -m alembic upgrade head`; offline SQL preview: `python -m alembic upgrade head --sql`.
 - Spec gaps and inferred schema fields are tracked in `docs/ASSUMPTIONS.md`.

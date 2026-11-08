@@ -49,6 +49,8 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert "CREATE TRIGGER trg_invoice_events_append_only" in sql
     assert "CREATE TRIGGER trg_invoice_events_no_truncate" in sql
     assert "ALTER TABLE tenders ADD COLUMN owner" in sql
+    assert "ALTER TABLE tenders ADD COLUMN dedup_hash" in sql
+    assert "uq_tenders_dedup_hash" in sql
     assert "invoice_artifacts" in sql
     assert "USING hnsw (embedding vector_cosine_ops)" in sql
     assert "CREATE TRIGGER trg_audit_logs_append_only" in sql

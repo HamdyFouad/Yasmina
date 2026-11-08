@@ -704,8 +704,8 @@ reconciled with the authoritative spec later.
   Query keys are namespaced by resource; server state is cached for 30 seconds.
 - The frontend CI job runs `npm ci`, `oxlint` and `tsc -b && vite build`. It does
   not yet run browser end-to-end tests or a production static host deployment.
-- The suite runs 438 tests with live PostgreSQL, Redis, MinIO and ClamAV enabled,
-  matching the CI job configuration.
+- The suite runs 461 tests with live PostgreSQL and Redis enabled, plus the
+  MinIO/ClamAV smoke tests in CI.
 
 ## E-invoicing assumptions (P2.1)
 
@@ -740,3 +740,45 @@ chained with SHA-256 over canonical JSON including `occurred_at`, `event_type`,
 serialized with a PostgreSQL advisory lock inside the same transaction, so the
 chain remains linear across concurrent writers. `audit_entry_hash` is exposed
 for deterministic fixture and chain-verification tests.
+
+## Portal expansion assumptions (P6.3)
+
+- `config/portals.yaml` is the source of truth for the 120-target catalogue.
+  Each target names an engine (`cosinex`, `rib`, `standard`, `xvergabe`, `dtvp`)
+  and may add `region`, `portal_code`, `domain`, `request_delay_seconds`,
+  `max_pages` and an optional `api` block. Duplicate ids and non-HTTP(S) URLs
+  are rejected at load time.
+- Only `bayern` and `bund` are enabled by default because they are the two
+  portals verified against their live HTML. The other 118 entries are
+  discovery targets marked `metadata.verified: false`; enabling one is a
+  deliberate operator action after a pilot parse. This avoids a scheduled run
+  hammering guessed URLs. `python -m src.worker scrape --include-unverified`
+  runs the full catalogue once for controlled verification; the daily scheduler
+  still uses only enabled targets.
+- Engine classes share the generic HTML parser but tune card selectors, detail
+  hints and iframe handling. Portal-specific class identity is derived
+  dynamically from the target, so no Python class is required per municipality.
+- The API preference reads a configured JSON or XML **GET feed**. TED's v3
+  search endpoint is a POST API; when a deployment points `api.url` at a TED
+  export/feed, the TED adapter's default mapping applies. A POST client is not
+  implemented yet. If the feed fails and `fallback_to_html` is true, the worker
+  scrapes the HTML engine and records the API error in the scrape report.
+- Cross-portal deduplication hashes `v1|normalized title|normalized client|
+  UTC deadline date`. The date (not the exact minute) is deliberate because
+  syndicated feeds often round or shift the deadline time. `tenders.dedup_hash`
+  has a unique constraint; the migration backfills existing rows and leaves
+  historical duplicates with a null hash (the first row is canonical).
+  Portal-specific `tender_number` remains the first-line check.
+- Per-domain spacing and locks use Redis when `REDIS_URL` is set:
+  `yasmina:scrape:domain:*` for request spacing and
+  `yasmina:scrape:domain-lock:*` for one in-flight scrape per domain. Without
+  Redis, process-local versions preserve the same semantics for local use.
+  PostgreSQL advisory locks still prevent the same portal from being scraped
+  twice across workers.
+- Discovery runs in batches of `SCRAPER_MAX_CONCURRENT_PORTALS` (default 6).
+  Network/attachment work is concurrent across domains, while database
+  persistence and outbox writes stay sequential on one session. A portal
+  failure is isolated and logged; other targets and the ingestion pass continue.
+- Attachment harvesting remains enabled by default but scraped files are not
+  passed through ClamAV (only `POST /tenders/upload` is scanned). This remains
+  an explicit security follow-up for untrusted portal files.

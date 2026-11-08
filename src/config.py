@@ -192,6 +192,10 @@ class Settings(BaseSettings):
     scraper_harvest_attachments: bool = True
     scraper_max_attachments: int = Field(default=10, ge=0, le=100)
     scraper_max_attachment_mb: int = Field(default=25, ge=1, le=500)
+    portal_config_file: str = "config/portals.yaml"
+    scraper_max_concurrent_portals: int = Field(default=6, ge=1, le=50)
+    scraper_domain_lock_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
+    scraper_prefer_api: bool = True
 
     # --- HITL approval -----------------------------------------------------
     ed25519_approval_public_key: str | None = None

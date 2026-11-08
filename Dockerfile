@@ -70,6 +70,7 @@ RUN /opt/venv/bin/python -m pip uninstall -y pip setuptools wheel || true
 
 WORKDIR /app
 COPY --chown=yasmina:yasmina src ./src
+COPY --chown=yasmina:yasmina config ./config
 COPY --chown=yasmina:yasmina alembic ./alembic
 COPY --chown=yasmina:yasmina alembic.ini pyproject.toml README.md ./
 RUN mkdir -p /app/var/exports/gaeb \

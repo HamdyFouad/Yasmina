@@ -2,22 +2,20 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
-
-from src.scrapers.html_portal import HTMLPortalScraper
+from src.scrapers.engines import StandardEVergabeScraper
 
 __all__ = ["OeffentlicheVergabeScraper"]
 
 
-class OeffentlicheVergabeScraper(HTMLPortalScraper):
+class OeffentlicheVergabeScraper(StandardEVergabeScraper):
     """Scrape the federal publication search results.
 
     The production UI is a JavaScript application, but its search-result cards
-    are rendered from the same HTML patterns covered by the generic parser. A
+    are rendered from the same HTML patterns covered by the standard engine. A
     deployment can point ``start_url`` at its configured search export while
     retaining the same CPV and metadata extraction rules.
     """
 
-    portal_name: ClassVar[str] = "oeffentlichevergabe.de"
-    portal_code: ClassVar[str] = "OV"
-    start_url: str = "https://oeffentlichevergabe.de/ui/search"
+    portal_name = "oeffentlichevergabe.de"
+    portal_code = "OV"
+    start_url = "https://oeffentlichevergabe.de/ui/search"

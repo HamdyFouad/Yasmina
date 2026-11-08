@@ -27,6 +27,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "httpx>=0.27",
     "beautifulsoup4>=4.12",
+    "defusedxml>=0.7",
+    "pyyaml>=6.0",
     "cryptography>=42",
     "argon2-cffi>=23.1",
     "langgraph>=0.2",
@@ -62,6 +64,8 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.6",
     "mypy>=1.11",
+    "types-PyYAML>=6.0",
+    "types-defusedxml>=0.7",
     "bandit[toml]>=1.7",
     "pygaeb",
     "langgraph>=0.2",
@@ -82,7 +86,7 @@ yasmina-admin = "src.admin:main"
 packages = ["src"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "alembic", "alembic.ini", "tests", "docs", "AGENTS.md"]
+include = ["src", "alembic", "alembic.ini", "config", "tests", "docs", "AGENTS.md"]
 
 # ---------------------------------------------------------------------------
 # Tooling

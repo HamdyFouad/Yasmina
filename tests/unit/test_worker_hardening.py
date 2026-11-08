@@ -182,6 +182,7 @@ async def test_scrape_releases_lock_after_inflight_portal_on_shutdown() -> None:
         locks=locker,
         scraper_factory=factory,  # type: ignore[arg-type]
         stop_event=stop_event,
+        concurrency=1,
     )
 
     assert calls == ["bayern"]

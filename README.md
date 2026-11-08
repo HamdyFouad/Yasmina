@@ -160,7 +160,9 @@ src/
     schematron/          # vendored KoSIT EN16931 + XRechnung CIUS rules
     zugferd_generator.py # Factur-X/ZUGFeRD 2.2 CII + PDF embedding
     xrechnung_generator.py # XRechnung 3.0 UBL XML + KoSIT validation
-alembic/                 # async migrations (… 0009 billing events, 0010 account lifecycle)
+alembic/                 # async migrations (… 0011 catalogue merge, 0012 tender dedup)
+config/
+  portals.yaml           # 120-target engine/API catalogue (verified targets enabled)
 docker/                  # PostgreSQL bootstrap (pgvector, n8n database)
 docs/
   DETAILED_SPEC.md       # authoritative engineering specification
@@ -169,7 +171,7 @@ scripts/
   generate_sample_invoice.py # representative invoice PDF for the veraPDF CI gate
 Dockerfile               # multi-stage, non-root production image
 docker-compose.yml       # local infrastructure (PostgreSQL, MinIO, ClamAV, n8n)
-docker-compose.prod.yml  # isolated production stack (API + services + backup)
+docker-compose.prod.yml  # isolated production stack (API + scraper worker + services + backup)
 .env.prod.example        # production environment template
 frontend/                # React 18 + TypeScript operations dashboard (Vite)
   src/lib/               # Axios client, token store, typed API wrappers
@@ -489,15 +491,49 @@ Invoke-RestMethod -Method Post `
   -ContentType "application/json" -Body $body
 ```
 
-### Portal scrapers (Bayern & Bund)
+### Portal scrapers (config-driven engine catalogue)
 
-`src/scrapers/` discovers public notices from
-`vergabe.bayern.de` and `oeffentlichevergabe.de` with the same guardrails:
+`src/scrapers/` no longer needs one class per portal. `config/portals.yaml`
+contains the target catalogue (120 German, municipal, institutional and European
+entries), each selecting one of the underlying portal engines:
+
+| Engine | Used for | Behaviour |
+|---|---|---|
+| `cosinex` | Many state, city and utility portals | table/list cards plus detail-page enrichment |
+| `rib` | RIB iTWO portals, including Bavaria | follows the publication iframe |
+| `standard` / `xvergabe` / `dtvp` | Federal, municipal and XVergabe/DTVP portals | standard HTML notice cards and attachments |
+
+A target entry looks like this:
+
+```yaml
+portals:
+  - id: nrw
+    name: e-Vergabe NRW
+    start_url: https://www.evergabe.nrw.de/startseite
+    engine: cosinex
+    portal_code: NW
+    region: Nordrhein-Westfalen
+    enabled: true
+    api:                       # optional; preferred over HTML when present
+      type: xvergabe
+      url: https://example.test/xvergabe.xml
+      format: xml
+      fallback_to_html: true
+```
+
+Only targets with `enabled: true` are scraped. The shipped catalogue enables the
+two live-verified portals (`bayern`, `bund`); the remaining 118 entries are
+discovery targets with `verified: false` and must be checked before enabling.
+Add or enable targets by editing the YAML only.
+
+Discovery guardrails are shared by every engine:
 
 - `robots.txt` is fetched and cached per origin/User-Agent; 401/403/429/5xx
   fail closed, while a normal 4xx (including the portals' 404 robots.txt)
   means no restrictions.
-- Requests are spaced per host and raised to the robots `Crawl-delay`.
+- Requests are spaced **per HTTP domain** using a Redis-backed atomic limiter
+  (`SCRAPER_REQUEST_DELAY_SECONDS`, raised to the robots `Crawl-delay`). Different
+  domains can be scraped concurrently, while every replica shares the spacing.
 - A rotating User-Agent pool is used; every raw response is archived to MinIO
   under `scrapers/<portal>/<date>/<sha256>.html` before parsing.
 - Listings are filtered strictly against `33760000-5`, `19520000-7`,
@@ -509,23 +545,29 @@ Invoke-RestMethod -Method Post `
   `SCRAPER_MAX_ATTACHMENTS` files of `SCRAPER_MAX_ATTACHMENT_MB` MiB, and
   archived to MinIO under
   `scrapers/<portal>/attachments/<sha256>.<ext>`.
-- `PortalIngestionBridge` persists mapped metadata through `TenderRepository`
-  (idempotent by tender number). With the outbox enabled it commits the tender
-  and one `TenderIngestionJob` in a single transaction instead of calling the
-  pipeline inline.
+- If a target has an `api` block, the worker tries the JSON/XML feed first
+  (TED, XVergabe/DTVP or a portal's open-data export) and falls back to the
+  selected HTML engine only when the feed fails and `fallback_to_html` is true.
+- `PortalIngestionBridge` persists mapped metadata through `TenderRepository`.
+  A tender is skipped when its `tender_number` exists **or** its cross-portal
+  fingerprint (`tenders.dedup_hash`) matches an existing row. With the outbox
+  enabled it commits the tender and one `TenderIngestionJob` in a single
+  transaction instead of calling the pipeline inline.
 
 ```python
-from src.scrapers import BayernVergabeScraper, PortalIngestionBridge
+from src.scrapers import PortalIngestionBridge, build_engine_scraper, load_portal_targets
 
-scraper = BayernVergabeScraper(settings, storage)
+target = next(item for item in load_portal_targets() if item.id == "bayern")
+scraper = build_engine_scraper(target, settings, storage)
 bridge = PortalIngestionBridge(repository, pipeline=pipeline, audit=audit)
 report, results = await bridge.ingest_scraper(scraper, max_pages=2)
 ```
 
-The Bayern scraper follows the publication iframe used by
-`vergabe.bayern.de`; the federal scraper accepts an HTML search-result URL
-through `start_url` (the production UI is JavaScript-driven). Incomplete
-metadata is skipped rather than guessed.
+Cross-portal deduplication hashes the normalized title, client and submission
+date. `tenders.dedup_hash` has a unique constraint; an existing row from
+`vergabe.muenchen.de` therefore suppresses the same notice arriving from DTVP or
+TED under a different portal id. Historical duplicates are left with a null hash
+by the migration and the first row remains canonical.
 
 #### Durable ingestion outbox
 
@@ -553,15 +595,18 @@ parsing that follows:
 
 #### Daily scrape worker
 
-`yasmina-worker` (or `python -m src.worker`) runs `ingest_scraper()` once or on a
-five-field cron schedule in `APP_TIMEZONE`, then drains the ingestion outbox:
+`yasmina-worker` (or `python -m src.worker`) runs the configured targets once or on
+a five-field cron schedule in `APP_TIMEZONE`, then drains the ingestion outbox:
 
 ```powershell
-# one immediate run, optionally only one portal
+# one immediate run for a verified target (or --portal all)
 python -m src.worker scrape --portal bayern --max-pages 2
 
 # long-running daily scheduler (default SCRAPER_SCHEDULE_CRON=0 2 * * *)
 python -m src.worker schedule --portal all
+
+# pilot the disabled catalogue entries once (does not affect the scheduler)
+python -m src.worker scrape --portal all --include-unverified --max-pages 1
 
 # drain queued ingestion jobs once or continuously
 python -m src.worker process --limit 20
@@ -569,8 +614,11 @@ python -m src.worker process --interval 30
 ```
 
 The scheduler is dependency-free and logs job failures without terminating.
-Each scheduled scrape is followed by one `process_jobs_once()` pass, so a single
-cron entry keeps both discovery and parsing moving.
+Network discovery runs in batches of `SCRAPER_MAX_CONCURRENT_PORTALS` (default 6)
+across different domains; persistence and outbox writes remain sequential. Each
+scheduled scrape is followed by one `process_jobs_once()` pass, so a single cron
+entry keeps both discovery and parsing moving. A failed portal does not block
+the remaining targets or the ingestion pass.
 
 #### Production hardening and observability
 
@@ -578,6 +626,12 @@ cron entry keeps both discovery and parsing moving.
   takes `pg_try_advisory_lock(<stable portal key>)` before scraping a portal. A
   second worker gets `False`, records the portal as `skipped` and moves on; the
   lock is released in `finally` (and by PostgreSQL if the connection dies).
+- **Per-domain locks and spacing:** Redis locks
+  (`yasmina:scrape:domain-lock:*`) prevent two replicas from hammering one
+  domain at once, while an atomic Redis spacing script
+  (`yasmina:scrape:domain:*`) enforces the robots/configured delay per domain.
+  Different domains still scrape concurrently. Without `REDIS_URL`, both
+  mechanisms fall back to process-local implementations for development.
 - **Graceful shutdown:** SIGINT/SIGTERM set a cooperative stop event. The
   current scrape portal and current DeepSeek/Docling job finish, their locks are
   released, unstarted claims return to `pending`, and the process exits without
@@ -911,6 +965,12 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml --profile backup 
   `backend` network with no host ports.
 - Every service has a healthcheck and `restart: unless-stopped`; the API waits
   for PostgreSQL, MinIO (plus bucket bootstrap), ClamAV and Redis.
+- A `worker` service runs `python -m src.worker schedule --portal all` after the
+  API is healthy. It uses the same image, the internal network, Redis per-domain
+  locks/spacing and the `config/portals.yaml` catalogue; scale it with
+  `docker compose ... up -d --scale worker=N` only when the per-domain locks are
+  active. The worker has a writable `/app/var/ingestion` tmpfs for PDF/GAEB
+  parsing.
 - Redis runs with `--appendonly yes` and password authentication
   (`REDIS_PASSWORD`), and the API connects through `REDIS_URL` with
   `RATE_LIMIT_BACKEND=redis` so all replicas share one token bucket.
@@ -1049,7 +1109,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | n8n | `N8N_WEBHOOK_BASE_URL`, `N8N_WEBHOOK_HMAC_SECRET`, `N8N_RFQ_WEBHOOK_PATH`, `N8N_CALLBACK_URL`, `N8N_CALLBACK_MAX_AGE_SECONDS` |
 | Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_APPROVAL_CHAT_ID`, `TELEGRAM_ALERTS_ENABLED`, `TELEGRAM_TIMEOUT_SECONDS`, `TELEGRAM_MAX_RETRIES`, `TELEGRAM_RETRY_BACKOFF_SECONDS` |
 | ERPNext | `ERPNEXT_BASE_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `ERPNEXT_ITEM_GROUP`, `ERPNEXT_SELLING_PRICE_LIST`, `ERPNEXT_QUOTATION_SERIES` |
-| Portal scrapers | `SCRAPER_REQUEST_DELAY_SECONDS`, `SCRAPER_ROBOTS_CACHE_SECONDS`, `SCRAPER_MAX_PAGES`, `SCRAPER_ARCHIVE_RAW`, `SCRAPER_ARCHIVE_PREFIX`, `SCRAPER_USER_AGENTS`, `SCRAPER_HARVEST_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENT_MB`, `SCRAPER_SCHEDULE_CRON` |
+| Portal scrapers | `PORTAL_CONFIG_FILE`, `SCRAPER_REQUEST_DELAY_SECONDS`, `SCRAPER_ROBOTS_CACHE_SECONDS`, `SCRAPER_MAX_PAGES`, `SCRAPER_MAX_CONCURRENT_PORTALS`, `SCRAPER_DOMAIN_LOCK_TTL_SECONDS`, `SCRAPER_PREFER_API`, `SCRAPER_ARCHIVE_RAW`, `SCRAPER_ARCHIVE_PREFIX`, `SCRAPER_USER_AGENTS`, `SCRAPER_HARVEST_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENT_MB`, `SCRAPER_SCHEDULE_CRON` |
 | HITL | `ED25519_APPROVAL_PUBLIC_KEY`, `APPROVAL_SIGNATURE_REQUIRED` |
 | Pricing | `DEFAULT_VAT_RATE`, `DEFAULT_MARGIN_RATE`, `OFFER_VALIDITY_DAYS` |
 
@@ -1174,6 +1234,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P5.3 — Redis-backed distributed token-bucket rate limiting with trusted `X-Forwarded-For` handling, Bandit + Trivy CI security gates, a hardened no-package-manager runtime image, and a Locust load profile for authentication and pgvector matching
 - [x] P5.4 — operations dashboard foundation: Vite/React 18/TypeScript/Tailwind/shadcn shell, branded MFA login, Axios JWT + single-flight refresh interceptors, typed API layer, RBAC-aware user menu and live overview counts
 - [x] P5.5 — dashboard views: owner-scoped tender board with a detail sheet (document download, hybrid catalogue matching, linked-offer pricing), paginated invoice table with ZUGFeRD/XRechnung downloads and an admin-only payment dialog, plus the ops KPI/activity feed; backend adds tender read/document routes, `/ops/summary`, `/ops/activity`, `/offers?tender_id=`, invoice document downloads and HttpOnly refresh cookies
+- [x] P6.3 — config-driven portal expansion: 120-target `portals.yaml`, engine-based cosinex/RIB/standard scrapers, JSON/XML/TED API preference with HTML fallback, cross-portal `dedup_hash` (title + client + deadline), Redis per-domain spacing/locks and bounded concurrent portal scraping
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and
