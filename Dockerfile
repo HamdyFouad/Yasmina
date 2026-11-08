@@ -55,6 +55,7 @@ ENV PYTHONUNBUFFERED=1 \
 # libpq5/postgresql-client power `pg_dump` backups, curl is used by the
 # container healthcheck in docker-compose.prod.yml.
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends libpq5 postgresql-client curl tini \
     && rm -rf /var/lib/apt/lists/*
 
