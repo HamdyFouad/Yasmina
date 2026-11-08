@@ -24,9 +24,15 @@ htmlcov/
 tests/
 docs/
 scripts/
-frontend/
 var/
 *.log
 *.sqlite3
 
 docker-compose*.yml
+
+# Frontend dependencies and generated assets are rebuilt inside the image.
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.*
+!frontend/.env.example

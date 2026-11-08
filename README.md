@@ -33,7 +33,9 @@ waste bags across all thicknesses, volumes and colour standards.
 > operations dashboard (Vite, Tailwind, shadcn/ui, TanStack Query) now provides
 > the branded MFA login, cookie-based JWT sessions, the tender pipeline with
 > matching/pricing detail, and the invoice table with ZUGFeRD/XRechnung
-> downloads and admin payment recording.
+> downloads and admin payment recording. P6.5 adds the admin catalogue-override
+> workspace, ERPNext outbox observability, and a Caddy-based local HTTPS edge
+> that serves the SPA and proxies the API with strict security headers.
 
 ---
 
@@ -173,9 +175,11 @@ docs/
   ASSUMPTIONS.md         # inferred fields / open spec questions
 scripts/
   generate_sample_invoice.py # representative invoice PDF for the veraPDF CI gate
-Dockerfile               # multi-stage, non-root production image
+Dockerfile               # multi-stage, non-root production API image
+Dockerfile.frontend      # Node build + Caddy static/proxy edge image
+Caddyfile                # local HTTPS, security headers and API reverse proxy
 docker-compose.yml       # local infrastructure (PostgreSQL, MinIO, ClamAV, n8n)
-docker-compose.prod.yml  # isolated production stack (API + scraper worker + services + backup)
+docker-compose.prod.yml  # production stack (API, Caddy, workers, services, backup)
 .env.prod.example        # production environment template
 frontend/                # React 18 + TypeScript operations dashboard (Vite)
   src/lib/               # Axios client, token store, typed API wrappers
@@ -345,6 +349,7 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | GET | `/invoices/{id}/credit-notes` | sales (own), viewer/admin (all) |
 | GET | `/ops/summary` | sales (owner-scoped), viewer/admin (global) |
 | GET | `/ops/activity` | admin/viewer only |
+| GET | `/ops/outbox-status` | admin/viewer only; ERPNext quotation outbox counts |
 | GET | `/admin/catalog/overrides` | admin only; list pinned catalogue fields |
 | POST | `/admin/catalog/overrides` | admin only; add/replace/clear pins |
 | POST | `/invoices/{id}/payments` | admin only |
@@ -944,8 +949,9 @@ GitHub Actions (`.github/workflows/ci.yml`) has five gates:
   MinIO bucket, runs the real-service preflight, then runs the full pytest suite
   with `YASMINA_TEST_DATABASE_URL` and `YASMINA_TEST_REDIS_URL` so the live
   PostgreSQL and distributed rate-limit tests execute.
-- **docker** — builds the production image (slim extras for speed), verifies the
-  non-root UID, imports, precompiled bytecode and backup-key CLI.
+- **docker** — builds the production API image (slim extras for speed), verifies
+  the non-root UID, imports, precompiled bytecode and backup-key CLI, then builds
+  the Caddy edge image and validates its configuration.
 - **security** — Bandit over `src/` (medium/high gate) and a Trivy
   CRITICAL/HIGH OS/package scan of the freshly built image.
 - **frontend** — `npm ci`, `oxlint` and the strict TypeScript/Vite production
@@ -988,13 +994,37 @@ docker build --build-arg INSTALL_EXTRAS="ai,e-invoicing" -t yasmina-api:slim .
 
 ```powershell
 cp .env.prod.example .env.prod    # fill every change-me secret
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
-# optional daily encrypted backups sidecar
+docker compose --env-file .env.prod -f docker-compose.prod.yml up --build
+```
+
+Open **<https://localhost>**. Caddy uses `tls internal`, so the first visit shows
+a certificate warning for its local CA. Click **Advanced → Proceed to localhost**
+(or trust the CA once):
+
+```powershell
+docker compose --env-file .env.prod -f docker-compose.prod.yml cp `
+  caddy:/data/caddy/pki/authorities/local/root.crt .\yasmina-local-ca.crt
+# Windows: import yasmina-local-ca.crt into Trusted Root Certification Authorities
+# Optional daily encrypted backups:
 docker compose --env-file .env.prod -f docker-compose.prod.yml --profile backup up -d
 ```
 
-- `edge` network publishes only the API, bound to `127.0.0.1:8000` by default;
-  PostgreSQL, MinIO, ClamAV and Redis live exclusively on the `internal: true`
+The root certificate is kept in the `caddy_data` volume, so trusting it once is
+enough until that volume is removed.
+
+- Caddy (`Dockerfile.frontend`) builds the Vite bundle with
+  `VITE_API_BASE_URL=/api/v1`, serves it from `/srv`, and reverse-proxies
+  `/api/*`, `/docs*`, `/openapi.json` and `/redoc*` to `yasmina-api:8000`.
+  Caddy owns ports `80`/`443`; the API is also reachable directly on
+  `127.0.0.1:8000` for debugging only.
+- Security headers are applied by Caddy:
+  `Strict-Transport-Security`, `X-Frame-Options: DENY`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy` and `-Server`.
+- The dashboard and API share `https://localhost`, so the
+  `Secure; HttpOnly; SameSite=Strict` refresh cookie is same-origin and CORS is
+  not exercised. `CORS_ALLOWED_ORIGINS` in `.env.prod.example` is set to
+  `https://localhost` for direct-API use.
+- PostgreSQL, MinIO, ClamAV and Redis live exclusively on the `internal: true`
   `backend` network with no host ports.
 - Every service has a healthcheck and `restart: unless-stopped`; the API waits
   for PostgreSQL, MinIO (plus bucket bootstrap), ClamAV and Redis.
@@ -1269,6 +1299,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P5.5 — dashboard views: owner-scoped tender board with a detail sheet (document download, hybrid catalogue matching, linked-offer pricing), paginated invoice table with ZUGFeRD/XRechnung downloads and an admin-only payment dialog, plus the ops KPI/activity feed; backend adds tender read/document routes, `/ops/summary`, `/ops/activity`, `/offers?tender_id=`, invoice document downloads and HttpOnly refresh cookies
 - [x] P6.3 — config-driven portal expansion: 120-target `portals.yaml`, engine-based cosinex/RIB/standard scrapers, JSON/XML/TED API preference with HTML fallback, cross-portal `dedup_hash` (title + client + deadline), Redis per-domain spacing/locks and bounded concurrent portal scraping
 - [x] P6.4 — ingestion security and ERP hardening: mandatory ClamAV scanning of scraped attachments with terminal job quarantine + `SYSTEM_SECURITY_ALERT`, durable `quotation_sync_jobs` ERPNext outbox with exponential-backoff worker, and admin catalogue override GET/POST APIs
+- [x] P6.5 — frontend admin parity and local-first production edge: admin Catalogue Overrides table/dialog, ERPNext outbox dashboard widget and `/ops/outbox-status`, plus a Caddy image serving the Vite bundle over local HTTPS with strict security headers and API/docs reverse proxying
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

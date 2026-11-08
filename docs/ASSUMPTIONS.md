@@ -704,7 +704,7 @@ reconciled with the authoritative spec later.
   Query keys are namespaced by resource; server state is cached for 30 seconds.
 - The frontend CI job runs `npm ci`, `oxlint` and `tsc -b && vite build`. It does
   not yet run browser end-to-end tests or a production static host deployment.
-- The suite runs 477 tests with live PostgreSQL, Redis, MinIO and ClamAV enabled.
+- The suite runs 478 tests with live PostgreSQL, Redis, MinIO and ClamAV enabled.
 
 ## E-invoicing assumptions (P2.1)
 
@@ -811,3 +811,34 @@ for deterministic fixture and chain-verification tests.
   `MERGEABLE_FIELDS`, and supports `add`, `replace` and `clear` modes. An
   empty `clear` removes every pin. Responses include the current override list
   and article metadata.
+
+## Frontend admin parity and local edge assumptions (P6.5)
+
+- The dashboard Catalogue Admin page is restricted to the `admin` role in both
+  the navigation and the route guard. The backend remains the authority and
+  returns `403` for every non-admin request.
+- The override dialog posts the exact backend contract
+  (`supplier_name`, `article_number`, `fields`, `mode`) and treats an empty
+  field list in `clear` mode as "remove every pin". The UI shows the backend
+  validation error for unknown fields or missing articles.
+- `/ops/outbox-status` is admin/viewer only and returns
+  `{quotation_sync: {pending, processing, succeeded, failed, skipped}, total}`.
+  Sales users do not receive the widget because ERPNext connectivity is a
+  platform-operator concern.
+- `Dockerfile.frontend` builds the Vite bundle with Node 22 and copies `dist/`
+  into a Caddy 2.10 image. Caddy serves the SPA with history fallback and
+  reverse-proxies `/api/*`, `/docs*`, `/openapi.json` and `/redoc*` to the
+  Compose network alias `yasmina-api:8000`.
+- Local HTTPS uses `localhost` + `tls internal`. The certificate is signed by
+  Caddy's local CA and stored in the `caddy_data` volume. Browsers must accept
+  the certificate once (or the CA can be imported into the host trust store).
+  HSTS is still sent, so use `https://localhost` after accepting it.
+- `REFRESH_COOKIE_SECURE=true` remains enabled for the production compose
+  profile; the SPA and API are same-origin through Caddy, so the
+  `SameSite=Strict` cookie flows normally. `CORS_ALLOWED_ORIGINS=https://localhost`
+  is only needed for direct API access.
+- Caddy exposes ports `80`/`443`; the API remains bound to
+  `127.0.0.1:8000` for local debugging. Caddy runs read-only with a
+  `NET_BIND_SERVICE` capability and no-new-privileges. Replacing `localhost`
+  with the public hostname and removing `tls internal` is the production
+  deployment change.

@@ -26,7 +26,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useAuth } from '@/features/auth/auth-context'
 import { apiErrorMessage } from '@/lib/api-error'
 import { API_BASE_URL } from '@/lib/env'
-import { fetchOpsActivity, fetchOpsSummary } from '@/lib/ops-api'
+import { fetchOpsActivity, fetchOpsSummary, fetchOutboxStatus } from '@/lib/ops-api'
 import { formatCurrency, formatDateTime, titleCase } from '@/lib/utils'
 
 function KpiCard({
@@ -108,6 +108,7 @@ export function DashboardPage() {
   const { user, roles, hasRole } = useAuth()
   const canSeeSummary = hasRole('admin', 'viewer', 'sales')
   const canSeeActivity = hasRole('admin', 'viewer')
+  const canSeeOutbox = hasRole('admin', 'viewer')
 
   const summary = useQuery({
     queryKey: ['ops', 'summary'],
@@ -118,6 +119,11 @@ export function DashboardPage() {
     queryKey: ['ops', 'activity'],
     queryFn: () => fetchOpsActivity(20),
     enabled: canSeeActivity,
+  })
+  const outbox = useQuery({
+    queryKey: ['ops', 'outbox-status'],
+    queryFn: fetchOutboxStatus,
+    enabled: canSeeOutbox,
   })
 
   const summaryData = summary.data
@@ -309,6 +315,65 @@ export function DashboardPage() {
               )}
             </CardContent>
           </Card>
+
+          {canSeeOutbox ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>ERPNext outbox</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              {outbox.isLoading ? (
+                <>
+                  <Skeleton className="h-5 w-full" />
+                  <Skeleton className="h-5 w-full" />
+                  <Skeleton className="h-5 w-full" />
+                </>
+              ) : outbox.isError ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-destructive">{apiErrorMessage(outbox.error)}</p>
+                  <Button variant="outline" size="sm" onClick={() => void outbox.refetch()}>
+                    <RefreshCw />
+                    Retry
+                  </Button>
+                </div>
+              ) : outbox.data !== undefined ? (
+                <>
+                  {(
+                    [
+                      ['pending', 'Pending', 'secondary'],
+                      ['processing', 'Processing', 'warning'],
+                      ['succeeded', 'Succeeded', 'success'],
+                      ['failed', 'Failed', 'destructive'],
+                      ['skipped', 'Skipped', 'outline'],
+                    ] as const
+                  ).map(([key, label, tone]) => (
+                    <div key={key} className="flex items-center justify-between gap-2">
+                      <Badge variant={tone} className="px-1.5 py-0 text-[10px]">
+                        {label}
+                      </Badge>
+                      <span className="font-medium">
+                        {outbox.data.quotation_sync[key].toLocaleString('de-DE')}
+                      </span>
+                    </div>
+                  ))}
+                  <div className="flex items-center justify-between border-t border-border pt-3">
+                    <span className="text-muted-foreground">Total jobs</span>
+                    <span className="font-semibold">
+                      {outbox.data.total.toLocaleString('de-DE')}
+                    </span>
+                  </div>
+                  {outbox.data.quotation_sync.failed > 0 ? (
+                    <p className="rounded-md bg-destructive/5 p-2 text-[11px] text-destructive">
+                      ERPNext failures need operator attention.
+                    </p>
+                  ) : null}
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">Outbox metrics unavailable.</p>
+              )}
+            </CardContent>
+          </Card>
+          ) : null}
 
           <Card>
             <CardHeader>

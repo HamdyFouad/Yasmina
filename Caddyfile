@@ -1,0 +1,48 @@
+# Local-first production edge for Project Yasmina.
+#
+# The dashboard and API share https://localhost, so the Secure HttpOnly refresh
+# cookie is same-site and CORS is not involved. Caddy creates a local CA with
+# `tls internal`; accept the certificate in the browser for local testing.
+#
+# Production: replace `localhost` with the public hostname, remove `tls internal`
+# (Caddy obtains a publicly trusted certificate automatically), and keep the
+# same security headers and reverse-proxy rules.
+
+localhost {
+	tls internal
+
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# FastAPI business API.
+	handle /api/* {
+		reverse_proxy yasmina-api:8000
+	}
+
+	# Swagger UI and its OpenAPI document.
+	handle /docs* {
+		reverse_proxy yasmina-api:8000
+	}
+
+	handle /openapi.json {
+		reverse_proxy yasmina-api:8000
+	}
+
+	handle /redoc* {
+		reverse_proxy yasmina-api:8000
+	}
+
+	# Built Vite SPA with history fallback.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

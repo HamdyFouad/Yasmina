@@ -252,6 +252,14 @@ jobs:
             | grep -Eq '^[A-Za-z0-9_-]{43}=$'
           echo "backup key generation works in the runtime image."
 
+      - name: Build Caddy edge image
+        run: docker build -f Dockerfile.frontend -t yasmina-web:ci .
+
+      - name: Validate Caddy configuration
+        run: |
+          docker run --rm --entrypoint caddy yasmina-web:ci \
+            validate --config /etc/caddy/Caddyfile
+
   frontend:
     name: Frontend (dashboard)
     runs-on: ubuntu-latest

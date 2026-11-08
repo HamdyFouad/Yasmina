@@ -7,9 +7,15 @@ import logging
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
-from src.api.deps import get_ops_repository, get_worker_health_service, require_roles
+from src.api.deps import (
+    get_ops_repository,
+    get_quotation_sync_repository,
+    get_worker_health_service,
+    require_roles,
+)
 from src.api.security import Principal, Role
 from src.repositories.ops_repository import OpsRepository
+from src.repositories.quotation_sync_repository import QuotationSyncJobRepository
 from src.services.worker_metrics import WorkerHealthService
 
 __all__ = ["api_router", "router"]
@@ -70,3 +76,17 @@ async def dashboard_summary(
 
     owner = principal.sub if _is_sales_only(principal) else None
     return await repository.summary(owner=owner)
+
+
+@api_router.get("/outbox-status")
+async def outbox_status(
+    repository: QuotationSyncJobRepository = Depends(get_quotation_sync_repository),
+    _: Principal = Depends(require_roles(Role.ADMIN, Role.VIEWER)),
+) -> dict[str, object]:
+    """ERPNext quotation outbox counts for the operations dashboard."""
+
+    counts = await repository.status_counts()
+    return {
+        "quotation_sync": counts,
+        "total": sum(counts.values()),
+    }

@@ -41,9 +41,10 @@ npm run preview    # serve the built bundle
 | Route | Content |
 |---|---|
 | `/login` | Username/password login with an MFA (TOTP) step when the account requires it. |
-| `/` | Overview: owner-scoped KPI cards, gross invoiced/paid/outstanding, recent audit events (admin/viewer) and session details. |
+| `/` | Overview: owner-scoped KPI cards, gross invoiced/paid/outstanding, recent audit events (admin/viewer), ERPNext outbox counts (admin/viewer) and session details. |
 | `/tenders` | Paginated tender board with status filter. Rows open a detail sheet with metadata, the original GAEB/PDF download, hybrid catalogue matching and linked pricing offers with their line/VAT breakdown and totals. |
 | `/invoices` | Paginated invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, and the admin-only "Mark as paid" dialog. |
+| `/admin/catalog` | Admin-only catalogue override table with supplier/article filters, pin badges and a dialog to add, replace or clear pinned merge fields. |
 
 The `Offers` navigation entry is still a placeholder; offer pricing is currently
 shown inside the tender detail sheet, filtered with `GET /offers?tender_id=...`.
@@ -71,7 +72,8 @@ shown inside the tender detail sheet, filtered with `GET /offers?tender_id=...`.
 - `GET /offers?tender_id={id}`
 - `GET /invoices`, `GET /invoices/{id}/documents/{zugferd|xrechnung}`,
   `POST /invoices/{id}/payments`
-- `GET /ops/summary`, `GET /ops/activity`
+- `GET /ops/summary`, `GET /ops/activity`, `GET /ops/outbox-status`
+- `GET /admin/catalog/overrides`, `POST /admin/catalog/overrides`
 
 ## Environment
 
@@ -85,10 +87,18 @@ shown inside the tender detail sheet, filtered with `GET /offers?tender_id=...`.
 - [x] Protected app shell (sidebar, header, user menu, mobile navigation)
 - [x] Typed API layer + auth context + React Query provider
 - [x] Cookie-based refresh sessions with in-memory access tokens
-- [x] Overview KPIs, billing totals and audit activity feed
+- [x] Overview KPIs, billing totals, audit activity feed and ERPNext outbox widget
 - [x] Paginated tender board, status filter and detail sheet
 - [x] Source-document download, catalogue matching scores and linked offer pricing
 - [x] Paginated invoice table with ZUGFeRD/XRechnung downloads
 - [x] Admin-only "Mark as paid" payment dialog
+- [x] Admin catalogue override table and pin/replace/clear dialog
 - [ ] Offer workspace beyond the tender detail sheet
-- [ ] Browser end-to-end tests and a production static-host deployment
+- [ ] Browser end-to-end tests
+
+## Production edge
+
+The repository ships `Dockerfile.frontend` and `Caddyfile`; the production
+Compose stack serves the built SPA from Caddy at `https://localhost` with
+`tls internal` and proxies `/api/*`, `/docs*` and `/openapi.json` to the API.
+See the root README for the certificate-acceptance steps.

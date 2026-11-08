@@ -327,3 +327,48 @@ export interface InvoicePaymentResponse {
   invoice: Invoice
   events: InvoiceEvent[]
 }
+
+export interface QuotationSyncCounts {
+  pending: number
+  processing: number
+  succeeded: number
+  failed: number
+  skipped: number
+}
+
+export interface OutboxStatus {
+  quotation_sync: QuotationSyncCounts
+  total: number
+}
+
+export interface CatalogOverride {
+  id: string
+  supplier_id: string
+  supplier_name: string
+  article_number: string
+  description: string
+  material: string | null
+  color: string | null
+  glove_size: string
+  unit: string | null
+  unit_price_net: string | null
+  pack_size: number | null
+  manual_overrides: string[]
+  updated_at: string
+}
+
+export interface CatalogOverrideListResponse {
+  overrides: CatalogOverride[]
+  count: number
+  limit: number
+  offset: number
+}
+
+export type CatalogOverrideMode = 'add' | 'replace' | 'clear'
+
+export interface CatalogOverrideRequest {
+  supplier_name: string
+  article_number: string
+  fields: string[]
+  mode: CatalogOverrideMode
+}

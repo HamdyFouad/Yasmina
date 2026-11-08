@@ -209,7 +209,52 @@ services:
           memory: 256m
     logging: *default-logging
     networks:
-      - edge
+      edge:
+      backend:
+        aliases:
+          - yasmina-api
+
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_BASE_URL: /api/v1
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "caddy", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256m
+        reservations:
+          memory: 32m
+    logging: *default-logging
+    networks:
       - backend
 
   worker:
@@ -336,3 +381,5 @@ volumes:
   minio_data:
   clamav_data:
   redis_data:
+  caddy_data:
+  caddy_config:

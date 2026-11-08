@@ -1,6 +1,7 @@
 import { createBrowserRouter } from 'react-router-dom'
 
-import { AppShell, RequireAuth } from '@/app/app-shell'
+import { AppShell, RequireAdmin, RequireAuth } from '@/app/app-shell'
+import { CatalogAdminPage } from '@/features/admin/catalog-admin-page'
 import { DashboardPage } from '@/features/dashboard/dashboard-page'
 import { LoginPage } from '@/features/auth/login-page'
 import { InvoicesPage } from '@/features/invoices/invoices-page'
@@ -24,6 +25,14 @@ export const router = createBrowserRouter([
           { path: 'tenders', element: <TendersPage /> },
           { path: 'offers', element: <OffersPage /> },
           { path: 'invoices', element: <InvoicesPage /> },
+          {
+            path: 'admin/catalog',
+            element: (
+              <RequireAdmin>
+                <CatalogAdminPage />
+              </RequireAdmin>
+            ),
+          },
         ],
       },
     ],

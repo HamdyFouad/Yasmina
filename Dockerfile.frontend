@@ -1,0 +1,30 @@
+# syntax=docker/dockerfile:1.7
+#
+# Project Yasmina — frontend and local-first production edge.
+#
+# Stage 1 builds the Vite dashboard. Stage 2 serves the static bundle through
+# Caddy and reverse-proxies the API, OpenAPI UI and OpenAPI document.
+
+ARG NODE_VERSION=22
+
+FROM node:${NODE_VERSION}-alpine AS web
+
+WORKDIR /app
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+
+ARG VITE_API_BASE_URL=/api/v1
+ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
+
+RUN npm run build
+
+
+FROM caddy:2.10-alpine AS runtime
+
+COPY Caddyfile /etc/caddy/Caddyfile
+COPY --from=web /app/dist /srv
+
+EXPOSE 80 443 443/udp

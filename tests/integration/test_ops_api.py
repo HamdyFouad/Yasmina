@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from src.api.deps import get_ops_repository, get_session
+from src.api.deps import get_ops_repository, get_quotation_sync_repository, get_session
 from src.api.security import Role, create_access_token
 from src.config import Settings
 from src.main import create_app
@@ -69,7 +69,19 @@ def make_client() -> tuple[TestClient, FakeOpsRepository, Settings]:
     app = create_app(settings, run_startup_checks=False)
     app.dependency_overrides[get_session] = lambda: FakeSession()
     app.dependency_overrides[get_ops_repository] = lambda: repository
+    app.dependency_overrides[get_quotation_sync_repository] = lambda: FakeQuotationSyncRepository()
     return TestClient(app), repository, settings
+
+
+class FakeQuotationSyncRepository:
+    async def status_counts(self) -> dict[str, int]:
+        return {
+            "pending": 2,
+            "processing": 1,
+            "succeeded": 9,
+            "failed": 0,
+            "skipped": 1,
+        }
 
 
 def auth(settings: Settings, subject: str, roles: list[Role]) -> dict[str, str]:
@@ -126,8 +138,35 @@ def test_sales_summary_is_owner_scoped() -> None:
         assert events.status_code == 403
 
 
+def test_outbox_status_is_visible_to_admin_and_viewer_only() -> None:
+    client, _, settings = make_client()
+    admin = auth(settings, "admin-user", [Role.ADMIN])
+    viewer = auth(settings, "viewer-user", [Role.VIEWER])
+    sales = auth(settings, "sales-a", [Role.SALES])
+
+    with client:
+        admin_response = client.get("/api/v1/ops/outbox-status", headers=admin)
+        viewer_response = client.get("/api/v1/ops/outbox-status", headers=viewer)
+        sales_response = client.get("/api/v1/ops/outbox-status", headers=sales)
+
+    assert admin_response.status_code == 200, admin_response.text
+    assert admin_response.json() == {
+        "quotation_sync": {
+            "pending": 2,
+            "processing": 1,
+            "succeeded": 9,
+            "failed": 0,
+            "skipped": 1,
+        },
+        "total": 13,
+    }
+    assert viewer_response.status_code == 200
+    assert sales_response.status_code == 403
+
+
 def test_dashboard_endpoints_require_a_token() -> None:
     client, _, _ = make_client()
     with client:
         assert client.get("/api/v1/ops/activity").status_code == 401
         assert client.get("/api/v1/ops/summary").status_code == 401
+        assert client.get("/api/v1/ops/outbox-status").status_code == 401

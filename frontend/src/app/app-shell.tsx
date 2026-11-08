@@ -7,9 +7,11 @@ import {
   LogOut,
   Menu,
   ReceiptText,
+  ShieldCheck,
   Tags,
   X,
 } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
@@ -30,15 +32,30 @@ import { useAuth } from '@/features/auth/auth-context'
 import { API_BASE_URL } from '@/lib/env'
 import { cn, titleCase } from '@/lib/utils'
 
-const NAV_ITEMS = [
+interface NavItem {
+  to: string
+  label: string
+  icon: LucideIcon
+  end: boolean
+  adminOnly?: boolean
+}
+
+const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
   { to: '/tenders', label: 'Tenders', icon: FileText, end: false },
   { to: '/offers', label: 'Offers', icon: Tags, end: false },
   { to: '/invoices', label: 'Invoices', icon: ReceiptText, end: false },
-] as const
+  {
+    to: '/admin/catalog',
+    label: 'Catalog Admin',
+    icon: ShieldCheck,
+    end: false,
+    adminOnly: true,
+  },
+]
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
-  const { user, roles } = useAuth()
+  const { user, roles, hasRole } = useAuth()
 
   return (
     <div className="flex h-full flex-col">
@@ -47,7 +64,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       </div>
       <Separator />
       <nav className="flex-1 space-y-1 px-3 py-4" aria-label="Primary">
-        {NAV_ITEMS.map((item) => (
+        {NAV_ITEMS.filter((item) => !item.adminOnly || hasRole('admin')).map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
@@ -186,6 +203,24 @@ export function RequireAuth() {
   }
 
   return <Outlet />
+}
+
+export function RequireAdmin({ children }: { children: React.ReactNode }) {
+  const { status, hasRole } = useAuth()
+
+  if (status === 'loading') {
+    return (
+      <div className="flex min-h-[40vh] items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" aria-label="Loading" />
+      </div>
+    )
+  }
+
+  if (!hasRole('admin')) {
+    return <Navigate to="/" replace />
+  }
+
+  return <>{children}</>
 }
 
 export function AppShell() {
