@@ -1,0 +1,150 @@
+name: Deploy staging
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  actions: read
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  # The `secrets` context is only readable inside steps, so this job decides
+  # whether the staging host is configured at all. Without the guard every push
+  # to main would publish a red run until the VPS secrets exist.
+  guard:
+    name: Check staging secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    outputs:
+      configured: ${{ steps.detect.outputs.configured }}
+    steps:
+      - name: Detect staging configuration
+        id: detect
+        if: >-
+          ${{ secrets.STAGING_HOST != '' && secrets.STAGING_USER != '' &&
+          secrets.STAGING_SSH_KEY != '' && secrets.STAGING_DEPLOY_DIR != '' }}
+        run: echo "configured=true" >> "$GITHUB_OUTPUT"
+
+      - name: Explain skipped deployment
+        if: ${{ steps.detect.outputs.configured != 'true' }}
+        run: |
+          echo "::notice title=Staging deploy skipped::STAGING_HOST/STAGING_USER/STAGING_SSH_KEY/STAGING_DEPLOY_DIR are not set."
+          echo "Add the staging secrets listed in README.md, then re-run this workflow."
+
+  build-push:
+    name: Build and push images
+    needs: guard
+    if: needs.guard.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Prepare image owner
+        run: echo "IMAGE_OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build API image
+        run: |
+          docker build \
+            --build-arg INSTALL_EXTRAS="ai,e-invoicing,parsing" \
+            --label "org.opencontainers.image.revision=${IMAGE_TAG}" \
+            -t "${REGISTRY}/${IMAGE_OWNER}/yasmina-api:${IMAGE_TAG}" .
+
+      # Workers intentionally share the API image and differ only by command.
+      - name: Tag worker images
+        run: |
+          docker tag "${REGISTRY}/${IMAGE_OWNER}/yasmina-api:${IMAGE_TAG}" \
+            "${REGISTRY}/${IMAGE_OWNER}/yasmina-worker:${IMAGE_TAG}"
+          docker tag "${REGISTRY}/${IMAGE_OWNER}/yasmina-api:${IMAGE_TAG}" \
+            "${REGISTRY}/${IMAGE_OWNER}/yasmina-sync-worker:${IMAGE_TAG}"
+
+      - name: Build staging edge image
+        run: |
+          docker build \
+            -f Dockerfile.frontend \
+            --build-arg CADDYFILE=Caddyfile.staging \
+            --build-arg VITE_API_BASE_URL=/api/v1 \
+            --label "org.opencontainers.image.revision=${IMAGE_TAG}" \
+            -t "${REGISTRY}/${IMAGE_OWNER}/yasmina-edge:${IMAGE_TAG}" .
+
+      - name: Push images
+        run: |
+          for image in yasmina-api yasmina-worker yasmina-sync-worker yasmina-edge; do
+            docker push "${REGISTRY}/${IMAGE_OWNER}/${image}:${IMAGE_TAG}"
+          done
+
+  deploy:
+    name: Deploy to Hetzner staging
+    needs: [guard, build-push]
+    if: needs.guard.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: staging
+      url: https://staging.yasmina.bayerclean.net
+    steps:
+      - name: Checkout deployment scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Copy compose and deployment scripts
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          port: ${{ secrets.STAGING_SSH_PORT || '22' }}
+          fingerprint: ${{ secrets.STAGING_SSH_FINGERPRINT }}
+          source: "docker-compose.staging.yml,scripts/deploy_staging.sh,scripts/smoke_test.sh"
+          target: ${{ secrets.STAGING_DEPLOY_DIR }}
+          overwrite: true
+
+      - name: Pull, migrate, restart and smoke-test
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_OWNER: ${{ github.repository_owner }}
+          DEPLOY_DIR: ${{ secrets.STAGING_DEPLOY_DIR }}
+          STAGING_BASE_URL: ${{ secrets.STAGING_BASE_URL }}
+          SMOKE_USERNAME: ${{ secrets.STAGING_SMOKE_USERNAME }}
+          SMOKE_PASSWORD: ${{ secrets.STAGING_SMOKE_PASSWORD }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          port: ${{ secrets.STAGING_SSH_PORT || '22' }}
+          fingerprint: ${{ secrets.STAGING_SSH_FINGERPRINT }}
+          script_stop: true
+          envs: IMAGE_TAG,REGISTRY,IMAGE_OWNER,DEPLOY_DIR,STAGING_BASE_URL,SMOKE_USERNAME,SMOKE_PASSWORD,GHCR_USER,GHCR_READ_TOKEN
+          script: |
+            set -euo pipefail
+            cd "$DEPLOY_DIR"
+            bash scripts/deploy_staging.sh

@@ -1,0 +1,50 @@
+# Staging edge for Project Yasmina.
+#
+# DNS must point staging.yasmina.bayerclean.net at the VPS and ports 80/443 must
+# be reachable. Omitting a `tls` directive lets Caddy obtain and renew a public
+# Let's Encrypt certificate automatically.
+#
+# Swagger/OpenAPI are intentionally not exposed on staging. Use the API through
+# the authenticated proxy or access the API container through a private tunnel.
+
+staging.yasmina.bayerclean.net {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# Keep the OpenAPI UI and document off the public staging edge.
+	handle /docs* {
+		respond "Not found" 404
+	}
+
+	handle /openapi.json {
+		respond "Not found" 404
+	}
+
+	handle /redoc* {
+		respond "Not found" 404
+	}
+
+	# FastAPI business API.
+	handle /api/* {
+		reverse_proxy yasmina-api:8000
+	}
+
+	# Health probe used by the deployment smoke test.
+	handle /healthz {
+		reverse_proxy yasmina-api:8000
+	}
+
+	# Built Vite SPA with history fallback.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -26,6 +26,11 @@ localhost {
 		reverse_proxy yasmina-api:8000
 	}
 
+	# Health probe used by the staging smoke test and load balancers.
+	handle /healthz {
+		reverse_proxy yasmina-api:8000
+	}
+
 	# Swagger UI and its OpenAPI document.
 	handle /docs* {
 		reverse_proxy yasmina-api:8000

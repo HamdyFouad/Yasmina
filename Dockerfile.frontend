@@ -24,7 +24,9 @@ RUN npm run build
 
 FROM caddy:2.10-alpine AS runtime
 
-COPY Caddyfile /etc/caddy/Caddyfile
+ARG CADDYFILE=Caddyfile
+COPY Caddyfile Caddyfile.staging /etc/caddy/
+RUN cp "/etc/caddy/${CADDYFILE}" /etc/caddy/Caddyfile
 COPY --from=web /app/dist /srv
 
 EXPOSE 80 443 443/udp

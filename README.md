@@ -173,13 +173,20 @@ docker/                  # PostgreSQL bootstrap (pgvector, n8n database)
 docs/
   DETAILED_SPEC.md       # authoritative engineering specification
   ASSUMPTIONS.md         # inferred fields / open spec questions
+.github/workflows/       # CI gates + staging deploy (GHCR build, SSH rollout)
 scripts/
   generate_sample_invoice.py # representative invoice PDF for the veraPDF CI gate
+  deploy_staging.sh      # VPS rollout: GHCR pull, pg_dump, migrate, smoke, rollback
+  smoke_test.sh          # /healthz + authenticated /auth/me staging probe
+deploy/
+  staging.env.example    # staging secrets template (copy to VPS .env.staging)
 Dockerfile               # multi-stage, non-root production API image
 Dockerfile.frontend      # Node build + Caddy static/proxy edge image
 Caddyfile                # local HTTPS, security headers and API reverse proxy
+Caddyfile.staging        # Let's Encrypt TLS, docs hidden, SPA + API reverse proxy
 docker-compose.yml       # local infrastructure (PostgreSQL, MinIO, ClamAV, n8n)
 docker-compose.prod.yml  # production stack (API, Caddy, workers, services, backup)
+docker-compose.staging.yml # staging stack (API, edge, workers, services)
 .env.prod.example        # production environment template
 frontend/                # React 18 + TypeScript operations dashboard (Vite)
   src/lib/               # Axios client, token store, typed API wrappers
@@ -989,6 +996,94 @@ docker build --build-arg INSTALL_EXTRAS="ai,e-invoicing" -t yasmina-api:slim .
 - `INSTALL_EXTRAS` selects the installed extras. The default
   `ai,e-invoicing,parsing` is the full feature set; drop `parsing` for a much
   smaller image when PDF/Docling and GAEB ingestion are not needed.
+
+### Staging deployment (Hetzner + GitHub Actions)
+
+The staging rollout is defined in `.github/workflows/deploy-staging.yml`. It runs
+after a green `CI` workflow on `main` (or manually via **Actions → Deploy
+staging → Run workflow**) and:
+
+1. builds the API image and tags the same immutable image as `yasmina-worker`
+   and `yasmina-sync-worker`;
+2. builds `yasmina-edge` with `Caddyfile.staging`;
+3. pushes all four tags to GHCR with the commit SHA;
+4. copies `docker-compose.staging.yml`, `scripts/deploy_staging.sh` and
+   `scripts/smoke_test.sh` to the VPS;
+5. logs in to GHCR, writes a compressed `pg_dump`, pulls the SHA images,
+   applies Alembic migrations, restarts Compose and runs the smoke test;
+6. on smoke failure, pulls and restarts the previous image tag. Database
+   migrations are **not** reversed automatically; the pre-deploy dump is the
+   recovery point.
+
+Until the staging secrets exist, a `guard` job reports a skipped run instead of
+failing every push to `main`.
+
+`Caddyfile.staging` uses the real domain
+`staging.yasmina.bayerclean.net`, automatic Let's Encrypt TLS (no `tls internal`)
+and returns `404` for `/docs*`, `/openapi.json` and `/redoc*`. DNS must point
+the name at the VPS and ports 80/443 must be open. Caddy joins the Docker `edge`
+network for ACME egress while the databases stay on the internal `backend`
+network.
+
+#### GitHub repository secrets
+
+Create these under **Settings → Secrets and variables → Actions**. The
+`staging` environment can additionally require a reviewer before deployment.
+
+| Secret | Example / purpose |
+|---|---|
+| `STAGING_HOST` | `203.0.113.10` or `staging.yasmina.bayerclean.net` |
+| `STAGING_USER` | `deploy` |
+| `STAGING_SSH_KEY` | Private key whose public half is in `deploy@HOST:~/.ssh/authorized_keys` |
+| `STAGING_SSH_PORT` | `22` (optional; defaults to 22) |
+| `STAGING_SSH_FINGERPRINT` | `SHA256:...` from `ssh-keyscan` |
+| `STAGING_DEPLOY_DIR` | `/opt/yasmina/staging` |
+| `STAGING_BASE_URL` | `https://staging.yasmina.bayerclean.net` |
+| `STAGING_SMOKE_USERNAME` | A staging operator account (bootstrap admin is fine) |
+| `STAGING_SMOKE_PASSWORD` | Password for that account; at least 12 characters |
+| `GHCR_READ_TOKEN` | GitHub PAT with `read:packages` for the VPS to pull private images |
+
+`GITHUB_TOKEN` is automatic and needs the workflow permissions already declared
+in the workflow (`packages: write`). Create `GHCR_READ_TOKEN` as a classic PAT
+with `read:packages` (or a fine-grained token with package read access). The
+VPS deploy user must be in the `docker` group.
+
+Generate and install the SSH material:
+
+```powershell
+ssh-keygen -t ed25519 -f yasmina-staging -C yasmina-staging-deploy
+ssh-copy-id -i yasmina-staging.pub deploy@YOUR_HOST
+ssh-keyscan -H YOUR_HOST | ssh-keygen -lf -
+```
+
+Put the **private** `yasmina-staging` file in `STAGING_SSH_KEY`; put the printed
+`SHA256:...` value in `STAGING_SSH_FINGERPRINT`.
+
+#### VPS preparation
+
+```bash
+sudo apt update && sudo apt install -y docker.io docker-compose-plugin curl python3
+sudo usermod -aG docker deploy
+sudo ufw allow 22/tcp
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+
+sudo mkdir -p /opt/yasmina/staging/backups
+sudo chown -R deploy:deploy /opt/yasmina/staging
+```
+
+`curl` and `python3` are used by `scripts/smoke_test.sh`; both ship with a stock
+Ubuntu image.
+
+Copy `deploy/staging.env.example` to `/opt/yasmina/staging/.env.staging`, fill
+every `REPLACE_WITH_*` value, and `chmod 600 .env.staging`. The template includes
+the Postgres/MinIO/Redis credentials, JWT and Fernet secrets, the Ed25519 public
+key, ERPNext sandbox credentials, CORS origin and the image variables that the
+deploy script updates.
+
+The first deploy has no previous tag, so a failed first smoke test cannot roll
+back. Run the workflow manually first, verify the certificate and smoke test,
+then enable automatic deployment after green CI.
 
 ### Production compose stack
 
