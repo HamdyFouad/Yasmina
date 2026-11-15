@@ -104,9 +104,11 @@ jobs:
       - name: Validate compose stacks
         run: |
           cp .env.prod.example .env.prod
+          cp deploy/staging.env.example .env.staging
           docker compose -f docker-compose.yml config -q
           docker compose --env-file .env.prod -f docker-compose.prod.yml config -q
-          rm -f .env.prod
+          docker compose --env-file .env.staging -f docker-compose.staging.yml config -q
+          rm -f .env.prod .env.staging
           echo "Compose stacks are valid."
 
   tests:
@@ -258,6 +260,18 @@ jobs:
       - name: Validate Caddy configuration
         run: |
           docker run --rm --entrypoint caddy yasmina-web:ci \
+            validate --config /etc/caddy/Caddyfile
+
+      - name: Build staging Caddy edge image
+        run: |
+          docker build -f Dockerfile.frontend \
+            --build-arg CADDYFILE=Caddyfile.staging \
+            --build-arg VITE_API_BASE_URL=/api/v1 \
+            -t yasmina-web-staging:ci .
+
+      - name: Validate staging Caddy configuration
+        run: |
+          docker run --rm --entrypoint caddy yasmina-web-staging:ci \
             validate --config /etc/caddy/Caddyfile
 
   frontend:

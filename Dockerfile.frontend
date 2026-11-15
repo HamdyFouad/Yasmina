@@ -26,7 +26,10 @@ FROM caddy:2.10-alpine AS runtime
 
 ARG CADDYFILE=Caddyfile
 COPY Caddyfile Caddyfile.staging /etc/caddy/
-RUN cp "/etc/caddy/${CADDYFILE}" /etc/caddy/Caddyfile
+# Copy through a temporary name: with the default CADDYFILE=Caddyfile a direct
+# `cp` would be a same-file copy and fail the build.
+RUN cp "/etc/caddy/${CADDYFILE}" /etc/caddy/Caddyfile.build \
+    && mv -f /etc/caddy/Caddyfile.build /etc/caddy/Caddyfile
 COPY --from=web /app/dist /srv
 
 EXPOSE 80 443 443/udp
