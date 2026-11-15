@@ -34,9 +34,16 @@ jobs:
     steps:
       - name: Detect staging configuration
         id: detect
+        # `secrets` is not an allowed context inside `if`, so the values are
+        # mapped into the step environment first.
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_DEPLOY_DIR: ${{ secrets.STAGING_DEPLOY_DIR }}
         if: >-
-          ${{ secrets.STAGING_HOST != '' && secrets.STAGING_USER != '' &&
-          secrets.STAGING_SSH_KEY != '' && secrets.STAGING_DEPLOY_DIR != '' }}
+          env.STAGING_HOST != '' && env.STAGING_USER != '' &&
+          env.STAGING_SSH_KEY != '' && env.STAGING_DEPLOY_DIR != ''
         run: echo "configured=true" >> "$GITHUB_OUTPUT"
 
       - name: Explain skipped deployment
