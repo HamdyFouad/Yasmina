@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import ValidationError
 
 from src.config import Settings, ensure_env_file
+from src.integrations.telegram_notifier import TelegramNotifier
+from src.services.approval_service import generate_keypair
 
 
 def make_settings(**overrides: object) -> Settings:
@@ -48,6 +52,73 @@ def test_ed25519_public_key_validation() -> None:
 
     with pytest.raises(ValidationError):
         make_settings(ed25519_approval_public_key="not-a-key")
+
+
+def test_ed25519_private_key_derives_and_matches_public_key() -> None:
+    private_hex, public_hex = generate_keypair()
+
+    derived = make_settings(
+        ed25519_approval_private_key=private_hex,
+        ed25519_approval_public_key=None,
+    )
+    assert derived.ed25519_approval_public_key == public_hex
+    assert derived.ed25519_approval_private_key is not None
+    assert derived.ed25519_approval_private_key.get_secret_value() == private_hex
+
+    paired = make_settings(
+        ed25519_approval_private_key=private_hex,
+        ed25519_approval_public_key=public_hex,
+    )
+    assert paired.ed25519_approval_public_key == public_hex
+
+    other_private, _ = generate_keypair()
+    with pytest.raises(ValidationError, match="does not match"):
+        make_settings(
+            ed25519_approval_private_key=other_private,
+            ed25519_approval_public_key=public_hex,
+        )
+
+
+def test_ed25519_private_key_accepts_pem_and_rejects_garbage() -> None:
+    private_hex, public_hex = generate_keypair()
+    private = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(private_hex))
+    pem = private.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+
+    settings = make_settings(
+        ed25519_approval_private_key=pem.replace("\n", "\\n"),
+        ed25519_approval_public_key=None,
+    )
+    assert settings.ed25519_approval_public_key == public_hex
+
+    with pytest.raises(ValidationError):
+        make_settings(
+            ed25519_approval_private_key="not-a-key",
+            ed25519_approval_public_key=None,
+        )
+
+    assert (
+        make_settings(
+            ed25519_approval_private_key="",
+            ed25519_approval_public_key=None,
+        ).ed25519_approval_private_key
+        is None
+    )
+
+
+def test_telegram_chat_id_accepts_a_dedicated_destination() -> None:
+    settings = make_settings(
+        telegram_bot_token="123:abc",
+        telegram_chat_id="-100123",
+        telegram_approval_chat_id="-100999",
+    )
+
+    assert TelegramNotifier(settings).chat_id == "-100123"
+    fallback = make_settings(telegram_bot_token="123:abc", telegram_approval_chat_id="-100999")
+    assert TelegramNotifier(fallback).chat_id == "-100999"
 
 
 def test_production_requires_changed_secrets() -> None:

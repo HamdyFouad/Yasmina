@@ -19,6 +19,7 @@ from src.services.approval_service import (
     approve_offer,
     generate_keypair,
     main,
+    public_key_from_private,
     sign_offer,
     verify_offer_signature,
 )
@@ -172,3 +173,81 @@ def test_cli_signs_and_verifies_offer(workspace_tmp) -> None:  # type: ignore[no
         == 0
     )
     assert main(["verify", "--offer", str(offer_path), "--public-key", public_hex]) == 1
+
+
+def test_server_side_signing_uses_the_custody_key() -> None:
+    private_hex, public_hex = generate_keypair()
+    service = ApprovalService(public_hex, private_hex)
+
+    assert service.configured is True
+    assert service.can_sign is True
+    assert public_key_from_private(private_hex) == public_hex
+    assert service.public_key_hex == public_hex
+
+    approved = service.sign(make_offer(), approver="approver-user", approved_at=NOW)
+
+    assert approved.status is CustomerOfferStatus.APPROVED
+    assert approved.approved_by == "approver-user"
+    assert approved.approved_at == NOW
+    assert approved.ed25519_approval_signature is not None
+    assert service.verify(approved) is True
+    assert verify_offer_signature(approved, public_hex) is True
+    # Ed25519 is deterministic: the same offer payload yields the same signature.
+    original = make_offer()
+    first = service.sign(original, approver="approver-user", approved_at=NOW)
+    second = service.sign(original, approver="approver-user", approved_at=NOW)
+    assert first.ed25519_approval_signature == second.ed25519_approval_signature
+
+
+def test_server_side_signing_derives_the_public_key() -> None:
+    private_hex, public_hex = generate_keypair()
+    service = ApprovalService(private_key=private_hex)
+
+    assert service.configured is True
+    assert service.can_sign is True
+    assert service.public_key_hex == public_hex
+    assert service.verify(service.sign(make_offer(), approver="approver-user", approved_at=NOW))
+
+
+def test_signing_requires_a_private_key_and_matching_pair() -> None:
+    private_hex, public_hex = generate_keypair()
+    verifier = ApprovalService(public_hex)
+
+    assert verifier.configured is True
+    assert verifier.can_sign is False
+    with pytest.raises(ApprovalError, match="private key"):
+        verifier.sign(make_offer(), approver="approver-user", approved_at=NOW)
+
+    _, other_public = generate_keypair()
+    with pytest.raises(ApprovalError, match="does not match"):
+        ApprovalService(other_public, private_hex)
+
+
+def test_approval_route_requires_the_custody_private_key() -> None:
+    from fastapi import HTTPException
+
+    from src.api.routes.approvals import _signing_service
+    from src.config import Settings
+
+    private_hex, public_hex = generate_keypair()
+    public_only = Settings(
+        _env_file=None,
+        database_url=None,
+        jwt_secret_key="unit-test-jwt-secret-with-32-bytes",
+        ed25519_approval_public_key=public_hex,
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        _signing_service(public_only)
+
+    assert excinfo.value.status_code == 503
+    assert "ED25519_APPROVAL_PRIVATE_KEY" in str(excinfo.value.detail)
+
+    paired = Settings(
+        _env_file=None,
+        database_url=None,
+        jwt_secret_key="unit-test-jwt-secret-with-32-bytes",
+        ed25519_approval_public_key=public_hex,
+        ed25519_approval_private_key=private_hex,
+    )
+    assert _signing_service(paired).can_sign is True

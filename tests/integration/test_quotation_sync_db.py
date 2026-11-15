@@ -18,7 +18,10 @@ from src.models.orm import CustomerOfferLine as CustomerOfferLineORM
 from src.models.orm import QuotationSyncJob
 from src.models.schemas import CustomerOffer, CustomerOfferLine, q2, q4
 from src.repositories.offer_repository import OfferRepository
-from src.repositories.quotation_sync_repository import QuotationSyncJobRepository
+from src.repositories.quotation_sync_repository import (
+    QuotationSyncJobRepository,
+    QuotationSyncRepositoryError,
+)
 
 DATABASE_URL = os.getenv("YASMINA_TEST_DATABASE_URL")
 
@@ -139,6 +142,49 @@ async def test_enqueue_claim_backoff_and_complete() -> None:
             assert completed.status == "succeeded"
             assert completed.quotation_name == "QTN-2026-0001"
             assert completed.attempts == 2
+
+            await _cleanup(session, number)
+    finally:
+        await dispose_engine()
+
+
+async def test_list_and_retry_a_terminal_failed_job() -> None:
+    current_settings = settings()
+    number = f"P72-{uuid4().hex[:12]}"
+    factory = get_session_factory(current_settings)
+    try:
+        async with factory() as session:
+            await _cleanup(session, number)
+            offer = (await OfferRepository(session).save(make_offer(number))).offer
+            jobs = QuotationSyncJobRepository(session)
+
+            job, _ = await jobs.enqueue(offer.id, offer_number=number, max_attempts=1)
+            claimed = await jobs.claim_pending(limit=10, worker_id="test-worker")
+            assert [item.id for item in claimed] == [job.id]
+            assert await jobs.fail(job.id, "ERPNext 500", retry_backoff_seconds=5) == "failed"
+
+            page, total = await jobs.list_jobs(status="failed", limit=10)
+            assert total >= 1
+            listed = next(item for item in page if item.id == job.id)
+            assert listed.last_error == "ERPNext 500"
+            assert listed.attempts == 1
+            assert listed.created_at is not None
+            assert listed.updated_at is not None
+
+            retried = await jobs.retry_failed(job.id)
+            assert retried.status == "pending"
+            assert retried.attempts == 0
+            assert retried.last_error is None
+
+            row = await session.get(QuotationSyncJob, job.id)
+            assert row is not None
+            assert row.locked_at is None
+            assert row.locked_by is None
+
+            with pytest.raises(QuotationSyncRepositoryError, match="only failed jobs"):
+                await jobs.retry_failed(job.id)
+            with pytest.raises(QuotationSyncRepositoryError, match="does not exist"):
+                await jobs.retry_failed(uuid4())
 
             await _cleanup(session, number)
     finally:

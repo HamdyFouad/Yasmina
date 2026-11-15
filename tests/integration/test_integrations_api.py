@@ -19,6 +19,7 @@ from src.api.deps import (
     get_erpnext_client,
     get_integration_repository,
     get_n8n_client,
+    get_object_storage,
     get_offer_repository,
     get_quotation_sync_repository,
     get_session,
@@ -70,6 +71,7 @@ def make_settings() -> Settings:
         jwt_secret_key=JWT_SECRET,
         api_admin_password="test-admin-password",
         ed25519_approval_public_key=PUBLIC_KEY,
+        ed25519_approval_private_key=PRIVATE_KEY,
         n8n_webhook_hmac_secret=N8N_SECRET,
         n8n_callback_url="https://api.example.test/api/v1/integrations/n8n/supplier-quotes",
         n8n_callback_max_age_seconds=300,
@@ -330,6 +332,28 @@ class FakeQuotationSyncRepository:
         return job, True
 
 
+class FakeObjectStorage:
+    """Minimal storage stub so approval routes never construct a Minio client."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    async def exists(self, object_name: str) -> bool:
+        return object_name in self.objects
+
+    async def get_bytes(self, object_name: str) -> bytes:
+        return self.objects[object_name]
+
+    async def put_bytes(
+        self,
+        object_name: str,
+        data: bytes,
+        *,
+        content_type: str | None = None,
+    ) -> None:
+        self.objects[object_name] = data
+
+
 @pytest.fixture()
 def api() -> Any:
     app = create_app(SETTINGS, run_startup_checks=False)
@@ -355,6 +379,7 @@ def api() -> Any:
     app.dependency_overrides[get_erpnext_client] = lambda: erpnext
     app.dependency_overrides[get_offer_repository] = lambda: offers
     app.dependency_overrides[get_quotation_sync_repository] = lambda: sync_jobs
+    app.dependency_overrides[get_object_storage] = lambda: FakeObjectStorage()
     app.dependency_overrides[get_workflow_checkpointer] = lambda: None
 
     with TestClient(app) as client:
@@ -506,8 +531,6 @@ def test_approval_creates_erpnext_quotation(api: Any) -> None:
         "/api/v1/approvals/approve",
         json={
             "offer": signed.model_dump(mode="json"),
-            "signature": signed.ed25519_approval_signature,
-            "approver": "C. Mueller",
             "approved_at": "2026-01-15T09:00:00Z",
         },
         headers=auth(APPROVER_TOKEN),

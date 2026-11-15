@@ -175,6 +175,7 @@ class Settings(BaseSettings):
 
     # --- Telegram alerts ---------------------------------------------------
     telegram_bot_token: SecretStr | None = None
+    telegram_chat_id: str | None = None
     telegram_approval_chat_id: str | None = None
     telegram_alerts_enabled: bool = True
     telegram_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
@@ -201,7 +202,11 @@ class Settings(BaseSettings):
     scraper_prefer_api: bool = True
 
     # --- HITL approval -----------------------------------------------------
+    # The API signs approvals with the private key held server-side; the public
+    # key verifies signatures (and is derived automatically when only the
+    # private key is configured).
     ed25519_approval_public_key: str | None = None
+    ed25519_approval_private_key: SecretStr | None = None
     approval_signature_required: bool = True
 
     # --- Pricing -----------------------------------------------------------
@@ -255,6 +260,40 @@ class Settings(BaseSettings):
         if not _HEX64_RE.fullmatch(normalized):
             raise ValueError("ed25519 public key must be 32 bytes encoded as 64 lowercase hex characters")
         return normalized
+
+    @field_validator("ed25519_approval_private_key")
+    @classmethod
+    def _validate_private_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        text = value.get_secret_value().strip()
+        if not text:
+            return None
+        if "BEGIN" in text:
+            # Allow single-line PEM values in .env files.
+            return SecretStr(text.replace("\\n", "\n"))
+        normalized = text.lower()
+        if not _HEX64_RE.fullmatch(normalized):
+            raise ValueError("ed25519 private key must be a 32-byte seed (64 hex characters) or PEM encoded")
+        return SecretStr(normalized)
+
+    @model_validator(mode="after")
+    def _validate_approval_keypair(self) -> Self:
+        private_key = self.ed25519_approval_private_key
+        if private_key is None:
+            return self
+
+        from src.services.approval_service import ApprovalError, public_key_from_private
+
+        try:
+            derived = public_key_from_private(private_key.get_secret_value())
+        except ApprovalError as exc:
+            raise ValueError(f"ED25519_APPROVAL_PRIVATE_KEY is invalid: {exc}") from exc
+        if self.ed25519_approval_public_key is None:
+            object.__setattr__(self, "ed25519_approval_public_key", derived)
+        elif self.ed25519_approval_public_key != derived:
+            raise ValueError("ED25519_APPROVAL_PRIVATE_KEY does not match ED25519_APPROVAL_PUBLIC_KEY")
+        return self
 
     @field_validator("jwt_secret_key")
     @classmethod

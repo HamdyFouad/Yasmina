@@ -29,6 +29,7 @@ from src.repositories.catalog_repository import (
     CatalogSeedItem,
     dedupe_catalog_items,
 )
+from src.services.approval_service import generate_keypair
 from src.services.audit_service import AuditService
 from src.services.backup_service import (
     BackupError,
@@ -622,6 +623,11 @@ def _parser() -> argparse.ArgumentParser:
         help="print a fresh Fernet key for BACKUP_ENCRYPTION_KEY",
     )
     key.add_argument("--json", action="store_true", dest="as_json")
+    approval_key = subparsers.add_parser(
+        "generate-approval-key",
+        help="print a fresh Ed25519 approval key pair for server-side signing",
+    )
+    approval_key.add_argument("--json", action="store_true", dest="as_json")
     return parser
 
 
@@ -727,6 +733,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps({"backup_encryption_key": key}, indent=2))
             else:
                 print(key)
+            return 0
+        if args.command == "generate-approval-key":
+            private_hex, public_hex = generate_keypair()
+            if args.as_json:
+                print(
+                    json.dumps(
+                        {
+                            "ed25519_approval_private_key": private_hex,
+                            "ed25519_approval_public_key": public_hex,
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                print(f"ED25519_APPROVAL_PRIVATE_KEY={private_hex}")
+                print(f"ED25519_APPROVAL_PUBLIC_KEY={public_hex}")
             return 0
     except (BackupError, CatalogSeedError, EmbeddingError, ValueError) as exc:
         print(f"admin configuration error: {exc}", file=sys.stderr)

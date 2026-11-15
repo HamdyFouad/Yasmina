@@ -34,6 +34,8 @@ class QuotationSyncJobView:
     available_at: datetime
     quotation_name: str | None
     last_error: str | None
+    created_at: datetime
+    updated_at: datetime
 
 
 def _view(row: QuotationSyncJob) -> QuotationSyncJobView:
@@ -47,6 +49,8 @@ def _view(row: QuotationSyncJob) -> QuotationSyncJobView:
         available_at=row.available_at,
         quotation_name=row.quotation_name,
         last_error=row.last_error,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
     )
 
 
@@ -67,6 +71,60 @@ class QuotationSyncJobRepository:
             .first()
         )
         return _view(row) if row is not None else None
+
+    async def get(self, job_id: UUID) -> QuotationSyncJobView | None:
+        row = await self.session.get(QuotationSyncJob, job_id)
+        return _view(row) if row is not None else None
+
+    async def list_jobs(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> tuple[list[QuotationSyncJobView], int]:
+        """Newest-first page of outbox jobs plus the unfiltered total."""
+
+        filters = [QuotationSyncJob.status == status] if status else []
+        total = await self.session.scalar(select(func.count()).select_from(QuotationSyncJob).where(*filters))
+        statement = (
+            select(QuotationSyncJob)
+            .where(*filters)
+            .order_by(QuotationSyncJob.created_at.desc(), QuotationSyncJob.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        rows = (await self.session.execute(statement)).scalars().all()
+        return [_view(row) for row in rows], int(total or 0)
+
+    async def retry_failed(
+        self,
+        job_id: UUID,
+        *,
+        now: datetime | None = None,
+    ) -> QuotationSyncJobView:
+        """Move a terminal failed job back to the head of the queue.
+
+        Only ``failed`` rows are retryable: a pending or processing job already
+        has a worker lease and must not be duplicated.
+        """
+
+        statement = select(QuotationSyncJob).where(QuotationSyncJob.id == job_id).with_for_update()
+        row = (await self.session.execute(statement)).scalars().first()
+        if row is None:
+            raise QuotationSyncRepositoryError(f"quotation sync job {job_id} does not exist")
+        if row.status != "failed":
+            raise QuotationSyncRepositoryError(
+                f"quotation sync job {job_id} is {row.status}; only failed jobs can be retried"
+            )
+        row.status = "pending"
+        row.attempts = 0
+        row.available_at = now or datetime.now(UTC)
+        row.locked_at = None
+        row.locked_by = None
+        row.last_error = None
+        await self.session.commit()
+        return _view(row)
 
     async def enqueue(
         self,

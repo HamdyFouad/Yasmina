@@ -28,7 +28,7 @@ from src.main import create_app
 from src.models.enums import CustomerOfferStatus, UnitOfMeasure
 from src.models.schemas import CustomerOffer, CustomerOfferLine, q2, q4
 from src.repositories.offer_repository import StoredOffer
-from src.services.approval_service import generate_keypair, sign_offer
+from src.services.approval_service import generate_keypair, verify_offer_signature
 
 PRIVATE_KEY, PUBLIC_KEY = generate_keypair()
 JWT_SECRET = "test-offer-jwt-secret-with-at-least-32-bytes"
@@ -42,6 +42,7 @@ def make_settings() -> Settings:
         jwt_secret_key=JWT_SECRET,
         api_admin_password="test-admin-password",
         ed25519_approval_public_key=PUBLIC_KEY,
+        ed25519_approval_private_key=PRIVATE_KEY,
         company_name="Yasmina GmbH",
         company_street="Hauptstr. 1",
         company_city="Berlin",
@@ -104,15 +105,6 @@ def make_offer(
         total_vat=vat,
         total_gross=q2(net + vat),
         valid_until=date(2026, 12, 31),
-    )
-
-
-def signed_offer(*, offer_number: str = "AN-2026-0100", customer: str = "Stadt Muster") -> CustomerOffer:
-    return sign_offer(
-        make_offer(offer_number=offer_number, customer=customer),
-        PRIVATE_KEY,
-        approver="C. Mueller",
-        approved_at=NOW,
     )
 
 
@@ -295,8 +287,6 @@ def api() -> Any:
 def approval_body(offer: CustomerOffer, *, owner: str = "sales-a") -> dict[str, Any]:
     return {
         "offer": offer.model_dump(mode="json"),
-        "signature": offer.ed25519_approval_signature,
-        "approver": "C. Mueller",
         "approved_at": "2026-01-15T09:00:00Z",
         "owner": owner,
         "invoice": {
@@ -312,7 +302,7 @@ def approval_body(offer: CustomerOffer, *, owner: str = "sales-a") -> dict[str, 
 
 
 def test_four_eyes_rejects_sales_owner_as_approver(api: Any) -> None:
-    offer = signed_offer()
+    offer = make_offer()
     owner_approver = create_access_token(
         SETTINGS,
         "sales-a",
@@ -330,8 +320,48 @@ def test_four_eyes_rejects_sales_owner_as_approver(api: Any) -> None:
     assert offer.offer_number not in api.repository.offers
 
 
+def test_server_signs_for_the_authenticated_approver(api: Any) -> None:
+    offer = make_offer()
+    spoofed = offer.model_copy(update={"approved_by": "Someone Else"})
+
+    response = api.client.post(
+        "/api/v1/approvals/approve",
+        json=approval_body(spoofed),
+        headers=auth(APPROVER),
+    )
+
+    assert response.status_code == 200, response.text
+    persisted = api.repository.offers[offer.offer_number]
+    assert persisted.approved_by == "approver-user"
+    assert persisted.approved_by != spoofed.approved_by
+    assert persisted.ed25519_approval_signature is not None
+    assert persisted.approval_payload_hash is not None
+    assert verify_offer_signature(persisted, PUBLIC_KEY) is True
+
+
+def test_replay_cannot_overwrite_an_approved_offer(api: Any) -> None:
+    first = make_offer()
+    second = make_offer(customer="Evil GmbH").model_copy(update={"id": first.id})
+
+    accepted = api.client.post(
+        "/api/v1/approvals/approve",
+        json=approval_body(first),
+        headers=auth(APPROVER),
+    )
+    rejected = api.client.post(
+        "/api/v1/approvals/approve",
+        json=approval_body(second),
+        headers=auth(APPROVER),
+    )
+
+    assert accepted.status_code == 200, accepted.text
+    assert rejected.status_code == 409
+    assert "different payload" in rejected.text
+    assert api.repository.offers[first.offer_number].customer_name == first.customer_name
+
+
 def test_approval_persists_and_replays_idempotently(api: Any) -> None:
-    offer = signed_offer()
+    offer = make_offer()
     first = api.client.post(
         "/api/v1/approvals/approve",
         json=approval_body(offer),
@@ -366,9 +396,9 @@ def test_approval_persists_and_replays_idempotently(api: Any) -> None:
     assert api.storage.objects[persisted.invoice_artifacts["zugferd"]["object_name"]].startswith(b"%PDF-")
 
 
-def test_same_offer_number_with_different_signature_conflicts(api: Any) -> None:
-    first = signed_offer()
-    second = signed_offer(customer="Evil GmbH")
+def test_same_offer_number_with_different_payload_conflicts(api: Any) -> None:
+    first = make_offer()
+    second = make_offer(customer="Evil GmbH")
     assert first.offer_number == second.offer_number
 
     accepted = api.client.post("/api/v1/approvals/approve", json=approval_body(first), headers=auth(APPROVER))
@@ -382,7 +412,7 @@ def test_same_offer_number_with_different_signature_conflicts(api: Any) -> None:
 
 
 def test_offer_read_routes_enforce_sales_ownership(api: Any) -> None:
-    offer = signed_offer(offer_number="AN-2026-0200")
+    offer = make_offer(offer_number="AN-2026-0200")
     approved = api.client.post(
         "/api/v1/approvals/approve",
         json=approval_body(offer, owner="sales-a"),

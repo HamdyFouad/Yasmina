@@ -2,6 +2,7 @@ import * as React from 'react'
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import {
   FileText,
+  Inbox,
   LayoutDashboard,
   Loader2,
   LogOut,
@@ -31,26 +32,49 @@ import { Separator } from '@/components/ui/separator'
 import { useAuth } from '@/features/auth/auth-context'
 import { API_BASE_URL } from '@/lib/env'
 import { cn, titleCase } from '@/lib/utils'
+import type { Role } from '@/types/auth'
 
 interface NavItem {
   to: string
   label: string
   icon: LucideIcon
   end: boolean
-  adminOnly?: boolean
+  roles?: Role[]
 }
 
-const NAV_ITEMS: NavItem[] = [
-  { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
-  { to: '/tenders', label: 'Tenders', icon: FileText, end: false },
-  { to: '/offers', label: 'Offers', icon: Tags, end: false },
-  { to: '/invoices', label: 'Invoices', icon: ReceiptText, end: false },
+interface NavGroup {
+  label: string
+  items: NavItem[]
+}
+
+const NAV_GROUPS: NavGroup[] = [
   {
-    to: '/admin/catalog',
-    label: 'Catalog Admin',
-    icon: ShieldCheck,
-    end: false,
-    adminOnly: true,
+    label: 'Sales',
+    items: [
+      { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
+      { to: '/tenders', label: 'Tenders', icon: FileText, end: false },
+      { to: '/offers', label: 'Offers', icon: Tags, end: false },
+      { to: '/invoices', label: 'Invoices', icon: ReceiptText, end: false },
+    ],
+  },
+  {
+    label: 'Operations',
+    items: [
+      {
+        to: '/ops/outbox',
+        label: 'Outbox',
+        icon: Inbox,
+        end: false,
+        roles: ['admin', 'approver', 'viewer'],
+      },
+      {
+        to: '/admin/catalog',
+        label: 'Catalog Admin',
+        icon: ShieldCheck,
+        end: false,
+        roles: ['admin'],
+      },
+    ],
   },
 ]
 
@@ -63,24 +87,37 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         <BrandWordmark />
       </div>
       <Separator />
-      <nav className="flex-1 space-y-1 px-3 py-4" aria-label="Primary">
-        {NAV_ITEMS.filter((item) => !item.adminOnly || hasRole('admin')).map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.end}
-            onClick={onNavigate}
-            className={({ isActive }) =>
-              cn(
-                'flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
-                isActive && 'bg-primary/10 text-primary hover:bg-primary/10 hover:text-primary',
-              )
-            }
-          >
-            <item.icon className="h-4 w-4" aria-hidden="true" />
-            {item.label}
-          </NavLink>
-        ))}
+      <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-4" aria-label="Primary">
+        {NAV_GROUPS.map((group) => {
+          const items = group.items.filter((item) => !item.roles || hasRole(...item.roles))
+          if (items.length === 0) {
+            return null
+          }
+          return (
+            <div key={group.label} className="space-y-1">
+              <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                {group.label}
+              </p>
+              {items.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.end}
+                  onClick={onNavigate}
+                  className={({ isActive }) =>
+                    cn(
+                      'flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
+                      isActive && 'bg-primary/10 text-primary hover:bg-primary/10 hover:text-primary',
+                    )
+                  }
+                >
+                  <item.icon className="h-4 w-4" aria-hidden="true" />
+                  {item.label}
+                </NavLink>
+              ))}
+            </div>
+          )
+        })}
       </nav>
       <div className="space-y-3 px-5 pb-5">
         <Separator />
@@ -205,7 +242,13 @@ export function RequireAuth() {
   return <Outlet />
 }
 
-export function RequireAdmin({ children }: { children: React.ReactNode }) {
+export function RequireRoles({
+  roles,
+  children,
+}: {
+  roles: Role[]
+  children: React.ReactNode
+}) {
   const { status, hasRole } = useAuth()
 
   if (status === 'loading') {
@@ -216,11 +259,15 @@ export function RequireAdmin({ children }: { children: React.ReactNode }) {
     )
   }
 
-  if (!hasRole('admin')) {
+  if (!hasRole(...roles)) {
     return <Navigate to="/" replace />
   }
 
   return <>{children}</>
+}
+
+export function RequireAdmin({ children }: { children: React.ReactNode }) {
+  return <RequireRoles roles={['admin']}>{children}</RequireRoles>
 }
 
 export function AppShell() {

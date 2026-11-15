@@ -11,6 +11,7 @@ from typing import Any
 from src.config import Settings
 from src.db import dispose_engine, get_session_factory
 from src.integrations.erpnext_client import ERPNextClient, ERPNextError, ERPNextNotConfigured
+from src.integrations.telegram_notifier import TelegramNotifier
 from src.models.enums import AuditEventType
 from src.repositories.offer_repository import OfferRepository, OfferRepositoryError
 from src.repositories.quotation_sync_repository import (
@@ -20,7 +21,7 @@ from src.repositories.quotation_sync_repository import (
 )
 from src.services.audit_service import AuditService
 
-__all__ = ["process_quotation_sync_jobs_once", "quotation_sync_backoff"]
+__all__ = ["failure_alert_text", "process_quotation_sync_jobs_once", "quotation_sync_backoff"]
 
 logger = logging.getLogger("yasmina.quotation_sync")
 
@@ -38,13 +39,15 @@ async def process_quotation_sync_jobs_once(
     limit: int | None = None,
     worker_id: str | None = None,
     stop_event: Event | None = None,
+    notifier: TelegramNotifier | None = None,
 ) -> list[dict[str, Any]]:
     """Claim and process queued ERPNext quotation jobs.
 
     ERPNext calls happen outside the approval request. Each failure is recorded
     on the job row and retried with exponential backoff; the offer is only
     updated after the quotation has been created and the audit event is staged
-    in the same transaction.
+    in the same transaction. A job that exhausts its attempts fires one
+    best-effort Telegram alert when the bot is configured.
     """
 
     client = ERPNextClient(settings)
@@ -54,6 +57,10 @@ async def process_quotation_sync_jobs_once(
         return []
 
     active_worker = worker_id or f"{socket.gethostname()}:{os.getpid()}"
+    active_notifier = notifier
+    if active_notifier is None:
+        candidate = TelegramNotifier(settings)
+        active_notifier = candidate if candidate.configured else None
     batch_size = max(1, limit or settings.quotation_sync_batch_size)
     factory = get_session_factory(settings)
     summaries: list[dict[str, Any]] = []
@@ -77,6 +84,7 @@ async def process_quotation_sync_jobs_once(
                     audit=audit,
                     client=client,
                     settings=settings,
+                    notifier=active_notifier,
                 )
                 summaries.append(summary)
     finally:
@@ -93,11 +101,31 @@ async def _process_one(
     audit: AuditService,
     client: ERPNextClient,
     settings: Settings,
+    notifier: TelegramNotifier | None = None,
 ) -> dict[str, Any]:
     stored = await offers.get(job.offer_id)
     if stored is None:
         await jobs.skip(job.id, "offer row disappeared")
         return {"job_id": str(job.id), "offer_number": job.offer_number, "status": "skipped"}
+
+    async def _record_failure(exc: Exception) -> dict[str, Any]:
+        await jobs.session.rollback()
+        status = await jobs.fail(
+            job.id,
+            str(exc),
+            retry_backoff_seconds=quotation_sync_backoff(
+                job.attempts,
+                settings.quotation_sync_backoff_seconds,
+            ),
+        )
+        if status == "failed" and notifier is not None:
+            await _notify_terminal_failure(notifier, job, str(exc))
+        return {
+            "job_id": str(job.id),
+            "offer_number": job.offer_number,
+            "status": status,
+            "error": str(exc),
+        }
 
     try:
         if stored.offer.erpnext_quotation_name:
@@ -138,35 +166,31 @@ async def _process_one(
         await jobs.skip(job.id, f"ERPNext is not configured: {exc}")
         return {"job_id": str(job.id), "offer_number": job.offer_number, "status": "skipped"}
     except (ERPNextError, OfferRepositoryError, QuotationSyncRepositoryError) as exc:
-        await jobs.session.rollback()
-        status = await jobs.fail(
-            job.id,
-            str(exc),
-            retry_backoff_seconds=quotation_sync_backoff(
-                job.attempts,
-                settings.quotation_sync_backoff_seconds,
-            ),
-        )
-        return {
-            "job_id": str(job.id),
-            "offer_number": job.offer_number,
-            "status": status,
-            "error": str(exc),
-        }
+        return await _record_failure(exc)
     except Exception as exc:  # pragma: no cover - defensive worker boundary
         logger.exception("unexpected quotation sync failure job=%s", job.id)
-        await jobs.session.rollback()
-        status = await jobs.fail(
-            job.id,
-            str(exc),
-            retry_backoff_seconds=quotation_sync_backoff(
-                job.attempts,
-                settings.quotation_sync_backoff_seconds,
-            ),
-        )
-        return {
-            "job_id": str(job.id),
-            "offer_number": job.offer_number,
-            "status": status,
-            "error": str(exc),
-        }
+        return await _record_failure(exc)
+
+
+def failure_alert_text(job: QuotationSyncJobView, error: str) -> str:
+    """Telegram message for a quotation job that exhausted its retries."""
+
+    return (
+        "ERPNext quotation sync failed\n"
+        f"Offer: {job.offer_number}\n"
+        f"Attempts: {job.attempts}/{job.max_attempts}\n"
+        f"Error: {error}"
+    )[:3900]
+
+
+async def _notify_terminal_failure(
+    notifier: TelegramNotifier,
+    job: QuotationSyncJobView,
+    error: str,
+) -> None:
+    """Best-effort alert; a notifications outage never breaks the worker."""
+
+    try:
+        await notifier.notify(failure_alert_text(job, error))
+    except Exception:  # pragma: no cover - defensive notification boundary
+        logger.exception("telegram alert for failed quotation sync job %s", job.id)

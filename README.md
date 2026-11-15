@@ -308,9 +308,10 @@ Open <http://localhost:5173> and sign in with the admin credentials from your
 automatically. The dashboard ships the branded login, protected shell,
 cookie-based JWT/refresh interceptor, a live overview with KPIs and the audit
 activity feed, the tender board with a detail sheet (source download, catalogue
-matching and linked offer pricing) and the paginated invoice table with
-ZUGFeRD/XRechnung downloads plus the admin-only payment dialog. See
-`frontend/README.md` for the view-by-view scope.
+matching and linked offer pricing), the paginated invoice table with
+ZUGFeRD/XRechnung downloads plus the admin-only payment dialog, and the
+Operations → Outbox console where admins/approvers retry failed ERPNext
+quotation jobs. See `frontend/README.md` for the view-by-view scope.
 
 If the dashboard is hosted on another origin, set `VITE_API_BASE_URL` to the
 absolute backend URL, allow the origin via `CORS_ALLOWED_ORIGINS` on the API, and
@@ -357,6 +358,8 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | GET | `/ops/summary` | sales (owner-scoped), viewer/admin (global) |
 | GET | `/ops/activity` | admin/viewer only |
 | GET | `/ops/outbox-status` | admin/viewer only; ERPNext quotation outbox counts |
+| GET | `/ops/outbox` | admin/approver/viewer; paginated jobs with `last_error` and status filter |
+| POST | `/ops/outbox/{job_id}/retry` | admin/approver; reset a failed job to pending with 0 attempts |
 | GET | `/admin/catalog/overrides` | admin only; list pinned catalogue fields |
 | POST | `/admin/catalog/overrides` | admin only; add/replace/clear pins |
 | POST | `/invoices/{id}/payments` | admin only |
@@ -928,18 +931,23 @@ result = graph.invoke(
 
 The graph enriches missing specs with DeepSeek, matches the catalogue, prices
 deterministically, and stops at `pending_approval` with an unsigned
-`CustomerOffer`. A human signs the canonical payload out-of-band; rerun with the
-approved offer to pass the cryptographic gate and export X84. The server only
-needs `ED25519_APPROVAL_PUBLIC_KEY`; private keys stay with the approver.
+`CustomerOffer`. `POST /api/v1/approvals/approve` signs the canonical payload
+server-side with `ED25519_APPROVAL_PRIVATE_KEY` on behalf of the authenticated
+`approver`; the four-eyes rule still rejects an approver who owns the offer.
+Clients never send a signature. The public half verifies signatures for
+`/approvals/verify`, the ERPNext client and the CLI, and is derived from the
+private key when omitted.
 
 ```powershell
-# approver workstation
-yasmina-approval sign --offer offer.json --private-key-file approver.key `
-  --approver "C. Mueller" --output signed.json
+# one-time key generation on the server
+python -m src.admin generate-approval-key
 
-# server / CI
+# server / CI verification of a signed offer
 yasmina-approval verify --offer signed.json --public-key $env:ED25519_APPROVAL_PUBLIC_KEY
 ```
+
+`yasmina-approval sign` remains available for offline tooling, but the API
+ignores client signatures and re-signs with the custody key.
 
 GitHub Actions (`.github/workflows/ci.yml`) has five gates:
 
@@ -1265,10 +1273,10 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | Embeddings | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_TIMEOUT_SECONDS`, `EMBEDDING_BATCH_SIZE`, `EMBEDDING_MAX_RETRIES`, `EMBEDDING_RETRY_BACKOFF_SECONDS` |
 | Embeddings | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` (BGE-M3, 1024) |
 | n8n | `N8N_WEBHOOK_BASE_URL`, `N8N_WEBHOOK_HMAC_SECRET`, `N8N_RFQ_WEBHOOK_PATH`, `N8N_CALLBACK_URL`, `N8N_CALLBACK_MAX_AGE_SECONDS` |
-| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_APPROVAL_CHAT_ID`, `TELEGRAM_ALERTS_ENABLED`, `TELEGRAM_TIMEOUT_SECONDS`, `TELEGRAM_MAX_RETRIES`, `TELEGRAM_RETRY_BACKOFF_SECONDS` |
+| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_APPROVAL_CHAT_ID`, `TELEGRAM_ALERTS_ENABLED`, `TELEGRAM_TIMEOUT_SECONDS`, `TELEGRAM_MAX_RETRIES`, `TELEGRAM_RETRY_BACKOFF_SECONDS` |
 | ERPNext | `ERPNEXT_BASE_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `ERPNEXT_ITEM_GROUP`, `ERPNEXT_SELLING_PRICE_LIST`, `ERPNEXT_QUOTATION_SERIES`, `QUOTATION_SYNC_MAX_ATTEMPTS`, `QUOTATION_SYNC_BACKOFF_SECONDS`, `QUOTATION_SYNC_BATCH_SIZE` |
 | Portal scrapers | `PORTAL_CONFIG_FILE`, `SCRAPER_REQUEST_DELAY_SECONDS`, `SCRAPER_ROBOTS_CACHE_SECONDS`, `SCRAPER_MAX_PAGES`, `SCRAPER_MAX_CONCURRENT_PORTALS`, `SCRAPER_DOMAIN_LOCK_TTL_SECONDS`, `SCRAPER_PREFER_API`, `SCRAPER_ARCHIVE_RAW`, `SCRAPER_ARCHIVE_PREFIX`, `SCRAPER_USER_AGENTS`, `SCRAPER_HARVEST_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENT_MB`, `SCRAPER_SCHEDULE_CRON` |
-| HITL | `ED25519_APPROVAL_PUBLIC_KEY`, `APPROVAL_SIGNATURE_REQUIRED` |
+| HITL | `ED25519_APPROVAL_PRIVATE_KEY`, `ED25519_APPROVAL_PUBLIC_KEY`, `APPROVAL_SIGNATURE_REQUIRED` |
 | Pricing | `DEFAULT_VAT_RATE`, `DEFAULT_MARGIN_RATE`, `OFFER_VALIDITY_DAYS` |
 
 Secrets use `SecretStr` and are masked in logs. Startup validates the JWT secret
@@ -1395,6 +1403,8 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P6.3 — config-driven portal expansion: 120-target `portals.yaml`, engine-based cosinex/RIB/standard scrapers, JSON/XML/TED API preference with HTML fallback, cross-portal `dedup_hash` (title + client + deadline), Redis per-domain spacing/locks and bounded concurrent portal scraping
 - [x] P6.4 — ingestion security and ERP hardening: mandatory ClamAV scanning of scraped attachments with terminal job quarantine + `SYSTEM_SECURITY_ALERT`, durable `quotation_sync_jobs` ERPNext outbox with exponential-backoff worker, and admin catalogue override GET/POST APIs
 - [x] P6.5 — frontend admin parity and local-first production edge: admin Catalogue Overrides table/dialog, ERPNext outbox dashboard widget and `/ops/outbox-status`, plus a Caddy image serving the Vite bundle over local HTTPS with strict security headers and API/docs reverse proxying
+- [x] P7.1 — staging deployment: GHCR-built SHA images, SSH rollout with `pg_dump`, Alembic and smoke-tested rollback, plus a staging Caddy edge with real Let's Encrypt TLS
+- [x] P7.2 — approval key custody and outbox operations: server-side Ed25519 signing from `ED25519_APPROVAL_PRIVATE_KEY` with four-eyes enforcement, paginated `/ops/outbox` + admin/approver retry, Telegram alerts for exhausted quotation jobs, and an accessible Outbox console in the dashboard
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

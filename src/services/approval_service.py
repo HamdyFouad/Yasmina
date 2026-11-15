@@ -1,8 +1,10 @@
 """Ed25519 approval service for customer offers.
 
-The server stores only the public key. A human approver signs the canonical
-offer payload with the private key; the service verifies that signature and
-produces the approved ``CustomerOffer`` used by GAEB/ERPNext exports.
+The API keeps the private key server-side (``ED25519_APPROVAL_PRIVATE_KEY``)
+and signs the canonical offer payload on behalf of the authenticated approver,
+so no browser or CLI client ever handles key material. The matching public key
+(configured or derived from the private key) verifies signatures and backs the
+``yasmina-approval verify`` tooling.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ __all__ = [
     "approve_offer",
     "generate_keypair",
     "main",
+    "public_key_from_private",
     "sign_offer",
     "verify_offer_signature",
 ]
@@ -189,6 +192,20 @@ def generate_keypair() -> tuple[str, str]:
     return private_hex, public_hex
 
 
+def public_key_from_private(private_key: str | Ed25519PrivateKey) -> str:
+    """Derive the 64-hex public key that belongs to ``private_key``."""
+
+    return (
+        _private_key(private_key)
+        .public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        .hex()
+    )
+
+
 def _with_approval(
     offer: CustomerOffer,
     *,
@@ -298,19 +315,79 @@ def approve_offer(
 
 
 class ApprovalService:
-    """Public-key verifier bound to one configured Ed25519 key."""
+    """Ed25519 verifier and signer bound to one configured key pair.
 
-    def __init__(self, public_key_hex: str | None = None) -> None:
+    The public half is sufficient for verification. When the private half is
+    present the service signs offers server-side, so the HTTP API never accepts
+    a client-produced signature.
+    """
+
+    def __init__(
+        self,
+        public_key_hex: str | None = None,
+        private_key: str | Ed25519PrivateKey | None = None,
+    ) -> None:
         self._public_key = _public_key(public_key_hex) if public_key_hex else None
+        self._private_key = _private_key(private_key) if private_key is not None else None
+        if self._private_key is not None:
+            derived = self._private_key.public_key()
+            if self._public_key is not None and (
+                self._public_key.public_bytes(
+                    encoding=serialization.Encoding.Raw,
+                    format=serialization.PublicFormat.Raw,
+                )
+                != derived.public_bytes(
+                    encoding=serialization.Encoding.Raw,
+                    format=serialization.PublicFormat.Raw,
+                )
+            ):
+                raise ApprovalError("Ed25519 private key does not match the configured public key")
+            self._public_key = derived
 
     @property
     def configured(self) -> bool:
         return self._public_key is not None
 
+    @property
+    def can_sign(self) -> bool:
+        """True when server-side approval signing is possible."""
+
+        return self._private_key is not None
+
+    @property
+    def public_key_hex(self) -> str | None:
+        if self._public_key is None:
+            return None
+        return self._public_key.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        ).hex()
+
     def verify(self, offer: CustomerOffer) -> bool:
         if self._public_key is None:
             return False
         return verify_offer_signature(offer, self._public_key)
+
+    def sign(
+        self,
+        offer: CustomerOffer,
+        *,
+        approver: str,
+        approved_at: datetime | None = None,
+    ) -> CustomerOffer:
+        """Sign ``offer`` server-side on behalf of ``approver``."""
+
+        if self._private_key is None:
+            raise ApprovalError("no Ed25519 private key configured for server-side signing")
+        approved = sign_offer(
+            offer,
+            self._private_key,
+            approver=approver,
+            approved_at=approved_at,
+        )
+        if not self.verify(approved):
+            raise ApprovalError("signed offer failed its own signature verification")
+        return approved
 
     def approve(
         self,
@@ -320,6 +397,8 @@ class ApprovalService:
         approver: str,
         approved_at: datetime | None = None,
     ) -> CustomerOffer:
+        """Apply an externally produced signature after verifying it."""
+
         if self._public_key is None:
             raise ApprovalError("no Ed25519 public key configured")
         return approve_offer(

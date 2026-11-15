@@ -74,6 +74,65 @@
   }
 }
 
+@layer components {
+  /*
+   * Outbox table: sticky headers on desktop, stacked cards when the container
+   * is narrow. Container queries keep the layout correct inside split panes.
+   */
+  .outbox-table {
+    container-type: inline-size;
+  }
+
+  @container (width < 760px) {
+    .outbox-table table,
+    .outbox-table thead,
+    .outbox-table tbody,
+    .outbox-table tr,
+    .outbox-table th,
+    .outbox-table td {
+      display: block;
+    }
+
+    /* MANDATORY: the stacked cards below carry the labels, so hide the header row. */
+    .outbox-table thead {
+      display: none;
+    }
+
+    .outbox-table table {
+      min-inline-size: 0;
+    }
+
+    .outbox-table tbody tr {
+      margin-block-end: 0.75rem;
+      padding: 0.75rem;
+      border: 1px solid hsl(var(--border));
+      border-radius: var(--radius);
+    }
+
+    .outbox-table tbody th {
+      padding: 0 0 0.5rem;
+      font-size: 0.9375rem;
+    }
+
+    .outbox-table tbody td {
+      max-inline-size: none;
+      padding: 0.125rem 0;
+      text-align: left;
+    }
+
+    .outbox-table tbody td[data-label]::before {
+      content: attr(data-label) ': ';
+      font-weight: 600;
+      color: hsl(var(--muted-foreground));
+    }
+
+    .outbox-table tbody td[data-label='Last error']::before,
+    .outbox-table tbody td[data-label='Actions']::before {
+      display: block;
+    }
+  }
+}
+
 @layer utilities {
   .text-balance {
     text-wrap: balance;

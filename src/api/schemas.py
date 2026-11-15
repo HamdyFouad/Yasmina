@@ -190,9 +190,13 @@ class InvoiceCreditPayload(BaseModel):
 
 
 class ApprovalPayload(BaseModel):
+    """Unsigned offer submitted for server-side Ed25519 approval.
+
+    The API signs on behalf of the authenticated approver with the custody key,
+    so neither a client signature nor an approver name is accepted here.
+    """
+
     offer: dict[str, Any]
-    signature: str = Field(min_length=128, max_length=128)
-    approver: str = Field(min_length=1, max_length=256)
     approved_at: datetime | None = None
     owner: str | None = Field(default=None, min_length=1, max_length=128)
     invoice: InvoiceRequestPayload | None = None

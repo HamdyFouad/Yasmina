@@ -44,6 +44,7 @@ npm run preview    # serve the built bundle
 | `/` | Overview: owner-scoped KPI cards, gross invoiced/paid/outstanding, recent audit events (admin/viewer), ERPNext outbox counts (admin/viewer) and session details. |
 | `/tenders` | Paginated tender board with status filter. Rows open a detail sheet with metadata, the original GAEB/PDF download, hybrid catalogue matching and linked pricing offers with their line/VAT breakdown and totals. |
 | `/invoices` | Paginated invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, and the admin-only "Mark as paid" dialog. |
+| `/ops/outbox` | Operations console for quotation_sync_jobs: status filter, attempts/retry budget, next attempt, last ERPNext error and a Retry action for failed jobs (admin/approver). |
 | `/admin/catalog` | Admin-only catalogue override table with supplier/article filters, pin badges and a dialog to add, replace or clear pinned merge fields. |
 
 The `Offers` navigation entry is still a placeholder; offer pricing is currently
@@ -73,6 +74,7 @@ shown inside the tender detail sheet, filtered with `GET /offers?tender_id=...`.
 - `GET /invoices`, `GET /invoices/{id}/documents/{zugferd|xrechnung}`,
   `POST /invoices/{id}/payments`
 - `GET /ops/summary`, `GET /ops/activity`, `GET /ops/outbox-status`
+- `GET /ops/outbox` (status/limit/offset), `POST /ops/outbox/{job_id}/retry`
 - `GET /admin/catalog/overrides`, `POST /admin/catalog/overrides`
 
 ## Environment
@@ -93,6 +95,7 @@ shown inside the tender detail sheet, filtered with `GET /offers?tender_id=...`.
 - [x] Paginated invoice table with ZUGFeRD/XRechnung downloads
 - [x] Admin-only "Mark as paid" payment dialog
 - [x] Admin catalogue override table and pin/replace/clear dialog
+- [x] Outbox console with status filter, pagination and a failed-job Retry action
 - [ ] Offer workspace beyond the tender detail sheet
 - [ ] Browser end-to-end tests
 

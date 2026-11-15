@@ -85,6 +85,7 @@ def make_settings() -> Settings:
         jwt_secret_key=TEST_JWT_SECRET,
         api_admin_password="test-admin-password",
         ed25519_approval_public_key=PUBLIC_KEY_HEX,
+        ed25519_approval_private_key=PRIVATE_KEY_HEX,
         company_name="Yasmina GmbH",
         company_street="Hauptstr. 1",
         company_city="Berlin",
@@ -433,8 +434,6 @@ def test_approval_rbac_and_verification(api, workspace_tmp) -> None:  # type: ig
         "/api/v1/approvals/approve",
         json={
             "offer": signed.model_dump(mode="json"),
-            "signature": signed.ed25519_approval_signature,
-            "approver": "C. Mueller",
             "approved_at": "2026-01-15T09:00:00Z",
         },
         headers=auth(SALES_TOKEN),
@@ -445,8 +444,6 @@ def test_approval_rbac_and_verification(api, workspace_tmp) -> None:  # type: ig
         "/api/v1/approvals/approve",
         json={
             "offer": signed.model_dump(mode="json"),
-            "signature": signed.ed25519_approval_signature,
-            "approver": "C. Mueller",
             "approved_at": "2026-01-15T09:00:00Z",
             "invoice": {
                 "buyer": {

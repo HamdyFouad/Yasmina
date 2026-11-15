@@ -1194,6 +1194,10 @@ class QuotationSyncJob(Base, TimestampMixin):
 
     __tablename__ = "quotation_sync_jobs"
 
+    # The ops API lists jobs right after an enqueue, so let PostgreSQL RETURNING
+    # populate the created_at/updated_at server defaults.
+    __mapper_args__ = {"eager_defaults": True}
+
     id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
     )

@@ -2,8 +2,8 @@
 
 Alerts use the Bot API ``sendMessage`` endpoint and are deliberately
 best-effort: a delivery failure is logged and never breaks the worker. The
-bot token is read from ``TELEGRAM_BOT_TOKEN`` and the destination chat from
-``TELEGRAM_APPROVAL_CHAT_ID``.
+bot token is read from ``TELEGRAM_BOT_TOKEN``; the destination chat is
+``TELEGRAM_CHAT_ID`` with ``TELEGRAM_APPROVAL_CHAT_ID`` as fallback.
 """
 
 from __future__ import annotations
@@ -64,17 +64,18 @@ class TelegramNotifier:
     @property
     def configured(self) -> bool:
         token = self.settings.telegram_bot_token
-        chat_id = (self.settings.telegram_approval_chat_id or "").strip()
         return bool(
             self.settings.telegram_alerts_enabled
             and token is not None
             and token.get_secret_value().strip()
-            and chat_id
+            and self.chat_id
         )
 
     @property
     def chat_id(self) -> str:
-        return (self.settings.telegram_approval_chat_id or "").strip()
+        """Destination chat: ``TELEGRAM_CHAT_ID`` wins over the approval chat."""
+
+        return (self.settings.telegram_chat_id or self.settings.telegram_approval_chat_id or "").strip()
 
     @property
     def api_url(self) -> str:

@@ -372,3 +372,30 @@ export interface CatalogOverrideRequest {
   fields: string[]
   mode: CatalogOverrideMode
 }
+
+export type QuotationSyncStatus = 'pending' | 'processing' | 'succeeded' | 'failed' | 'skipped'
+
+export interface QuotationSyncJob {
+  id: string
+  offer_id: string
+  offer_number: string
+  status: QuotationSyncStatus
+  attempts: number
+  max_attempts: number
+  available_at: string
+  quotation_name: string | null
+  last_error: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface OutboxJobsResponse {
+  jobs: QuotationSyncJob[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface OutboxRetryResponse {
+  job: QuotationSyncJob
+}

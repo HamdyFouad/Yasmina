@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +39,11 @@ from src.repositories.offer_repository import (
 )
 from src.repositories.quotation_sync_repository import QuotationSyncJobRepository
 from src.repositories.tender_repository import TenderRepository
-from src.services.approval_service import ApprovalError, ApprovalService
+from src.services.approval_service import (
+    ApprovalError,
+    ApprovalService,
+    approval_payload,
+)
 
 __all__ = ["router"]
 
@@ -46,7 +51,11 @@ router = APIRouter(prefix="/approvals", tags=["approvals"])
 
 
 def _service(settings: Settings) -> ApprovalService:
-    service = ApprovalService(settings.ed25519_approval_public_key)
+    private_key = settings.ed25519_approval_private_key
+    service = ApprovalService(
+        settings.ed25519_approval_public_key,
+        private_key.get_secret_value() if private_key is not None else None,
+    )
     if not service.configured:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -55,9 +64,21 @@ def _service(settings: Settings) -> ApprovalService:
     return service
 
 
+def _signing_service(settings: Settings) -> ApprovalService:
+    """Return the service that signs approvals with the server-held key."""
+
+    service = _service(settings)
+    if not service.can_sign:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ED25519_APPROVAL_PRIVATE_KEY is not configured; the server cannot sign approvals",
+        )
+    return service
+
+
 def _assert_four_eyes(
     principal: Principal,
-    approved: CustomerOffer,
+    offered_approver: str | None,
     *,
     owner: str | None,
 ) -> None:
@@ -67,17 +88,74 @@ def _assert_four_eyes(
         return
     owner_key = owner.strip().casefold()
     principal_key = principal.sub.strip().casefold()
-    approver_key = (approved.approved_by or "").strip().casefold()
     if principal_key == owner_key:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="four-eyes principle: the offer owner cannot approve their own offer",
         )
+    approver_key = (offered_approver or "").strip().casefold()
     if approver_key and approver_key == owner_key:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="four-eyes principle: the approver must differ from the offer owner",
         )
+
+
+def _sign(
+    service: ApprovalService,
+    offer: CustomerOffer,
+    principal: Principal,
+    approved_at: datetime | None,
+) -> CustomerOffer:
+    """Sign on behalf of the authenticated approver, mapping key errors to 422."""
+
+    try:
+        return service.sign(offer, approver=principal.sub, approved_at=approved_at)
+    except ApprovalError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
+def _replayed_approval(
+    service: ApprovalService,
+    *,
+    current: CustomerOffer,
+    candidate: CustomerOffer,
+) -> CustomerOffer:
+    """Return the stored approval when the same offer is submitted again.
+
+    Re-signing would mint a new signature (and therefore a new payload hash) for
+    an already-approved offer, so an identical replay short-circuits to the
+    stored, verified state. Any content change under the same offer number is a
+    conflict instead of a silent overwrite.
+    """
+
+    if current.approved_by is None or current.approved_at is None or not service.verify(current):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="stored approval signature is invalid; refusing to replay it",
+        )
+    try:
+        stored_payload = approval_payload(
+            current,
+            approver=current.approved_by,
+            approved_at=current.approved_at,
+        )
+        candidate_payload = approval_payload(
+            candidate,
+            approver=current.approved_by,
+            approved_at=current.approved_at,
+        )
+    except ApprovalError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    if stored_payload != candidate_payload:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="offer_number is already approved with a different payload",
+        )
+    return current
 
 
 @router.post("/verify")
@@ -113,72 +191,57 @@ async def approve_offer_endpoint(
     sync_jobs: QuotationSyncJobRepository = Depends(get_quotation_sync_repository),
     principal: Principal = Depends(require_roles(Role.APPROVER, Role.ADMIN)),
 ) -> dict[str, Any]:
-    """Verify, persist and complete an approval idempotently by offer number."""
+    """Sign, persist and complete an approval idempotently by offer number.
+
+    The Ed25519 signature is produced by the server with the custody key for the
+    authenticated ``approver``; clients never submit signatures. A repeated
+    submission of an already-signed offer returns the stored approval unchanged.
+    """
 
     try:
         offer = parse_customer_offer(payload.offer)
     except ValidationError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    service = _service(settings)
-    try:
-        approved = service.approve(
-            offer,
-            payload.signature,
-            approver=payload.approver,
-            approved_at=payload.approved_at,
-        )
-    except ApprovalError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    service = _signing_service(settings)
 
-    existing = await repository.get_by_number(approved.offer_number)
+    existing = await repository.get_by_number(offer.offer_number)
     tender_owner: str | None = None
-    if approved.tender_id is not None:
-        tender = await tenders.get(approved.tender_id)
+    if offer.tender_id is not None:
+        tender = await tenders.get(offer.tender_id)
         if tender is not None:
             tender_owner = tender.tender.owner
     effective_owner = (
         (existing.offer.owner if existing is not None else None)
         or payload.owner
-        or approved.owner
+        or offer.owner
         or tender_owner
     )
-    _assert_four_eyes(principal, approved, owner=effective_owner)
+    _assert_four_eyes(principal, offer.approved_by, owner=effective_owner)
 
     if existing is not None:
         current = existing.offer
-        if current.id != approved.id:
+        if current.id != offer.id:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="offer_number is already persisted with a different offer id",
             )
-        if (
-            current.ed25519_approval_signature is not None
-            and current.ed25519_approval_signature != approved.ed25519_approval_signature
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="offer_number is already approved with a different signature",
+        if current.ed25519_approval_signature:
+            approved = _replayed_approval(service, current=current, candidate=offer)
+        else:
+            approved = _sign(service, offer, principal, payload.approved_at).model_copy(
+                update={
+                    "id": current.id,
+                    "owner": current.owner or effective_owner or principal.sub,
+                    "created_at": current.created_at,
+                    "invoice_artifacts": dict(current.invoice_artifacts),
+                    "erpnext_quotation_name": current.erpnext_quotation_name,
+                }
             )
-        if (
-            current.approval_payload_hash is not None
-            and current.approval_payload_hash != approved.approval_payload_hash
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="offer_number is already approved with a different payload",
-            )
-        approved = approved.model_copy(
-            update={
-                "id": current.id,
-                "owner": current.owner or effective_owner or principal.sub,
-                "created_at": current.created_at,
-                "invoice_artifacts": dict(current.invoice_artifacts),
-                "erpnext_quotation_name": current.erpnext_quotation_name,
-            }
-        )
     else:
-        approved = approved.model_copy(update={"owner": effective_owner or principal.sub})
+        approved = _sign(service, offer, principal, payload.approved_at).model_copy(
+            update={"owner": effective_owner or principal.sub}
+        )
 
     # Persist the cryptographically approved state before external side effects,
     # so a failed invoice/ERP call can be retried by submitting the same offer.

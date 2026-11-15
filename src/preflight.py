@@ -118,6 +118,10 @@ def check_configuration(settings: Settings) -> list[CheckResult]:
     if settings.app_env == "production":
         if not settings.ed25519_approval_public_key:
             problems.append("ED25519_APPROVAL_PUBLIC_KEY is required in production (HITL)")
+        if not settings.ed25519_approval_private_key:
+            problems.append(
+                "ED25519_APPROVAL_PRIVATE_KEY is required in production for server-side approval signing"
+            )
         if not settings.approval_signature_required:
             problems.append("APPROVAL_SIGNATURE_REQUIRED must remain true in production")
         if not settings.deepseek_api_key:
@@ -129,6 +133,8 @@ def check_configuration(settings: Settings) -> list[CheckResult]:
             warnings.append("DEEPSEEK_API_KEY is not set (LLM extraction disabled)")
         if not settings.ed25519_approval_public_key:
             warnings.append("ED25519_APPROVAL_PUBLIC_KEY is not set (approval verification disabled)")
+        elif not settings.ed25519_approval_private_key:
+            warnings.append("ED25519_APPROVAL_PRIVATE_KEY is not set (server-side approval signing disabled)")
 
     results: list[CheckResult] = []
     if problems:

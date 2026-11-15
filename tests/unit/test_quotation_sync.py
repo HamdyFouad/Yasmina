@@ -62,6 +62,8 @@ def make_job(*, attempts: int = 1) -> QuotationSyncJobView:
         available_at=datetime.now(UTC),
         quotation_name=None,
         last_error=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
 
 
@@ -77,7 +79,8 @@ def make_settings() -> Settings:
 
 
 class FakeJobs:
-    def __init__(self) -> None:
+    def __init__(self, *, terminal: bool = False) -> None:
+        self.terminal = terminal
         self.session = SimpleNamespace(rollback=self._rollback)
         self.rollbacks = 0
         self.completed: list[tuple[UUID, str]] = []
@@ -95,7 +98,7 @@ class FakeJobs:
 
     async def fail(self, job_id: UUID, error: str, *, retry_backoff_seconds: int) -> str:
         self.failed.append((job_id, error, retry_backoff_seconds))
-        return "pending"
+        return "failed" if self.terminal else "pending"
 
 
 class FakeOffers:
@@ -212,3 +215,58 @@ async def test_unconfigured_erp_returns_without_touching_the_queue() -> None:
         settings=Settings(_env_file=None, database_url=None, erpnext_api_key=None),
     )
     assert summaries == []
+
+
+class FakeNotifier:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    async def notify(self, text: str) -> bool:
+        self.messages.append(text)
+        return True
+
+
+def failure_test_args(offer: CustomerOffer, jobs: FakeJobs) -> dict[str, Any]:
+    return {
+        "jobs": jobs,  # type: ignore[arg-type]
+        "offers": FakeOffers(offer),  # type: ignore[arg-type]
+        "audit": FakeAudit(),  # type: ignore[arg-type]
+        "client": FakeERP(error=ERPNextError("ERPNext unavailable", status_code=503)),  # type: ignore[arg-type]
+        "settings": make_settings(),
+    }
+
+
+async def test_terminal_failure_alerts_telegram_once() -> None:
+    offer = make_offer()
+    job = replace(make_job(attempts=6), offer_id=offer.id)
+    jobs = FakeJobs(terminal=True)
+    notifier = FakeNotifier()
+
+    summary = await _process_one(
+        job,
+        **failure_test_args(offer, jobs),
+        notifier=notifier,  # type: ignore[arg-type]
+    )
+
+    assert summary["status"] == "failed"
+    assert len(notifier.messages) == 1
+    message = notifier.messages[0]
+    assert "AN-2026-0001" in message
+    assert "ERPNext unavailable" in message
+    assert "6/6" in message
+
+
+async def test_transient_failure_does_not_alert() -> None:
+    offer = make_offer()
+    job = replace(make_job(attempts=2), offer_id=offer.id)
+    jobs = FakeJobs()
+    notifier = FakeNotifier()
+
+    summary = await _process_one(
+        job,
+        **failure_test_args(offer, jobs),
+        notifier=notifier,  # type: ignore[arg-type]
+    )
+
+    assert summary["status"] == "pending"
+    assert notifier.messages == []
