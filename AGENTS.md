@@ -47,6 +47,7 @@ When given an implementation task:
 
 ## 6. Build, Run & Verification Commands
 - Setup: `python -m pip install -e ".[dev,parsing,ai,e-invoicing]"`; `.env` is created from `.env.example` on first preflight/API start (copy it manually for other tooling).
+- Web guidance skill: `.agents/skills/modern-web-guidance/` (pinned by `skills-lock.json`) is the mandatory first lookup for HTML/CSS/client-side JS work in `frontend/`; refresh with `npx modern-web-guidance@latest install --agent universal -y`. Never hand-roll patterns from memory for dialogs, forms, accessibility, CWV or CSS layout.
 - Tests: `python -m pytest -q` (config lives in `pyproject.toml`); live DB tests use `YASMINA_TEST_DATABASE_URL`.
 - Dashboard: `cd frontend && npm install && npm run dev` (Vite on 5173, `/api` proxied to `127.0.0.1:8000`); quality via `npm run lint` and `npm run build` (strict TypeScript). Views: overview (`/ops/summary`, `/ops/activity`, `/ops/outbox-status`), tender board/detail (`GET /tenders[/{id}]`, document download, matching, linked offers), invoices (downloads + admin payment), admin catalogue overrides (`GET/POST /admin/catalog/overrides`). Set `VITE_API_BASE_URL` for separate hosting, add the origin to backend `CORS_ALLOWED_ORIGINS`, and keep the hosts same-site because refresh uses an HttpOnly `SameSite=Strict` cookie.
 - Quality: `python -m ruff check .`, `python -m ruff format --check .`, `python -m mypy src`.
