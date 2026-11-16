@@ -134,6 +134,14 @@ def _wrap(value: str, width: int) -> list[str]:
     return lines
 
 
+def _document_label(invoice: Invoice) -> str:
+    return "Gutschrift" if invoice.document_type_code == "381" else "Rechnung"
+
+
+def _recipient_label(invoice: Invoice) -> str:
+    return "Gutschriftempfänger" if invoice.document_type_code == "381" else "Rechnungsempfänger"
+
+
 def _draw_header(page: _Page, invoice: Invoice) -> None:
     page.rect(0, _A4_HEIGHT - 92, _A4_WIDTH, 92, _BRAND_BLUE)
     page.text(_LEFT, _A4_HEIGHT - 49, 20, invoice.seller.name, bold=True, color=_WHITE)
@@ -142,7 +150,14 @@ def _draw_header(page: _Page, invoice: Invoice) -> None:
     if invoice.seller.city:
         line = f"{invoice.seller.postal_code or ''} {invoice.seller.city}".strip()
         page.text(_LEFT, _A4_HEIGHT - 77, 9, line, color=_WHITE)
-    page.text(_RIGHT - 170, _A4_HEIGHT - 49, 15, "Rechnung", bold=True, color=_WHITE)
+    page.text(
+        _RIGHT - 170,
+        _A4_HEIGHT - 49,
+        15,
+        _document_label(invoice),
+        bold=True,
+        color=_WHITE,
+    )
     page.text(_RIGHT - 170, _A4_HEIGHT - 65, 9, invoice.invoice_number, color=_WHITE)
     page.text(
         _RIGHT - 170,
@@ -155,7 +170,7 @@ def _draw_header(page: _Page, invoice: Invoice) -> None:
 
 def _draw_address_and_meta(page: _Page, invoice: Invoice) -> None:
     y = _A4_HEIGHT - 118
-    page.text(_LEFT, y, 8, "Rechnungsempfänger", bold=True)
+    page.text(_LEFT, y, 8, _recipient_label(invoice), bold=True)
     y -= 14
     page.text(_LEFT, y, 10, invoice.buyer.name, bold=True)
     y -= 13
@@ -176,9 +191,11 @@ def _draw_address_and_meta(page: _Page, invoice: Invoice) -> None:
 
     meta_x = 345
     meta_y = _A4_HEIGHT - 132
+    number_label = "Gutschriftsnummer" if invoice.document_type_code == "381" else "Rechnungsnummer"
+    date_label = "Gutschriftsdatum" if invoice.document_type_code == "381" else "Rechnungsdatum"
     rows = [
-        ("Rechnungsnummer", invoice.invoice_number),
-        ("Rechnungsdatum", invoice.issue_date.strftime("%d.%m.%Y")),
+        (number_label, invoice.invoice_number),
+        (date_label, invoice.issue_date.strftime("%d.%m.%Y")),
         ("Fällig am", invoice.due_date.strftime("%d.%m.%Y")),
     ]
     if invoice.delivery_date:
@@ -217,7 +234,7 @@ def _draw_lines(page: _Page, invoice: Invoice) -> None:
                 _LEFT,
                 page.y,
                 10,
-                f"Rechnung {invoice.invoice_number} — Fortsetzung",
+                f"{_document_label(invoice)} {invoice.invoice_number} — Fortsetzung",
                 bold=True,
             )
             page.y -= 24
@@ -240,7 +257,7 @@ def _draw_totals(page: _Page, invoice: Invoice) -> None:
             _LEFT,
             page.y,
             10,
-            f"Rechnung {invoice.invoice_number} — Fortsetzung",
+            f"{_document_label(invoice)} {invoice.invoice_number} — Fortsetzung",
             bold=True,
         )
         page.y -= 24
@@ -287,7 +304,7 @@ def _xmp(invoice: Invoice) -> bytes:
    <pdfaid:conformance>B</pdfaid:conformance>
   </rdf:Description>
   <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">
-   <dc:title><rdf:Alt><rdf:li xml:lang="de-DE">Rechnung {invoice.invoice_number}</rdf:li></rdf:Alt></dc:title>
+   <dc:title><rdf:Alt><rdf:li xml:lang="de-DE">{_document_label(invoice)} {invoice.invoice_number}</rdf:li></rdf:Alt></dc:title>
    <dc:creator><rdf:Seq><rdf:li>{invoice.seller.name}</rdf:li></rdf:Seq></dc:creator>
    <dc:date><rdf:Seq><rdf:li>{issued}</rdf:li></rdf:Seq></dc:date>
   </rdf:Description>
@@ -358,9 +375,9 @@ def _add_pdfa_metadata(pdf_bytes: bytes, invoice: Invoice) -> bytes:
     writer.generate_file_identifiers()
     writer.add_metadata(
         {
-            "/Title": f"Rechnung {invoice.invoice_number}",
+            "/Title": f"{_document_label(invoice)} {invoice.invoice_number}",
             "/Author": invoice.seller.name,
-            "/Subject": f"Rechnung vom {invoice.issue_date.isoformat()}",
+            "/Subject": f"{_document_label(invoice)} vom {invoice.issue_date.isoformat()}",
             "/Creator": "Project Yasmina invoice template",
             "/Producer": "Project Yasmina",
         }
@@ -376,9 +393,9 @@ def build_branded_pdf(invoice: Invoice) -> bytes:
     _register_fonts()
     buffer = BytesIO()
     document = canvas.Canvas(buffer, pagesize=(_A4_WIDTH, _A4_HEIGHT), pageCompression=1)
-    document.setTitle(f"Rechnung {invoice.invoice_number}")
+    document.setTitle(f"{_document_label(invoice)} {invoice.invoice_number}")
     document.setAuthor(invoice.seller.name)
-    document.setSubject(f"Rechnung vom {invoice.issue_date.isoformat()}")
+    document.setSubject(f"{_document_label(invoice)} vom {invoice.issue_date.isoformat()}")
     document.setCreator("Project Yasmina invoice template")
     document.setProducer("Project Yasmina")
     page = _Page(document)

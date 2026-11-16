@@ -3,7 +3,9 @@ import { createBrowserRouter } from 'react-router-dom'
 import { AppShell, RequireAdmin, RequireAuth, RequireRoles } from '@/app/app-shell'
 import { CatalogAdminPage } from '@/features/admin/catalog-admin-page'
 import { DashboardPage } from '@/features/dashboard/dashboard-page'
+import { ForgotPasswordPage } from '@/features/auth/forgot-password-page'
 import { LoginPage } from '@/features/auth/login-page'
+import { ResetPasswordPage } from '@/features/auth/reset-password-page'
 import { InvoicesPage } from '@/features/invoices/invoices-page'
 import { NotFoundPage } from '@/features/not-found-page'
 import { OffersPage } from '@/features/offers/offers-page'
@@ -16,6 +18,14 @@ export const router = createBrowserRouter([
   {
     path: '/login',
     element: <LoginPage />,
+  },
+  {
+    path: '/forgot-password',
+    element: <ForgotPasswordPage />,
+  },
+  {
+    path: '/reset-password',
+    element: <ResetPasswordPage />,
   },
   {
     path: '/',

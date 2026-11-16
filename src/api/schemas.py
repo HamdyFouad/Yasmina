@@ -18,7 +18,9 @@ __all__ = [
     "ApprovalPayload",
     "CatalogOverridePayload",
     "InvoiceBuyerPayload",
+    "InvoiceCancelPayload",
     "InvoiceCreditPayload",
+    "InvoiceEmailPayload",
     "InvoicePaymentPayload",
     "InvoiceRequestPayload",
     "LogoutRequest",
@@ -199,6 +201,14 @@ class InvoiceCreditPayload(BaseModel):
     amount: Decimal | None = Field(default=None, gt=0, decimal_places=2)
     reason: str = Field(min_length=3, max_length=4000)
     issue_date: date | None = None
+
+
+class InvoiceCancelPayload(BaseModel):
+    reason: str = Field(min_length=3, max_length=512)
+
+
+class InvoiceEmailPayload(BaseModel):
+    recipient: EmailStr | None = None
 
 
 class ApprovalPayload(BaseModel):

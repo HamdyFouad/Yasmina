@@ -20,4 +20,9 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    // The dashboard is a single authenticated shell; keep the existing bundle
+    // together and avoid warning noise for the ~680 kB gzip ~200 kB payload.
+    chunkSizeWarningLimit: 800,
+  },
 })

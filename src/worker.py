@@ -44,6 +44,7 @@ from src.scrapers.portal_config import PortalTarget, load_portal_targets
 from src.scrapers.probe import format_probe_report, probe_portal
 from src.services.audit_service import AuditService
 from src.services.ingestion_processor import TenderIngestionProcessor
+from src.services.invoice_overdue import mark_overdue_once
 from src.services.quotation_sync import process_quotation_sync_jobs_once
 from src.services.worker_lock import (
     DatabasePortalLock,
@@ -790,6 +791,7 @@ async def run_scheduled(
     scraper_factory: ScraperFactory | None = None,
     process_pending: bool = True,
     notifier: TelegramNotifier | None = None,
+    overdue_runner: Callable[[Settings], Any] | None = None,
 ) -> int:
     """Run the scraper job forever on the configured cron schedule."""
 
@@ -798,6 +800,7 @@ async def run_scheduled(
         timezone=settings.app_timezone,
     )
     active_notifier = notifier if notifier is not None else TelegramNotifier(settings)
+    active_overdue = overdue_runner or mark_overdue_once
     active_worker = worker_identity()
     logger.info(
         "scheduler started portal=%s cron=%r timezone=%s worker=%s",
@@ -808,6 +811,11 @@ async def run_scheduled(
     )
 
     async def job() -> None:
+        try:
+            marked = await active_overdue(settings)
+            logger.info("daily overdue invoice maintenance marked=%s", marked)
+        except Exception:
+            logger.exception("daily overdue invoice maintenance failed")
         try:
             summaries = await _run_once_with_db(
                 portal,
@@ -961,6 +969,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     probe.add_argument("--json", action="store_true", dest="as_json")
 
+    overdue = subparsers.add_parser(
+        "overdue",
+        help="mark issued/partially-paid invoices past their due date as overdue",
+    )
+    overdue.add_argument("--json", action="store_true", dest="as_json")
+
     schedule = subparsers.add_parser("schedule", help="run the daily cron scheduler")
     schedule.add_argument("--portal", default="all", help="target id from portals.yaml, or all")
     schedule.add_argument("--cron", default=None, help="five-field cron expression")
@@ -1065,6 +1079,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 print(format_probe_report(report))
             return 0 if report.notices_parsed > 0 else 2
+
+        if args.command == "overdue":
+            marked = asyncio.run(mark_overdue_once(settings))
+            if args.as_json:
+                print(json.dumps({"overdue_marked": marked}, ensure_ascii=False))
+            else:
+                print(f"marked {marked} invoice(s) overdue")
+            return 0
 
         runs = asyncio.run(
             _run_with_shutdown(

@@ -918,7 +918,8 @@ class InvoiceEvent(Base):
         UniqueConstraint("invoice_id", "sequence", name="uq_invoice_event_sequence"),
         CheckConstraint("sequence >= 1", name="sequence_positive"),
         CheckConstraint(
-            "event_type IN ('ISSUED', 'PAYMENT_RECORDED', 'CREDIT_ISSUED', 'STATUS_CHANGED', 'CANCELLED')",
+            "event_type IN ('ISSUED', 'PAYMENT_RECORDED', 'CREDIT_ISSUED', 'STATUS_CHANGED', "
+            "'CANCELLED', 'EMAIL_SENT')",
             name="event_type_valid",
         ),
         CheckConstraint(

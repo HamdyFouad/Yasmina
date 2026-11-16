@@ -363,10 +363,11 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | GET | `/offers` | sales (own subject only), approver/viewer/admin (all); supports `tender_id`, `status` and `owner` |
 | GET | `/offers/{id}` | sales (own subject only), approver/viewer/admin (all); includes a server-computed `vat_breakdown` |
 | GET | `/invoices` | sales (own), viewer/admin (all) |
-| GET | `/invoices/{id}` | sales (own), viewer/admin (all) |
+| GET | `/invoices/{id}` | sales (own), viewer/admin (all); includes line items and buyer e-mail |
 | GET | `/invoices/{id}/documents/{zugferd\|xrechnung}` | sales (own), viewer/admin (all) |
 | GET | `/invoices/{id}/events` | sales (own), viewer/admin (all) |
 | GET | `/invoices/{id}/credit-notes` | sales (own), viewer/admin (all) |
+| GET | `/invoices/{id}/credit-notes/{note_id}/documents/{zugferd\|xrechnung}` | sales (own), viewer/admin (all) |
 | GET | `/ops/summary` | sales (owner-scoped), viewer/admin (global) |
 | GET | `/ops/activity` | admin/viewer only |
 | GET | `/ops/outbox-status` | admin/viewer only; ERPNext quotation outbox counts |
@@ -375,7 +376,9 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | GET | `/admin/catalog/overrides` | admin only; list pinned catalogue fields |
 | POST | `/admin/catalog/overrides` | admin only; add/replace/clear pins |
 | POST | `/invoices/{id}/payments` | admin only |
-| POST | `/invoices/{id}/credits` | admin only |
+| POST | `/invoices/{id}/credits` | admin only; also generates the credit-note PDF/XML |
+| POST | `/invoices/{id}/cancel` | admin only; unpaid/uncredited invoices |
+| POST | `/invoices/{id}/email` | admin only; SMTP delivery of invoice PDF/XML |
 | POST | `/integrations/rfq/dispatch` | sales/admin |
 | POST | `/integrations/n8n/supplier-quotes` | n8n HMAC signature |
 
@@ -427,7 +430,9 @@ metrics for scraping; see [Production deployment & observability](#production-de
   notifier as fallback. Only the SHA-256 hash is stored in
   `password_reset_tokens`, tokens expire after
   `PASSWORD_RESET_TOKEN_EXPIRY_MINUTES` (15), only the newest token per account
-  stays usable, and consuming a token revokes all refresh sessions.
+  stays usable, and consuming a token revokes all refresh sessions. The
+  dashboard exposes `/forgot-password` and `/reset-password?token=…`, password
+  change and “sign out everywhere” in Account settings.
 - **Logout everywhere** (`POST /auth/logout/all`) revokes every live refresh
   token for the caller and blocklists the current access-token `jti`.
 - **TOTP MFA** follows RFC 6238 (SHA-1, 6 digits, 30-second step, ±1 step skew)
@@ -505,7 +510,13 @@ state machine.
   `GS-YYYY-XXXX` sequence (a separate row-locked yearly counter, not the invoice
   `INV-` series) and applies it to the invoice: the credited amount is allocated
   across the invoice VAT buckets and the status moves to `PARTIALLY_CREDITED` or
-  `CREDITED`. `GET /invoices/{id}/credit-notes` lists the issued notes.
+  `CREDITED`. `GET /invoices/{id}/credit-notes` lists the issued notes, and each
+  note has generated ZUGFeRD/XRechnung documents with an `InvoiceTypeCode`/
+  `CreditNoteTypeCode` of `381` and a preceding-invoice reference.
+- `POST /invoices/{id}/cancel` cancels an unpaid, uncredited invoice and appends
+  a `CANCELLED` event with the operator reason. `POST /invoices/{id}/email`
+  sends the invoice PDF and XML through SMTP to the buyer and appends an
+  `EMAIL_SENT` event only after successful delivery.
 - Every issuance, payment, credit, status change and cancellation appends a row
   to `invoice_events`. Rows carry a sequence number, event type, actor, amount,
   reference and payload, and are chained with SHA-256 over canonical JSON
@@ -688,7 +699,11 @@ a five-field cron schedule in `APP_TIMEZONE`, then drains the ingestion outbox:
 python -m src.worker scrape --portal bayern --max-pages 2
 
 # long-running daily scheduler (default SCRAPER_SCHEDULE_CRON=0 2 * * *)
+# each scheduled run first marks past-due invoices OVERDUE, then scrapes/processes
 python -m src.worker schedule --portal all
+
+# run only the overdue transition now (also available to cron/operations)
+python -m src.worker overdue --json
 
 # pilot the disabled catalogue entries once (does not affect the scheduler)
 python -m src.worker scrape --portal all --include-unverified --max-pages 1
@@ -1519,6 +1534,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P7.7 — security & user administration: TOTP enrolment settings page with QR/manual key and ten single-use recovery codes (hashed, acknowledged before dismissal), recovery-code login, an admin Users console (responsive table, create account, role editing, reset tokens, lock/unlock with cancel-focused confirmations), `/auth/users` listing/roles/lock/unlock APIs with self-action guards and audit events, and Playwright coverage for the admin flow and RBAC redirect
 - [x] P7.8 — billing completion UI: responsive container-query invoice table with an invoice detail sheet (authoritative totals, VAT split, paid/credited/outstanding, ZUGFeRD/XRechnung downloads, `GS-` credit-note history), an admin credit-note dialog with amount/reason validation, cancel-first focus and in-place status refresh, a verified GoBD hash-chain event timeline, and a Playwright credit-note → payment flow with the credit-note reason included in the API response
 - [x] P7.9 — business logic & schema finalization: all six assumption questions decided (canonical source formats, dual supplier-quote modes, header/per-line margin semantics, millimetre thickness, approver/four-eyes rules, BGE-M3 at 1024 dimensions), strict margin/thickness validation and migration `0015`, deterministic freight/pallet surcharge lines in the offer, VAT and invoice views, SMTP password-reset delivery with Telegram fallback and `SMTP_*` settings, plus automatic n8n pending-dispatch TTL reclaim and the `reclaim-dispatch-reservations` admin command
+- [x] P7.10 — account & billing operations completion: forgot-password and `/reset-password` pages, self-service password change and sign-out-everywhere, daily overdue transition in the worker schedule plus `worker overdue`, invoice cancellation, ZUGFeRD/XRechnung credit-note documents with download buttons, SMTP invoice delivery with an `EMAIL_SENT` GoBD event, and Playwright forgot/reset coverage
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

@@ -61,6 +61,9 @@ class Invoice(BaseModel):
     due_date: date
     delivery_date: date | None = None
     currency: Currency = Currency.EUR
+    document_type_code: str = Field(default="380", pattern=r"^(380|381)$")
+    preceding_invoice_number: str | None = Field(default=None, max_length=128)
+    preceding_invoice_date: date | None = None
 
     seller: InvoiceParty
     buyer: InvoiceParty
@@ -74,6 +77,12 @@ class Invoice(BaseModel):
 
     payment_terms: str | None = Field(default=None, max_length=512)
     iban: str | None = Field(default=None, max_length=34)
+
+    @model_validator(mode="after")
+    def _check_document_reference(self) -> Invoice:
+        if self.document_type_code == "381" and not self.preceding_invoice_number:
+            raise ValueError("credit notes require the preceding invoice number")
+        return self
 
     @model_validator(mode="after")
     def _check_totals(self) -> Invoice:

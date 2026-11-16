@@ -192,6 +192,18 @@ class CreditNoteRepository:
         )
         return [_stored(row) for row in rows]
 
+    async def attach_artifacts(
+        self,
+        credit_note_id: UUID,
+        artifacts: dict[str, Any],
+    ) -> StoredCreditNote:
+        row = await self.session.get(CreditNote, credit_note_id)
+        if row is None:
+            raise CreditNoteRepositoryError(f"credit note {credit_note_id} does not exist")
+        row.artifacts = dict(artifacts)
+        await self.session.commit()
+        return _stored(row)
+
     async def _allocate_number(self, year: int) -> tuple[str, int]:
         if not 2000 <= year <= 2200:
             raise CreditNoteRepositoryError(f"credit note year {year} is outside the supported range")

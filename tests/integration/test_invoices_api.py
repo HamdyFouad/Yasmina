@@ -42,12 +42,16 @@ class FakeInvoiceRepository:
         self.payments: list[tuple[UUID, Any, str | None]] = []
         self.record = SimpleNamespace(
             offer_id=self.offer_id,
-            invoice=SimpleNamespace(invoice_number="INV-2026-0001"),
+            invoice=SimpleNamespace(
+                invoice_number="INV-2026-0001",
+                buyer=SimpleNamespace(email="buyer@example.test", name="Stadt Muster"),
+            ),
             as_dict=lambda: {
                 "id": str(self.invoice_id),
                 "invoice_number": "INV-2026-0001",
                 "status": "ISSUED",
                 "total_gross": "119.00",
+                "buyer_email": "buyer@example.test",
             },
         )
 
@@ -83,15 +87,57 @@ class FakeInvoiceRepository:
         }
         return self.record
 
+    async def cancel(
+        self,
+        invoice_id: UUID,
+        *,
+        actor: str | None = None,
+        reason: str,
+    ) -> Any:
+        self.record.as_dict = lambda: {
+            "id": str(invoice_id),
+            "invoice_number": "INV-2026-0001",
+            "status": "CANCELLED",
+            "total_gross": "119.00",
+        }
+        return self.record
+
+    async def record_email_sent(
+        self,
+        invoice_id: UUID,
+        *,
+        actor: str | None,
+        recipient: str,
+        artifacts: list[str],
+    ) -> Any:
+        return self.record
+
 
 class FakeCreditNoteRepository:
+    def __init__(self) -> None:
+        self.note_id = uuid4()
+
     async def issue(self, invoice_id: UUID, **kwargs: Any) -> Any:
         return SimpleNamespace(
+            id=self.note_id,
             as_dict=lambda: {
+                "id": str(self.note_id),
                 "credit_note_number": "GS-2026-0001",
                 "invoice_id": str(invoice_id),
                 "total_gross": "26.00",
-            }
+            },
+        )
+
+    async def attach_artifacts(self, credit_note_id: UUID, artifacts: dict[str, Any]) -> Any:
+        assert credit_note_id == self.note_id
+        return SimpleNamespace(
+            id=self.note_id,
+            as_dict=lambda: {
+                "id": str(self.note_id),
+                "credit_note_number": "GS-2026-0001",
+                "total_gross": "26.00",
+                "artifacts": artifacts,
+            },
         )
 
 
@@ -140,7 +186,17 @@ def auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_invoice_list_and_payment_endpoints() -> None:
+def test_invoice_list_and_payment_endpoints(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    async def fake_credit_documents(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "zugferd": {"object_name": "credit-notes/GS-2026-0001.pdf"},
+            "xrechnung": {"object_name": "credit-notes/GS-2026-0001.xml"},
+        }
+
+    monkeypatch.setattr(
+        "src.api.routes.invoices.generate_credit_note_documents",
+        fake_credit_documents,
+    )
     client, invoices, _, token = make_client()
     with client:
         listed = client.get("/api/v1/invoices", headers=auth(token))
@@ -243,3 +299,56 @@ def test_sales_users_only_download_their_own_invoice_documents() -> None:
             headers=auth(other_token),
         )
         assert forbidden.status_code == 403
+
+
+def test_invoice_cancel_endpoint_requires_a_reason() -> None:
+    client, invoices, _, token = make_client()
+    with client:
+        missing = client.post(
+            f"/api/v1/invoices/{invoices.invoice_id}/cancel",
+            json={"reason": "no"},
+            headers=auth(token),
+        )
+        assert missing.status_code == 422
+
+        cancelled = client.post(
+            f"/api/v1/invoices/{invoices.invoice_id}/cancel",
+            json={"reason": "Duplicate delivery"},
+            headers=auth(token),
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["invoice"]["status"] == "CANCELLED"
+
+
+def test_invoice_email_endpoint_delivers_buyer_documents(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    sent: list[dict[str, Any]] = []
+
+    class FakeSmtp:
+        configured = True
+
+        def __init__(self, settings: Any) -> None:
+            self.settings = settings
+
+        async def send_invoice(self, recipient: str, **kwargs: Any) -> bool:
+            sent.append({"recipient": recipient, **kwargs})
+            return True
+
+    monkeypatch.setattr("src.api.routes.invoices.SmtpNotifier", FakeSmtp)
+    client, invoices, _, token = make_client()
+    with client:
+        response = client.post(
+            f"/api/v1/invoices/{invoices.invoice_id}/email",
+            json={},
+            headers=auth(token),
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["delivery"]["recipient"] == "buyer@example.test"
+        assert sent[0]["invoice_number"] == "INV-2026-0001"
+        assert sent[0]["pdf"].startswith(b"%PDF")
+
+        missing = client.post(
+            f"/api/v1/invoices/{uuid4()}/email",
+            json={},
+            headers=auth(token),
+        )
+        assert missing.status_code == 404

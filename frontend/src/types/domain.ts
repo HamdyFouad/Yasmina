@@ -225,6 +225,7 @@ export interface Invoice {
   credited_amount: string
   paid_at: string | null
   credit_note_number: string | null
+  buyer_email: string | null
   vat_breakdown: InvoiceVatSplit[]
   lines: InvoiceLine[]
   artifacts: Record<string, unknown>
@@ -322,7 +323,31 @@ export interface CreditNote {
   total_gross: string
   vat_breakdown: InvoiceVatSplit[]
   lines: CreditNoteLine[]
-  artifacts: Record<string, unknown>
+  artifacts: Record<string, InvoiceArtifact>
+}
+
+export interface InvoiceCancelRequest {
+  reason: string
+}
+
+export interface InvoiceCancelResponse {
+  invoice: Invoice
+  events: InvoiceEvent[]
+}
+
+export interface InvoiceEmailRequest {
+  recipient?: string
+}
+
+export interface InvoiceEmailDelivery {
+  recipient: string
+  artifacts: string[]
+}
+
+export interface InvoiceEmailResponse {
+  invoice: Invoice
+  events: InvoiceEvent[]
+  delivery: InvoiceEmailDelivery
 }
 
 export interface InvoiceCreditRequest {

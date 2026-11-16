@@ -2,11 +2,15 @@ import { api } from '@/lib/api-client'
 import { filenameFromDisposition, saveBlob } from '@/lib/download'
 import type {
   CreditNote,
+  InvoiceCancelRequest,
+  InvoiceCancelResponse,
   InvoiceCreditNotesResponse,
   InvoiceCreditRequest,
   InvoiceCreditResponse,
   InvoiceDetailResponse,
   InvoiceDocumentFormat,
+  InvoiceEmailRequest,
+  InvoiceEmailResponse,
   InvoiceListResponse,
   InvoicePaymentRequest,
   InvoicePaymentResponse,
@@ -49,6 +53,45 @@ export async function issueInvoiceCredit(
     payload,
   )
   return response.data
+}
+
+export async function cancelInvoice(
+  invoiceId: string,
+  payload: InvoiceCancelRequest,
+): Promise<InvoiceCancelResponse> {
+  const response = await api.post<InvoiceCancelResponse>(
+    `/invoices/${invoiceId}/cancel`,
+    payload,
+  )
+  return response.data
+}
+
+export async function emailInvoice(
+  invoiceId: string,
+  payload: InvoiceEmailRequest = {},
+): Promise<InvoiceEmailResponse> {
+  const response = await api.post<InvoiceEmailResponse>(
+    `/invoices/${invoiceId}/email`,
+    payload,
+  )
+  return response.data
+}
+
+export async function downloadCreditNoteDocument(
+  invoiceId: string,
+  creditNoteId: string,
+  format: InvoiceDocumentFormat,
+  fallbackFilename: string,
+): Promise<void> {
+  const response = await api.get<Blob>(
+    `/invoices/${invoiceId}/credit-notes/${creditNoteId}/documents/${format}`,
+    { responseType: 'blob' },
+  )
+  const filename = filenameFromDisposition(
+    response.headers['content-disposition'],
+    fallbackFilename,
+  )
+  saveBlob(response.data, filename)
 }
 
 export async function recordInvoicePayment(

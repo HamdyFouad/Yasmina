@@ -4,6 +4,7 @@ import {
   fetchMe,
   login as loginRequest,
   logout as logoutRequest,
+  logoutAll as logoutAllRequest,
   restoreSession,
 } from '@/lib/auth-api'
 import { SESSION_EXPIRED_EVENT } from '@/lib/api-client'
@@ -17,6 +18,7 @@ interface AuthContextValue {
   isAuthenticated: boolean
   login: (credentials: LoginRequest) => Promise<void>
   logout: () => Promise<void>
+  signOutEverywhere: () => Promise<void>
   refreshUser: () => Promise<void>
   hasRole: (...roles: Role[]) => boolean
 }
@@ -79,6 +81,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+  const signOutEverywhere = React.useCallback(async (): Promise<void> => {
+    try {
+      await logoutAllRequest()
+    } finally {
+      clearSession()
+      setUser(null)
+      setStatus('unauthenticated')
+    }
+  }, [])
+
   const refreshUser = React.useCallback(async (): Promise<void> => {
     try {
       setUser(await fetchMe())
@@ -107,10 +119,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isAuthenticated: status === 'authenticated',
       login,
       logout,
+      signOutEverywhere,
       refreshUser,
       hasRole,
     }),
-    [status, user, roles, login, logout, refreshUser, hasRole],
+    [status, user, roles, login, logout, signOutEverywhere, refreshUser, hasRole],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

@@ -1,9 +1,11 @@
 import * as React from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Ban,
   Download,
   FileDown,
   Loader2,
+  Mail,
   ReceiptText,
   RefreshCw,
   RotateCcw,
@@ -33,11 +35,14 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { useAuth } from '@/features/auth/auth-context'
+import { CancelInvoiceDialog } from '@/features/invoices/cancel-invoice-dialog'
 import { CreditNoteDialog } from '@/features/invoices/credit-note-dialog'
+import { EmailInvoiceDialog } from '@/features/invoices/email-invoice-dialog'
 import { apiErrorMessage } from '@/lib/api-error'
 import { invoiceOutstanding } from '@/lib/invoice-utils'
 import { unitLabel } from '@/lib/labels'
 import {
+  downloadCreditNoteDocument,
   downloadInvoiceDocument,
   fetchInvoice,
   fetchInvoiceCreditNotes,
@@ -50,8 +55,7 @@ import {
   formatQuantity,
   titleCase,
 } from '@/lib/utils'
-import type { Invoice, InvoiceDocumentFormat } from '@/types/domain'
-
+import type { CreditNote, Invoice, InvoiceDocumentFormat } from '@/types/domain'
 function SummaryItem({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
@@ -139,8 +143,12 @@ function InvoiceDocuments({ invoice }: { invoice: Invoice }) {
 
 function InvoiceDetailBody({ invoiceId }: { invoiceId: string }) {
   const { hasRole } = useAuth()
-  const canIssueCredit = hasRole('admin')
+  const queryClient = useQueryClient()
+  const canManage = hasRole('admin')
   const [creditOpen, setCreditOpen] = React.useState(false)
+  const [cancelOpen, setCancelOpen] = React.useState(false)
+  const [emailOpen, setEmailOpen] = React.useState(false)
+  const [creditDownloading, setCreditDownloading] = React.useState<string | null>(null)
 
   const detail = useQuery({
     queryKey: ['invoices', invoiceId],
@@ -155,6 +163,49 @@ function InvoiceDetailBody({ invoiceId }: { invoiceId: string }) {
   const events = detail.data?.events ?? []
   const chainValid = detail.data?.event_chain_valid ?? null
   const outstanding = invoice !== undefined ? invoiceOutstanding(invoice) : 0
+  const canCancel =
+    canManage &&
+    invoice !== undefined &&
+    invoice.status !== 'CANCELLED' &&
+    invoice.status !== 'PAID' &&
+    invoice.status !== 'CREDITED' &&
+    invoice.status !== 'PARTIALLY_CREDITED' &&
+    Number.parseFloat(invoice.paid_amount) === 0 &&
+    Number.parseFloat(invoice.credited_amount) === 0
+  const canCredit =
+    canManage &&
+    invoice !== undefined &&
+    invoice.status !== 'CANCELLED' &&
+    invoice.status !== 'PAID' &&
+    invoice.status !== 'CREDITED' &&
+    outstanding > 0
+
+  const refreshInvoiceViews = async (): Promise<void> => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['invoices'] }),
+      queryClient.invalidateQueries({ queryKey: ['ops', 'summary'] }),
+    ])
+  }
+
+  const downloadCreditNote = async (
+    note: CreditNote,
+    format: InvoiceDocumentFormat,
+  ): Promise<void> => {
+    setCreditDownloading(`${note.id}:${format}`)
+    try {
+      await downloadCreditNoteDocument(
+        note.invoice_id,
+        note.id,
+        format,
+        `${note.credit_note_number}.${format === 'zugferd' ? 'pdf' : 'xml'}`,
+      )
+      toast.success('Credit note document downloaded')
+    } catch (error) {
+      toast.error('Download failed', { description: apiErrorMessage(error) })
+    } finally {
+      setCreditDownloading(null)
+    }
+  }
 
   if (detail.isLoading) {
     return (
@@ -375,9 +426,45 @@ function InvoiceDetailBody({ invoiceId }: { invoiceId: string }) {
                     </p>
                   ) : null}
                 </div>
-                <span className="text-sm font-medium tabular-nums">
-                  {formatCurrency(note.total_gross, invoice.currency)}
-                </span>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <span className="text-sm font-medium tabular-nums">
+                    {formatCurrency(note.total_gross, invoice.currency)}
+                  </span>
+                  {note.artifacts.zugferd ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Download credit note ${note.credit_note_number} PDF`}
+                      disabled={creditDownloading !== null}
+                      onClick={() => void downloadCreditNote(note, 'zugferd')}
+                    >
+                      {creditDownloading === `${note.id}:zugferd` ? (
+                        <Loader2 className="animate-spin" aria-hidden="true" />
+                      ) : (
+                        <Download aria-hidden="true" />
+                      )}
+                      PDF
+                    </Button>
+                  ) : null}
+                  {note.artifacts.xrechnung ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Download credit note ${note.credit_note_number} XML`}
+                      disabled={creditDownloading !== null}
+                      onClick={() => void downloadCreditNote(note, 'xrechnung')}
+                    >
+                      {creditDownloading === `${note.id}:xrechnung` ? (
+                        <Loader2 className="animate-spin" aria-hidden="true" />
+                      ) : (
+                        <FileDown aria-hidden="true" />
+                      )}
+                      XML
+                    </Button>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>
@@ -401,26 +488,61 @@ function InvoiceDetailBody({ invoiceId }: { invoiceId: string }) {
         description="Every invoice change appends a SHA-256 entry that commits to the previous hash."
       />
 
-      {canIssueCredit ? (
+      {canManage ? (
         <SheetFooter className="px-0 pb-0">
           <div className="mr-auto text-xs text-muted-foreground">
             {outstanding > 0
               ? `Open amount ${formatCurrency(outstanding.toFixed(2), invoice.currency)}`
               : 'Invoice fully settled.'}
           </div>
-          <Button
-            type="button"
-            disabled={outstanding <= 0}
-            onClick={() => setCreditOpen(true)}
-          >
-            <RotateCcw aria-hidden="true" />
-            Issue credit note
-          </Button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setEmailOpen(true)}
+            >
+              <Mail aria-hidden="true" />
+              Send by e-mail
+            </Button>
+            {canCancel ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="text-destructive"
+                onClick={() => setCancelOpen(true)}
+              >
+                <Ban aria-hidden="true" />
+                Cancel invoice
+              </Button>
+            ) : null}
+            <Button type="button" disabled={!canCredit} onClick={() => setCreditOpen(true)}>
+              <RotateCcw aria-hidden="true" />
+              Issue credit note
+            </Button>
+          </div>
         </SheetFooter>
       ) : null}
 
       {creditOpen ? (
         <CreditNoteDialog invoice={invoice} onClose={() => setCreditOpen(false)} />
+      ) : null}
+      {cancelOpen ? (
+        <CancelInvoiceDialog
+          invoice={invoice}
+          onClose={() => setCancelOpen(false)}
+          onCancelled={() => {
+            void refreshInvoiceViews()
+          }}
+        />
+      ) : null}
+      {emailOpen ? (
+        <EmailInvoiceDialog
+          invoice={invoice}
+          onClose={() => setEmailOpen(false)}
+          onSent={() => {
+            void refreshInvoiceViews()
+          }}
+        />
       ) : null}
     </>
   )

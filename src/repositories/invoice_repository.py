@@ -84,6 +84,7 @@ class StoredInvoice:
             "credited_amount": format(self.credited_amount, "f"),
             "paid_at": self.paid_at.isoformat() if self.paid_at is not None else None,
             "credit_note_number": self.credit_note_number,
+            "buyer_email": str(self.invoice.buyer.email) if self.invoice.buyer.email else None,
             "vat_breakdown": [dict(item) for item in self.vat_breakdown],
             "lines": [
                 {
@@ -513,8 +514,115 @@ class InvoiceRepository:
                     "previous_status": previous.value,
                     "status": row.status.value,
                 },
+                commit=False,
             )
             await self.session.commit()
+        return _stored(row)
+
+    async def mark_overdue_batch(self, *, today: date | None = None) -> builtins.list[StoredInvoice]:
+        """Mark every issued/partially-paid invoice past its due date overdue.
+
+        ``SKIP LOCKED`` keeps concurrent maintenance runs safe if more than one
+        worker container is alive.
+        """
+
+        current = today or datetime.now(UTC).date()
+        rows = (
+            (
+                await self.session.execute(
+                    select(InvoiceORM)
+                    .where(
+                        InvoiceORM.status.in_([InvoiceStatus.ISSUED, InvoiceStatus.PARTIALLY_PAID]),
+                        InvoiceORM.due_date < current,
+                    )
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        updated: builtins.list[StoredInvoice] = []
+        for row in rows:
+            previous = row.status
+            row.status = InvoiceStatus.OVERDUE
+            await InvoiceEventRepository(self.session).append(
+                row.id,
+                "STATUS_CHANGED",
+                reference=row.invoice_number,
+                payload={
+                    "previous_status": previous.value,
+                    "status": row.status.value,
+                },
+                commit=False,
+            )
+            updated.append(_stored(row))
+        if rows:
+            await self.session.commit()
+        return updated
+
+    async def cancel(
+        self,
+        invoice_id: UUID,
+        *,
+        actor: str | None = None,
+        reason: str,
+        now: datetime | None = None,
+    ) -> StoredInvoice:
+        """Cancel an unpaid, uncredited invoice with a GoBD event."""
+
+        row = await self._get_row(invoice_id, lock=True)
+        if row.status in {
+            InvoiceStatus.PAID,
+            InvoiceStatus.CREDITED,
+            InvoiceStatus.CANCELLED,
+            InvoiceStatus.DRAFT,
+        }:
+            raise InvoiceRepositoryError(f"invoice in status {row.status.value} cannot be cancelled")
+        if row.paid_amount != 0 or row.credited_amount != 0:
+            raise InvoiceRepositoryError(
+                "an invoice with payments or credits must be corrected with a credit note"
+            )
+        previous = row.status
+        row.status = InvoiceStatus.CANCELLED
+        await InvoiceEventRepository(self.session).append(
+            invoice_id,
+            "CANCELLED",
+            actor=actor,
+            reference=row.invoice_number,
+            payload={
+                "previous_status": previous.value,
+                "status": row.status.value,
+                "reason": reason.strip()[:512],
+                "cancelled_at": (now or datetime.now(UTC)).isoformat(),
+            },
+        )
+        await self.session.commit()
+        return _stored(row)
+
+    async def record_email_sent(
+        self,
+        invoice_id: UUID,
+        *,
+        actor: str | None,
+        recipient: str,
+        artifacts: builtins.list[str],
+        now: datetime | None = None,
+    ) -> StoredInvoice:
+        """Append a tamper-evident delivery event after a successful send."""
+
+        row = await self._get_row(invoice_id, lock=True)
+        await InvoiceEventRepository(self.session).append(
+            invoice_id,
+            "EMAIL_SENT",
+            actor=actor,
+            reference=recipient[:128],
+            payload={
+                "recipient": recipient,
+                "artifacts": artifacts,
+                "sent_at": (now or datetime.now(UTC)).isoformat(),
+            },
+        )
+        await self.session.commit()
         return _stored(row)
 
     async def _get_row(self, invoice_id: UUID, *, lock: bool = False) -> InvoiceORM:

@@ -43,10 +43,12 @@ npm run test:e2e   # Playwright golden path (needs a seeded API)
 `tests/e2e/golden-path.spec.ts` covers the operator lifecycle in a real browser:
 approver login → pending offer → four-eyes approval with an e-invoice →
 admin login → invoice detail → partial credit note → payment → outbox retry.
-`tests/e2e/admin-users.spec.ts`
+`tests/e2e/account-recovery.spec.ts` exercises the public forgot-password page,
+an admin-issued reset token, the `/reset-password` form and a login with the new
+password. `tests/e2e/admin-users.spec.ts`
 logs in as the seeded admin, creates an account in the Users console, locks it
 through the cancel-focused confirmation, and checks that an approver is
-redirected away from `/admin/users`. Both use ARIA locators (`getByRole`,
+redirected away from `/admin/users`. All use ARIA locators (`getByRole`,
 `getByLabel`) and a single worker, so the run is deterministic.
 
 Prerequisites: PostgreSQL/MinIO/ClamAV, Alembic migrations, an API on
@@ -60,14 +62,16 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 
 | Route | Content |
 |---|---|
-| `/login` | Username/password login with an MFA (TOTP) step when the account requires it. |
+| `/login` | Username/password login with an MFA (TOTP) step when the account requires it, plus a forgot-password link. |
+| `/forgot-password` | Public username form calling `POST /auth/password/reset/request`; always shows the same confirmation. |
+| `/reset-password` | Public token + new-password form calling `POST /auth/password/reset`, with inline validation and success state. |
 | `/` | Overview: owner-scoped KPI cards, gross invoiced/paid/outstanding, recent audit events (admin/viewer), ERPNext outbox counts (admin/viewer) and session details. |
 | `/tenders` | Paginated tender board with status filter. Rows open a detail sheet with metadata, the original GAEB/PDF download, hybrid catalogue matching and linked pricing offers with their line/VAT breakdown and totals. |
 | `/offers` | Paginated offer workspace with status and owner filters, a responsive table, a detail side panel (server VAT breakdown, signature state, line items) and the approver/admin four-eyes approval dialog with an optional “Generate e-invoice” section (buyer, Leitweg-ID, due date, IBAN, payment terms). `?offer=<id>` deep-links the side panel (used by the Outbox). |
-| `/invoices` | Responsive invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, the admin-only "Mark as paid" dialog and an invoice detail sheet (authoritative totals, line items including freight/pallet surcharges, VAT breakdown, credit-note history, document downloads, verified GoBD event timeline, admin-only credit-note dialog with inline amount/reason validation). |
+| `/invoices` | Responsive invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, the admin-only "Mark as paid" dialog and an invoice detail sheet (authoritative totals, line items including freight/pallet surcharges, VAT breakdown, credit-note history with credit-note PDF/XML downloads, document downloads, verified GoBD event timeline, admin-only credit-note/cancel/email dialogs with inline validation). |
 | `/ops/outbox` | Operations console for quotation_sync_jobs: status filter, attempts/retry budget, next attempt, last ERPNext error, a Retry action for failed jobs (admin/approver) and a link to the linked offer. |
 | `/admin/catalog` | Admin-only catalogue override table with supplier/article filters, pin badges and a dialog to add, replace or clear pinned merge fields. |
-| `/settings` | Account security: profile summary, TOTP enrolment (QR code, manual secret, otpauth URI), ten one-time recovery codes with mandatory acknowledgment, and a password/code-confirmed disable dialog. Bootstrap-admin accounts see an explanatory notice. |
+| `/settings` | Account security: profile summary, password change, sign-out-everywhere confirmation, TOTP enrolment (QR code, manual secret, otpauth URI), ten one-time recovery codes with mandatory acknowledgment, and a password/code-confirmed disable dialog. Bootstrap-admin accounts see an explanatory notice. |
 | `/admin/users` | Admin-only user administration: responsive container-query table (roles, MFA, active/locked status, last login), create-user dialog, role editing, one-time reset-token issuance, and lock/unlock confirmations that focus Cancel first. |
 
 ## Auth flow
@@ -84,11 +88,16 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 - MFA is detected from the `401` + `X-Yasmina-MFA-Required` response header and
   the login form then requests `totp_code`, with a toggle for a single-use
   `recovery_code`.
+- Password recovery and self-service password changes use
+  `/auth/password/reset/request`, `/auth/password/reset`,
+  `/auth/password/change` and `/auth/logout/all`.
 - A session-expiry event clears local state and routes back to `/login`.
 
 ## Backend endpoints used
 
 - `POST /auth/token`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`
+- `POST /auth/password/change`, `POST /auth/password/reset/request`,
+  `POST /auth/password/reset`, `POST /auth/logout/all`
 - `POST /auth/mfa/setup`, `POST /auth/mfa/verify`, `POST /auth/mfa/disable`
 - `GET /auth/users`, `POST /auth/users`,
   `PATCH /auth/users/{username}/roles`,
@@ -101,8 +110,10 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 - `POST /approvals/approve` (server signs the offer for the authenticated approver; optional `invoice` block generates the ZUGFeRD/XRechnung artifacts)
 - `GET /invoices`, `GET /invoices/{id}` (invoice + line items + events +
   `event_chain_valid`), `GET /invoices/{id}/documents/{zugferd|xrechnung}`,
-  `GET /invoices/{id}/credit-notes`, `POST /invoices/{id}/payments`,
-  `POST /invoices/{id}/credits`
+  `GET /invoices/{id}/credit-notes`,
+  `GET /invoices/{id}/credit-notes/{note_id}/documents/{zugferd|xrechnung}`,
+  `POST /invoices/{id}/payments`, `POST /invoices/{id}/credits`,
+  `POST /invoices/{id}/cancel`, `POST /invoices/{id}/email`
 - `GET /ops/summary`, `GET /ops/activity`, `GET /ops/outbox-status`
 - `GET /ops/outbox` (status/limit/offset), `POST /ops/outbox/{job_id}/retry`
 - `GET /admin/catalog/overrides`, `POST /admin/catalog/overrides`
@@ -133,6 +144,9 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 - [x] Recovery-code login fallback for MFA-enabled accounts
 - [x] Admin Users console (create, roles, reset token, lock/unlock) with a responsive table
 - [x] Playwright admin flow (create/lock user) and `/admin/users` RBAC redirect
+- [x] Forgot-password and reset-token pages plus Playwright recovery coverage
+- [x] Account settings password change and sign-out-everywhere
+- [x] Invoice detail cancellation, SMTP delivery and credit-note PDF/XML downloads
 - [x] Responsive container-query invoice table and invoice detail sheet with totals, VAT and downloads
 - [x] Line items (including freight/pallet surcharge badges) in offer and invoice detail views
 - [x] Admin credit-note dialog with amount/reason validation, cancel-first focus and in-place status refresh

@@ -311,3 +311,65 @@ async def test_invoice_persists_multi_rate_vat_splits_and_payment_status() -> No
         async with factory() as session:
             await _cleanup(session)
         await dispose_engine()
+
+
+async def test_overdue_batch_marks_only_past_due_eligible_invoices() -> None:
+    factory = get_session_factory(settings())
+    try:
+        async with factory() as session:
+            await _cleanup(session)
+            offer = (await OfferRepository(session).save(make_offer())).offer
+            stored = await InvoiceRepository(session).create(make_invoice(), offer_id=offer.id)
+            repository = InvoiceRepository(session)
+
+            future = await repository.mark_overdue_batch(today=date(2099, 2, 1))
+            assert [item.id for item in future] == []
+            overdue = await repository.mark_overdue_batch(today=date(2099, 3, 1))
+            assert [item.id for item in overdue] == [stored.id]
+            assert overdue[0].status.value == "OVERDUE"
+            assert [event["event_type"] for event in await repository.events(stored.id)][-1] == (
+                "STATUS_CHANGED"
+            )
+            assert await repository.mark_overdue_batch(today=date(2099, 3, 2)) == []
+    finally:
+        async with factory() as session:
+            await _cleanup(session)
+        await dispose_engine()
+
+
+async def test_cancel_invoice_rejects_payments_and_is_idempotently_guarded() -> None:
+    factory = get_session_factory(settings())
+    try:
+        async with factory() as session:
+            await _cleanup(session)
+            offer = (await OfferRepository(session).save(make_offer())).offer
+            stored = await InvoiceRepository(session).create(make_invoice(), offer_id=offer.id)
+            repository = InvoiceRepository(session)
+
+            cancelled = await repository.cancel(
+                stored.id,
+                actor="admin-user",
+                reason="Duplicate delivery",
+            )
+            assert cancelled.status.value == "CANCELLED"
+            assert [event["event_type"] for event in await repository.events(stored.id)][-1] == ("CANCELLED")
+            with pytest.raises(InvoiceRepositoryError, match="cannot be cancelled"):
+                await repository.cancel(
+                    stored.id,
+                    actor="admin-user",
+                    reason="Second attempt",
+                )
+
+            second_offer = (await OfferRepository(session).save(make_offer())).offer
+            paid_invoice = await repository.create(make_invoice(), offer_id=second_offer.id)
+            await repository.record_payment(paid_invoice.id, Decimal("10.00"))
+            with pytest.raises(InvoiceRepositoryError, match="credit note"):
+                await repository.cancel(
+                    paid_invoice.id,
+                    actor="admin-user",
+                    reason="Paid invoice",
+                )
+    finally:
+        async with factory() as session:
+            await _cleanup(session)
+        await dispose_engine()

@@ -100,6 +100,12 @@ test('golden path: approve with invoice, pay it, and retry the outbox job', asyn
     await expect(invoiceSheet.getByText('Partially Credited', { exact: true })).toBeVisible()
     await expect(invoiceSheet.getByText(/^GS-\d{4}-\d{4}$/).first()).toBeVisible()
     await expect(invoiceSheet.getByText('E2E partial credit')).toBeVisible()
+    await expect(
+      invoiceSheet.getByRole('button', { name: /^Download credit note GS-\d{4}-\d{4} PDF$/ }),
+    ).toBeVisible()
+    await expect(
+      invoiceSheet.getByRole('button', { name: /^Download credit note GS-\d{4}-\d{4} XML$/ }),
+    ).toBeVisible()
 
     await invoiceSheet.getByRole('button', { name: 'Close' }).click()
     await expect(invoiceSheet).toBeHidden()

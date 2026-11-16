@@ -705,8 +705,9 @@ reconciled with the authoritative spec later.
   overpayment validation.
 - React Query retries once for transient errors but never for 401/403/404/429.
   Query keys are namespaced by resource; server state is cached for 30 seconds.
-- The frontend CI job runs `npm ci`, `oxlint` and `tsc -b && vite build`. It does
-  not yet run browser end-to-end tests or a production static host deployment.
+- The frontend CI job runs `npm ci`, `oxlint`, `tsc -b && vite build` and the
+  Playwright suite (PostgreSQL/MinIO/ClamAV, migrations, seeded API and Vite). It
+  does not deploy a production static host.
 - The suite runs with live PostgreSQL, Redis, MinIO and ClamAV enabled in CI.
 
 ## E-invoicing assumptions (P2.1)
@@ -1091,3 +1092,44 @@ for deterministic fixture and chain-verification tests.
   line, so the E2E detail sheet verifies the surcharge line items and invoice
   totals alongside the credit-note/payment flow. The invoice list/detail response
   includes `lines`, making the charges visible without recomputing them client-side.
+
+## Account & billing operations assumptions (P7.10)
+
+- **Password recovery.** `/forgot-password` calls the public reset-request
+  endpoint and always shows the same confirmation; it never reveals whether the
+  account exists. `/reset-password?token=…` accepts a token from the URL or a
+  pasted value, requires at least 12 characters, confirms the new password and
+  sends it to `POST /auth/password/reset`. The token is single-use and the reset
+  revokes every refresh session. The login page links to both pages.
+- **Authenticated password change** is available in Account settings and posts
+  to `/auth/password/change`; the backend also revokes every refresh session for
+  that account. The current browser keeps its short-lived access token until it
+  expires, which is documented in the toast. “Sign out everywhere” posts to
+  `/auth/logout/all`, clears the local access token and returns to `/login`.
+- **Overdue automation.** Each run of the existing daily worker scheduler first
+  calls `InvoiceRepository.mark_overdue_batch`, which locks eligible
+  `ISSUED`/`PARTIALLY_PAID` rows with `SKIP LOCKED`, moves them to `OVERDUE` and
+  appends a `STATUS_CHANGED` event. `python -m src.worker overdue` performs the
+  same operation once for cron/operations. The overdue step is best-effort: a
+  failure is logged but does not prevent the scrape/ingestion work.
+- **Cancellation.** `POST /invoices/{id}/cancel` (admin) accepts a 3–512
+  character reason. It is allowed only for `ISSUED`/`OVERDUE` invoices with no
+  payments or credits; paid or credited invoices must be corrected with a credit
+  note. The transition appends a `CANCELLED` event containing the reason.
+- **Credit-note documents.** Issuing a credit note now also builds a ZUGFeRD
+  PDF/A-3 and XRechnung UBL CreditNote (document type `381`, preceding invoice
+  reference) with the same seller/buyer snapshot as the invoice. Files are stored
+  under `credit-notes/<GS-number>/` and exposed through the credit-note document
+  route. If document generation fails after the credit was persisted, the API
+  returns 422 with a clear message; the credit itself remains applied.
+- **Invoice delivery.** `POST /invoices/{id}/email` fetches the stored ZUGFeRD
+  PDF and XRechnung XML, sends them through `SmtpNotifier.send_invoice` and only
+  then appends an `EMAIL_SENT` event with recipient and artifact names. A
+  missing buyer address returns 422, missing artifacts 404, unconfigured SMTP
+  503 and a relay failure 502. The event is part of the same hash chain as
+  issuance/payment/credit events (migration `0016`).
+- **E2E recovery flow.** CI has no mail relay, so the account-recovery spec
+  creates a viewer account through the admin API, exercises the public
+  forgot-password page, obtains a token through the admin reset endpoint and
+  completes the real `/reset-password` form. This still tests the browser flow
+  and the single-use token semantics without a live mailbox.

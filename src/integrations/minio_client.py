@@ -11,7 +11,13 @@ from typing import Any
 
 from src.config import Settings
 
-__all__ = ["MinioObjectStorage", "ObjectStorageError", "StoredObject"]
+__all__ = [
+    "MinioObjectStorage",
+    "ObjectStorageError",
+    "StoredObject",
+    "object_name_for_credit_note",
+    "object_name_for_invoice",
+]
 
 
 class ObjectStorageError(RuntimeError):
@@ -143,3 +149,9 @@ def object_name_for_invoice(offer_number: str, extension: str) -> str:
     safe = "".join(char if char.isalnum() or char in "._-" else "_" for char in offer_number)
     safe = safe[:128] or "offer"
     return f"offers/{safe}/invoice.{extension}"
+
+
+def object_name_for_credit_note(credit_note_number: str, extension: str) -> str:
+    safe = "".join(char if char.isalnum() or char in "._-" else "_" for char in credit_note_number)
+    safe = safe[:128] or "credit-note"
+    return f"credit-notes/{safe}/credit-note.{extension}"

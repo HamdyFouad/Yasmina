@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { CheckCircle2, Copy, KeyRound, Loader2, ShieldCheck, ShieldOff } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { CheckCircle2, Copy, KeyRound, Loader2, LogOut, ShieldCheck, ShieldOff } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { toast } from 'sonner'
 
@@ -19,7 +20,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useAuth } from '@/features/auth/auth-context'
 import { apiErrorMessage } from '@/lib/api-error'
-import { disableMfa, setupMfa, verifyMfaEnrolment } from '@/lib/auth-api'
+import { changePassword, disableMfa, setupMfa, verifyMfaEnrolment } from '@/lib/auth-api'
 
 function SectionError({ message }: { message: string }) {
   return (
@@ -166,8 +167,265 @@ function DisableMfaDialog({
   )
 }
 
-export function SettingsPage() {
-  const { user, refreshUser } = useAuth()
+const MIN_PASSWORD_LENGTH = 12
+
+function ChangePasswordCard() {
+  const currentRef = React.useRef<HTMLInputElement>(null)
+  const newRef = React.useRef<HTMLInputElement>(null)
+  const confirmationRef = React.useRef<HTMLInputElement>(null)
+  const [currentPassword, setCurrentPassword] = React.useState('')
+  const [newPassword, setNewPassword] = React.useState('')
+  const [confirmation, setConfirmation] = React.useState('')
+  const [touched, setTouched] = React.useState<ReadonlySet<string>>(new Set())
+  const [attempted, setAttempted] = React.useState(false)
+
+  const errors: Record<string, string> = {}
+  if (currentPassword.length === 0) {
+    errors['current'] = 'Enter your current password.'
+  }
+  if (newPassword.length < MIN_PASSWORD_LENGTH) {
+    errors['password'] = `Use at least ${MIN_PASSWORD_LENGTH} characters.`
+  } else if (newPassword === currentPassword) {
+    errors['password'] = 'Choose a password different from the current one.'
+  }
+  if (confirmation !== newPassword) {
+    errors['confirmation'] = 'The passwords do not match.'
+  }
+  const errorFor = (field: string): string | undefined =>
+    attempted || touched.has(field) ? errors[field] : undefined
+
+  const change = useMutation({
+    mutationFn: () => changePassword(currentPassword, newPassword),
+    onSuccess: (result) => {
+      toast.success('Password changed', {
+        description:
+          result.refresh_tokens_revoked > 0
+            ? 'Other sessions were signed out.'
+            : 'Use the new password next time you sign in.',
+      })
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmation('')
+      setTouched(new Set())
+      setAttempted(false)
+    },
+  })
+
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>): void => {
+    event.preventDefault()
+    setAttempted(true)
+    if (change.isPending) {
+      return
+    }
+    if (errors['current'] !== undefined) {
+      currentRef.current?.focus()
+      return
+    }
+    if (errors['password'] !== undefined) {
+      newRef.current?.focus()
+      return
+    }
+    if (errors['confirmation'] !== undefined) {
+      confirmationRef.current?.focus()
+      return
+    }
+    change.mutate()
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Password</CardTitle>
+        <CardDescription>
+          Change the password for your own account. Other refresh sessions are revoked.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form className="space-y-3" noValidate onSubmit={handleSubmit}>
+          <div className="space-y-1.5">
+            <Label htmlFor="change-current-password">Current password</Label>
+            <Input
+              id="change-current-password"
+              ref={currentRef}
+              type="password"
+              autoComplete="current-password"
+              required
+              value={currentPassword}
+              onChange={(event) => setCurrentPassword(event.target.value)}
+              onBlur={() => setTouched((current) => new Set(current).add('current'))}
+              aria-invalid={errorFor('current') !== undefined ? true : undefined}
+              aria-describedby={
+                errorFor('current') !== undefined ? 'change-current-password-error' : undefined
+              }
+              disabled={change.isPending}
+            />
+            {errorFor('current') !== undefined ? (
+              <p
+                id="change-current-password-error"
+                role="alert"
+                className="text-xs text-destructive"
+              >
+                {errorFor('current')}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="change-new-password">New password</Label>
+            <Input
+              id="change-new-password"
+              ref={newRef}
+              type="password"
+              autoComplete="new-password"
+              required
+              value={newPassword}
+              onChange={(event) => setNewPassword(event.target.value)}
+              onBlur={() => setTouched((current) => new Set(current).add('password'))}
+              aria-invalid={errorFor('password') !== undefined ? true : undefined}
+              aria-describedby={
+                errorFor('password') !== undefined ? 'change-new-password-error' : undefined
+              }
+              disabled={change.isPending}
+            />
+            <p className="text-xs text-muted-foreground">
+              At least {MIN_PASSWORD_LENGTH} characters.
+            </p>
+            {errorFor('password') !== undefined ? (
+              <p id="change-new-password-error" role="alert" className="text-xs text-destructive">
+                {errorFor('password')}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="change-confirm-password">Confirm new password</Label>
+            <Input
+              id="change-confirm-password"
+              ref={confirmationRef}
+              type="password"
+              autoComplete="new-password"
+              required
+              value={confirmation}
+              onChange={(event) => setConfirmation(event.target.value)}
+              onBlur={() => setTouched((current) => new Set(current).add('confirmation'))}
+              aria-invalid={errorFor('confirmation') !== undefined ? true : undefined}
+              aria-describedby={
+                errorFor('confirmation') !== undefined
+                  ? 'change-confirm-password-error'
+                  : undefined
+              }
+              disabled={change.isPending}
+            />
+            {errorFor('confirmation') !== undefined ? (
+              <p
+                id="change-confirm-password-error"
+                role="alert"
+                className="text-xs text-destructive"
+              >
+                {errorFor('confirmation')}
+              </p>
+            ) : null}
+          </div>
+
+          {change.isError ? <SectionError message={apiErrorMessage(change.error)} /> : null}
+
+          <Button type="submit" disabled={change.isPending}>
+            {change.isPending ? (
+              <Loader2 className="animate-spin" aria-hidden="true" />
+            ) : (
+              <KeyRound aria-hidden="true" />
+            )}
+            Change password
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  )
+}
+
+function SignOutEverywhereCard() {
+  const { signOutEverywhere } = useAuth()
+  const navigate = useNavigate()
+  const cancelRef = React.useRef<HTMLButtonElement>(null)
+  const [open, setOpen] = React.useState(false)
+  const [pending, setPending] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+
+  const confirmSignOut = async (): Promise<void> => {
+    setPending(true)
+    setError(null)
+    try {
+      await signOutEverywhere()
+      toast.success('Signed out everywhere')
+      navigate('/login', { replace: true })
+    } catch (caught) {
+      setError(apiErrorMessage(caught))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Sessions</CardTitle>
+        <CardDescription>
+          Revoke every refresh session for your account, including the current one.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Button type="button" variant="outline" onClick={() => setOpen(true)}>
+          <LogOut aria-hidden="true" />
+          Sign out everywhere
+        </Button>
+      </CardContent>
+
+      <Dialog open={open} onOpenChange={(value) => (!value ? setOpen(false) : undefined)}>
+        <DialogContent
+          onOpenAutoFocus={(event) => {
+            event.preventDefault()
+            cancelRef.current?.focus()
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>Sign out everywhere?</DialogTitle>
+            <DialogDescription>
+              Every refresh session for this account is revoked immediately. You will be returned
+              to the sign-in page.
+            </DialogDescription>
+          </DialogHeader>
+          {error !== null ? <SectionError message={error} /> : null}
+          <DialogFooter>
+            <Button
+              ref={cancelRef}
+              type="button"
+              variant="outline"
+              disabled={pending}
+              onClick={() => setOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={pending}
+              onClick={() => void confirmSignOut()}
+            >
+              {pending ? (
+                <Loader2 className="animate-spin" aria-hidden="true" />
+              ) : (
+                <LogOut aria-hidden="true" />
+              )}
+              Sign out everywhere
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  )
+}
+
+export function SettingsPage() {  const { user, refreshUser } = useAuth()
   const codeRef = React.useRef<HTMLInputElement>(null)
   const [setup, setSetup] = React.useState<Awaited<ReturnType<typeof setupMfa>> | null>(null)
   const [recoveryCodes, setRecoveryCodes] = React.useState<string[] | null>(null)
@@ -272,6 +530,8 @@ export function SettingsPage() {
           </div>
         </CardContent>
       </Card>
+
+      <ChangePasswordCard />
 
       <Card>
         <CardHeader>
@@ -455,6 +715,8 @@ export function SettingsPage() {
           )}
         </CardContent>
       </Card>
+
+      <SignOutEverywhereCard />
 
       {disableOpen ? (
         <DisableMfaDialog

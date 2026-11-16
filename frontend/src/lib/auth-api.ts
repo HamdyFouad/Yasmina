@@ -65,3 +65,26 @@ export async function disableMfa(
   })
   return response.data
 }
+
+export async function requestPasswordReset(username: string): Promise<void> {
+  await api.post('/auth/password/reset/request', { username })
+}
+
+export async function resetPassword(token: string, newPassword: string): Promise<void> {
+  await api.post('/auth/password/reset', { token, new_password: newPassword })
+}
+
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<{ status: string; refresh_tokens_revoked: number }> {
+  const response = await api.post<{ status: string; refresh_tokens_revoked: number }>(
+    '/auth/password/change',
+    { current_password: currentPassword, new_password: newPassword },
+  )
+  return response.data
+}
+
+export async function logoutAll(): Promise<void> {
+  await api.post('/auth/logout/all')
+}

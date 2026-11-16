@@ -22,6 +22,7 @@ from src.models.schemas import q2
 __all__ = ["InvoiceGenerationError", "XRechnungGenerator"]
 
 UBL_INVOICE = "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+UBL_CREDIT_NOTE = "urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2"
 UBL_CAC = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
 UBL_CBC = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
 
@@ -135,20 +136,39 @@ class XRechnungGenerator:
         _check_party(invoice.seller, "seller")
         _check_party(invoice.buyer, "buyer")
 
+        credit_note = invoice.document_type_code == "381"
+        root_namespace = UBL_CREDIT_NOTE if credit_note else UBL_INVOICE
         root = etree.Element(
-            f"{{{UBL_INVOICE}}}Invoice", nsmap={None: UBL_INVOICE, "cac": UBL_CAC, "cbc": UBL_CBC}
+            f"{{{root_namespace}}}{'CreditNote' if credit_note else 'Invoice'}",
+            nsmap={None: root_namespace, "cac": UBL_CAC, "cbc": UBL_CBC},
         )
         _sub(root, UBL_CBC, "CustomizationID", XRechnung_CUSTOMIZATION_ID)
         _sub(root, UBL_CBC, "ProfileID", XRechnung_PROFILE_ID)
         _sub(root, UBL_CBC, "ID", invoice.invoice_number)
         _sub(root, UBL_CBC, "IssueDate", invoice.issue_date.isoformat())
-        if invoice.due_date:
+        if not credit_note:
             _sub(root, UBL_CBC, "DueDate", invoice.due_date.isoformat())
-        _sub(root, UBL_CBC, "InvoiceTypeCode", "380")
+        _sub(
+            root,
+            UBL_CBC,
+            "CreditNoteTypeCode" if credit_note else "InvoiceTypeCode",
+            invoice.document_type_code,
+        )
         if invoice.payment_terms:
             _sub(root, UBL_CBC, "Note", invoice.payment_terms)
         _sub(root, UBL_CBC, "DocumentCurrencyCode", invoice.currency.value)
         _sub(root, UBL_CBC, "BuyerReference", invoice.buyer_reference)
+        if credit_note and invoice.preceding_invoice_number:
+            billing = _sub(root, UBL_CAC, "BillingReference")
+            reference = _sub(billing, UBL_CAC, "InvoiceDocumentReference")
+            _sub(reference, UBL_CBC, "ID", invoice.preceding_invoice_number)
+            if invoice.preceding_invoice_date:
+                _sub(
+                    reference,
+                    UBL_CBC,
+                    "IssueDate",
+                    invoice.preceding_invoice_date.isoformat(),
+                )
         if invoice.order_reference:
             order = _sub(root, UBL_CAC, "OrderReference")
             _sub(order, UBL_CBC, "ID", invoice.order_reference)
@@ -158,7 +178,7 @@ class XRechnungGenerator:
         customer = _sub(root, UBL_CAC, "AccountingCustomerParty")
         _party(customer, invoice.buyer, role="buyer")
 
-        if invoice.delivery_date:
+        if invoice.delivery_date and not credit_note:
             delivery = _sub(root, UBL_CAC, "Delivery")
             _sub(delivery, UBL_CBC, "ActualDeliveryDate", invoice.delivery_date.isoformat())
 
@@ -218,12 +238,12 @@ class XRechnungGenerator:
         )
 
         for line in invoice.lines:
-            line_el = _sub(root, UBL_CAC, "InvoiceLine")
+            line_el = _sub(root, UBL_CAC, "CreditNoteLine" if credit_note else "InvoiceLine")
             _sub(line_el, UBL_CBC, "ID", str(line.line_id))
             _sub(
                 line_el,
                 UBL_CBC,
-                "InvoicedQuantity",
+                "CreditedQuantity" if credit_note else "InvoicedQuantity",
                 _quantity(line.quantity),
                 unitCode=_UNIT_CODES[line.unit],
             )
@@ -258,7 +278,11 @@ class XRechnungGenerator:
                     "factur-x is required for UBL XSD validation; install the 'e-invoicing' extra"
                 ) from exc
             try:
-                facturx.xml_check_xsd(xml, flavor="ubl-2.1-invoice", level="en16931")
+                facturx.xml_check_xsd(
+                    xml,
+                    flavor="ubl-2.1-creditnote" if credit_note else "ubl-2.1-invoice",
+                    level="en16931",
+                )
             except Exception as exc:
                 raise InvoiceGenerationError(f"UBL 2.1 XSD validation failed: {exc}") from exc
             validator = schematron_validator or KoSITSchematronValidator()

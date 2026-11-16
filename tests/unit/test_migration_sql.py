@@ -53,6 +53,7 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert "ALTER TABLE customer_offers ALTER COLUMN margin_rate TYPE NUMERIC(6, 4)" in sql
     assert "ck_tenders_source_format_valid" in sql
     assert "ck_customer_offers_four_eyes" in sql
+    assert "EMAIL_SENT" in sql
     assert "CREATE TRIGGER trg_invoice_events_append_only" in sql
     assert "CREATE TRIGGER trg_invoice_events_no_truncate" in sql
     assert "ALTER TABLE tenders ADD COLUMN owner" in sql

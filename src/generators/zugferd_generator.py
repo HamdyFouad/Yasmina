@@ -127,7 +127,7 @@ def build_cii_xml(invoice: Invoice) -> bytes:
 
     document = _sub(root, "rsm", "ExchangedDocument")
     _sub(document, "ram", "ID", invoice.invoice_number)
-    _sub(document, "ram", "TypeCode", "380")
+    _sub(document, "ram", "TypeCode", invoice.document_type_code)
     issue = _sub(document, "ram", "IssueDateTime")
     _sub(issue, "udt", "DateTimeString", _date_102(invoice.issue_date), format="102")
 
@@ -209,6 +209,18 @@ def build_cii_xml(invoice: Invoice) -> bytes:
     _sub(totals, "ram", "TaxTotalAmount", _amount(invoice.total_vat), currencyID=invoice.currency.value)
     _sub(totals, "ram", "GrandTotalAmount", _amount(invoice.total_gross))
     _sub(totals, "ram", "DuePayableAmount", _amount(invoice.total_gross))
+    if invoice.preceding_invoice_number:
+        reference = _sub(settlement, "ram", "InvoiceReferencedDocument")
+        _sub(reference, "ram", "IssuerAssignedID", invoice.preceding_invoice_number)
+        if invoice.preceding_invoice_date:
+            reference_date = _sub(reference, "ram", "FormattedIssueDateTime")
+            _sub(
+                reference_date,
+                "qdt",
+                "DateTimeString",
+                _date_102(invoice.preceding_invoice_date),
+                format="102",
+            )
 
     return cast(
         bytes,

@@ -134,3 +134,26 @@ async def test_password_reset_delivery_prefers_smtp(monkeypatch) -> None:  # typ
             "expires_minutes": 15,
         }
     ]
+
+
+async def test_smtp_invoice_delivery_attaches_pdf_and_xml() -> None:
+    sender = FakeSender()
+    notifier = SmtpNotifier(make_settings(), sender=sender)
+
+    assert await notifier.send_invoice(
+        "buyer@example.test",
+        invoice_number="INV-2026-0001",
+        pdf=b"%PDF-1.7 invoice",
+        xml=b"<Invoice/>",
+        buyer_name="Stadt Muster",
+    )
+
+    message, kwargs = sender.calls[0]
+    assert message["To"] == "buyer@example.test"  # type: ignore[index]
+    assert message["Subject"] == "Yasmina invoice INV-2026-0001"  # type: ignore[index]
+    attachments = list(message.iter_attachments())  # type: ignore[attr-defined]
+    assert [part.get_filename() for part in attachments] == [
+        "INV-2026-0001.pdf",
+        "INV-2026-0001.xml",
+    ]
+    assert kwargs["start_tls"] is True

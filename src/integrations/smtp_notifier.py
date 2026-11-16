@@ -43,6 +43,25 @@ class SmtpNotifier:
     def configured(self) -> bool:
         return bool(self.settings.smtp_host and self.sender_email)
 
+    async def _send(self, message: EmailMessage, *, context: str) -> bool:
+        password = self.settings.smtp_password
+        try:
+            await self._sender(
+                message,
+                hostname=self.settings.smtp_host,
+                port=self.settings.smtp_port,
+                username=self.settings.smtp_username,
+                password=password.get_secret_value() if password is not None else None,
+                start_tls=self.settings.smtp_starttls,
+                use_tls=self.settings.smtp_ssl,
+                timeout=self.settings.smtp_timeout_seconds,
+            )
+        except (aiosmtplib.SMTPException, OSError, TimeoutError) as exc:
+            logger.warning("SMTP %s delivery failed: %s", context, exc)
+            return False
+        logger.info("SMTP %s message sent", context)
+        return True
+
     async def send_password_reset(
         self,
         recipient: str,
@@ -69,21 +88,45 @@ class SmtpNotifier:
             f"The token is valid for {expires_minutes} minutes and can be used once.\n"
             "If you did not request this reset, ignore this e-mail.\n"
         )
+        return await self._send(message, context="password-reset")
 
-        password = self.settings.smtp_password
-        try:
-            await self._sender(
-                message,
-                hostname=self.settings.smtp_host,
-                port=self.settings.smtp_port,
-                username=self.settings.smtp_username,
-                password=password.get_secret_value() if password is not None else None,
-                start_tls=self.settings.smtp_starttls,
-                use_tls=self.settings.smtp_ssl,
-                timeout=self.settings.smtp_timeout_seconds,
-            )
-        except (aiosmtplib.SMTPException, OSError, TimeoutError) as exc:
-            logger.warning("SMTP password-reset delivery failed: %s", exc)
-            return False
-        logger.info("SMTP password-reset message sent")
-        return True
+    async def send_invoice(
+        self,
+        recipient: str,
+        *,
+        invoice_number: str,
+        pdf: bytes,
+        xml: bytes,
+        buyer_name: str | None = None,
+    ) -> bool:
+        """Send the ZUGFeRD PDF and XRechnung XML to the buyer."""
+
+        if not self.configured:
+            raise SmtpError("SMTP is not configured")
+        if not recipient.strip():
+            raise SmtpError("recipient e-mail address is missing")
+
+        message = EmailMessage()
+        message["From"] = formataddr((self.settings.smtp_from_name, self.sender_email))
+        message["To"] = recipient.strip()
+        message["Subject"] = f"Yasmina invoice {invoice_number}"
+        greeting = f"Hello {buyer_name}," if buyer_name else "Hello,"
+        message.set_content(
+            f"{greeting}\n\n"
+            f"Please find invoice {invoice_number} attached as a ZUGFeRD PDF and "
+            "XRechnung XML document.\n\n"
+            "This message was sent by Yasmina.\n"
+        )
+        message.add_attachment(
+            pdf,
+            maintype="application",
+            subtype="pdf",
+            filename=f"{invoice_number}.pdf",
+        )
+        message.add_attachment(
+            xml,
+            maintype="application",
+            subtype="xml",
+            filename=f"{invoice_number}.xml",
+        )
+        return await self._send(message, context="invoice")

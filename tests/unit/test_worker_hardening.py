@@ -319,3 +319,33 @@ async def test_scheduled_scrape_failure_sends_alert(monkeypatch) -> None:  # typ
 
     assert "scheduled scrape failed" in notifier.messages[0]
     assert "portal returned 503" in notifier.messages[0]
+
+
+async def test_scheduled_job_runs_overdue_maintenance_before_scrape(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[str] = []
+
+    async def fake_scheduler(job, schedule, **kwargs):  # type: ignore[no-untyped-def]
+        await job()
+        return 1
+
+    async def fake_overdue(settings):  # type: ignore[no-untyped-def]
+        calls.append("overdue")
+        return 2
+
+    async def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append("scrape")
+        return []
+
+    monkeypatch.setattr(worker_module, "run_scheduler", fake_scheduler)
+    monkeypatch.setattr(worker_module, "_run_once_with_db", fake_run)
+
+    runs = await run_scheduled(
+        settings=make_settings(),
+        portal="bayern",
+        cron="0 2 * * *",
+        process_pending=False,
+        overdue_runner=fake_overdue,
+    )
+
+    assert runs == 1
+    assert calls == ["overdue", "scrape"]

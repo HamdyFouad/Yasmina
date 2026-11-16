@@ -8,15 +8,27 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from src.api.deps import (
+    get_app_settings,
     get_credit_note_repository,
     get_invoice_repository,
     get_object_storage,
     get_offer_repository,
     require_roles,
 )
-from src.api.schemas import InvoiceCreditPayload, InvoicePaymentPayload
+from src.api.schemas import (
+    InvoiceCancelPayload,
+    InvoiceCreditPayload,
+    InvoiceEmailPayload,
+    InvoicePaymentPayload,
+)
 from src.api.security import Principal, Role
-from src.integrations.minio_client import MinioObjectStorage, ObjectStorageError, object_name_for_invoice
+from src.config import Settings
+from src.integrations.minio_client import (
+    MinioObjectStorage,
+    ObjectStorageError,
+    object_name_for_invoice,
+)
+from src.integrations.smtp_notifier import SmtpNotifier
 from src.models.enums import InvoiceStatus
 from src.repositories.credit_note_repository import (
     CreditNoteRepository,
@@ -28,6 +40,7 @@ from src.repositories.invoice_repository import (
     StoredInvoice,
 )
 from src.repositories.offer_repository import OfferRepository
+from src.services.credit_note_documents import generate_credit_note_documents
 
 __all__ = ["router"]
 
@@ -192,12 +205,115 @@ async def record_invoice_payment(
     }
 
 
+@router.post("/{invoice_id}/cancel")
+async def cancel_invoice(
+    invoice_id: UUID,
+    payload: InvoiceCancelPayload,
+    repository: InvoiceRepository = Depends(get_invoice_repository),
+    principal: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, Any]:
+    try:
+        invoice = await repository.cancel(
+            invoice_id,
+            actor=principal.sub,
+            reason=payload.reason,
+        )
+    except InvoiceRepositoryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    return {
+        "invoice": invoice.as_dict(),
+        "events": await repository.events(invoice_id),
+    }
+
+
+@router.post("/{invoice_id}/email")
+async def email_invoice(
+    invoice_id: UUID,
+    payload: InvoiceEmailPayload,
+    repository: InvoiceRepository = Depends(get_invoice_repository),
+    offers: OfferRepository = Depends(get_offer_repository),
+    storage: MinioObjectStorage = Depends(get_object_storage),
+    settings: Settings = Depends(get_app_settings),
+    principal: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, Any]:
+    invoice = await repository.get_by_id(invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="invoice not found")
+    recipient = (
+        str(payload.recipient)
+        if payload.recipient is not None
+        else (str(invoice.invoice.buyer.email) if invoice.invoice.buyer.email else "")
+    )
+    if not recipient:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="the invoice buyer has no e-mail address",
+        )
+    offer = await offers.get(invoice.offer_id)
+    if offer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="offer not found")
+    object_names = {
+        "zugferd": object_name_for_invoice(offer.offer.offer_number, "pdf"),
+        "xrechnung": object_name_for_invoice(offer.offer.offer_number, "xml"),
+    }
+    try:
+        if not all([await storage.exists(name) for name in object_names.values()]):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="invoice documents have not been generated",
+            )
+        pdf = await storage.get_bytes(object_names["zugferd"])
+        xml = await storage.get_bytes(object_names["xrechnung"])
+    except ObjectStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    notifier = SmtpNotifier(settings)
+    if not notifier.configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="SMTP is not configured",
+        )
+    delivered = await notifier.send_invoice(
+        recipient,
+        invoice_number=invoice.invoice.invoice_number,
+        pdf=pdf,
+        xml=xml,
+        buyer_name=invoice.invoice.buyer.name,
+    )
+    if not delivered:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="the invoice e-mail could not be delivered",
+        )
+    updated = await repository.record_email_sent(
+        invoice_id,
+        actor=principal.sub,
+        recipient=recipient,
+        artifacts=list(object_names.values()),
+    )
+    return {
+        "invoice": updated.as_dict(),
+        "events": await repository.events(invoice_id),
+        "delivery": {
+            "recipient": recipient,
+            "artifacts": list(object_names.values()),
+        },
+    }
+
+
 @router.post("/{invoice_id}/credits")
 async def generate_invoice_credit(
     invoice_id: UUID,
     payload: InvoiceCreditPayload,
     repository: CreditNoteRepository = Depends(get_credit_note_repository),
     invoices: InvoiceRepository = Depends(get_invoice_repository),
+    storage: MinioObjectStorage = Depends(get_object_storage),
     principal: Principal = Depends(require_roles(Role.ADMIN)),
 ) -> dict[str, Any]:
     try:
@@ -214,6 +330,22 @@ async def generate_invoice_credit(
             detail=str(exc),
         ) from exc
     invoice = await invoices.get_by_id(invoice_id)
+    if invoice is not None:
+        try:
+            artifacts = await generate_credit_note_documents(
+                credit_note,
+                invoice,
+                storage,
+                validate_schematron=True,
+            )
+            credit_note = await repository.attach_artifacts(credit_note.id, artifacts)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"the credit note was issued, but its PDF/XML documents could not be generated: {exc}"
+                ),
+            ) from exc
     return {
         "credit_note": credit_note.as_dict(),
         "invoice": invoice.as_dict() if invoice is not None else None,
@@ -238,3 +370,51 @@ async def list_invoice_credit_notes(
         "invoice_id": str(invoice_id),
         "credit_notes": [note.as_dict() for note in notes],
     }
+
+
+@router.get("/{invoice_id}/credit-notes/{credit_note_id}/documents/{document_format}")
+async def download_credit_note_document(
+    invoice_id: UUID,
+    credit_note_id: UUID,
+    document_format: str,
+    repository: CreditNoteRepository = Depends(get_credit_note_repository),
+    invoices: InvoiceRepository = Depends(get_invoice_repository),
+    offers: OfferRepository = Depends(get_offer_repository),
+    storage: MinioObjectStorage = Depends(get_object_storage),
+    principal: Principal = Depends(require_roles(Role.SALES, Role.VIEWER, Role.ADMIN)),
+) -> Response:
+    invoice = await invoices.get_by_id(invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="invoice not found")
+    await _authorize(invoice, principal, offers)
+    note = await repository.get(credit_note_id)
+    if note is None or note.invoice_id != invoice_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="credit note not found")
+
+    formats = {
+        "xrechnung": ("xml", "application/xml"),
+        "zugferd": ("pdf", "application/pdf"),
+    }
+    if document_format not in formats:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="unknown document format")
+    extension, media_type = formats[document_format]
+    artifact = note.artifacts.get(document_format)
+    if not isinstance(artifact, dict) or not isinstance(artifact.get("object_name"), str):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
+    object_name = artifact["object_name"]
+    try:
+        if not await storage.exists(object_name):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
+        data = await storage.get_bytes(object_name)
+    except ObjectStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    filename = f"{note.credit_note_number}.{extension}"
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
