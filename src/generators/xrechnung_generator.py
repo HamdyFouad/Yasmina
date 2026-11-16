@@ -255,9 +255,12 @@ class XRechnungGenerator:
                 currencyID=invoice.currency.value,
             )
             item = _sub(line_el, UBL_CAC, "Item")
-            _sub(item, UBL_CBC, "Name", line.name)
+            # UBL 2.1 requires Description before Name inside Item; credit-note
+            # lines always carry a description, so getting this order wrong
+            # fails XSD validation only for credit notes.
             if line.description:
                 _sub(item, UBL_CBC, "Description", line.description)
+            _sub(item, UBL_CBC, "Name", line.name)
             category = _sub(item, UBL_CAC, "ClassifiedTaxCategory")
             _sub(category, UBL_CBC, "ID", _tax_category(line.vat_rate))
             _sub(category, UBL_CBC, "Percent", _rate_percent(line.vat_rate))

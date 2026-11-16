@@ -109,6 +109,39 @@ def test_xrechnung_generates_valid_ubl(workspace_tmp) -> None:  # type: ignore[n
     assert report.errors == ()
 
 
+def test_xrechnung_credit_note_is_schema_valid_with_item_description() -> None:
+    credit_note = make_invoice(
+        document_type_code="381",
+        preceding_invoice_number="INV-2025-009",
+        preceding_invoice_date=date(2025, 12, 1),
+        order_reference=None,
+        lines=[
+            InvoiceLine(
+                line_id=1,
+                name="Nitrilhandschuhe blau Gr. M",
+                description="Korrektur zu Rechnung INV-2025-009 (19,0 %)",
+                quantity=Decimal("10"),
+                unit=UnitOfMeasure.STUECK,
+                unit_price=Decimal("10.00"),
+                line_total=Decimal("100.00"),
+            )
+        ],
+    )
+
+    xml = XRechnungGenerator().build(credit_note)
+
+    assert facturx.xml_check_xsd(xml, flavor="ubl-2.1-creditnote", level="en16931") is True
+    root = etree.fromstring(xml)
+    ns = {
+        "cac": "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
+        "cbc": "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
+    }
+    item = root.find("cac:CreditNoteLine/cac:Item", namespaces=ns)
+    assert item is not None
+    child_names = [etree.QName(child).localname for child in item]
+    assert child_names.index("Description") < child_names.index("Name")
+
+
 def test_kosit_schematron_rejects_missing_mandatory_business_terms() -> None:
     invoice = make_invoice()
     xml = XRechnungGenerator().build(invoice, validate_schematron=False)
