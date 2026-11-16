@@ -232,16 +232,16 @@ async def approve_offer_endpoint(
             approved = _sign(service, offer, principal, payload.approved_at).model_copy(
                 update={
                     "id": current.id,
-                    "owner": current.owner or effective_owner or principal.sub,
+                    "owner": current.owner or effective_owner,
                     "created_at": current.created_at,
                     "invoice_artifacts": dict(current.invoice_artifacts),
                     "erpnext_quotation_name": current.erpnext_quotation_name,
                 }
             )
     else:
-        approved = _sign(service, offer, principal, payload.approved_at).model_copy(
-            update={"owner": effective_owner or principal.sub}
-        )
+        approved = _sign(service, offer, principal, payload.approved_at)
+        if effective_owner is not None:
+            approved = approved.model_copy(update={"owner": effective_owner})
 
     # Persist the cryptographically approved state before external side effects,
     # so a failed invoice/ERP call can be retried by submitting the same offer.

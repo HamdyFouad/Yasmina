@@ -262,7 +262,7 @@ def test_llm_enrichment_fills_missing_specs() -> None:
     assert enriched.material is MaterialType.NITRILE
     assert enriched.color is StandardizedColor.BLUE
     assert enriched.glove_size is GloveSize.M
-    assert enriched.thickness_um == Decimal("120.00")
+    assert enriched.thickness_mm == Decimal("0.120")
     assert enriched.pack_size == 1000
 
 
@@ -357,3 +357,36 @@ def test_deepseek_client_requires_api_key() -> None:
 
     with pytest.raises(DeepSeekUnavailable, match="DEEPSEEK_API_KEY"):
         DeepSeekClient(settings)
+
+
+def test_graph_adds_freight_and_pallet_lines_to_the_offer() -> None:
+    item = make_item()
+    tender = make_tender(item)
+    quote = make_quote(item)
+    _, public_hex = generate_keypair()
+    context = AgentContext(approval=ApprovalService(public_hex))
+    request = OfferRequest(
+        customer_name="Stadt Muster",
+        offer_number="AN-2026-0001",
+        valid_until=date(2026, 12, 31),
+        margin_rate=Decimal("0.15"),
+        vat_rate=Decimal("0.19"),
+        freight_flat_net=Decimal("25.00"),
+        pallet_unit_net=Decimal("12.50"),
+        pallet_count=2,
+    )
+
+    result = run_agent(
+        initial_state(tender=tender, supplier_quotes=[quote], request=request),
+        context,
+    )
+
+    offer = result["offer"]
+    assert offer is not None
+    charges = [line for line in offer.lines if line.position_number in {"FREIGHT", "PALLET"}]
+    assert [line.position_number for line in charges] == ["FREIGHT", "PALLET"]
+    assert [line.total_net for line in charges] == [Decimal("25.00"), Decimal("25.00")]
+    assert all(line.margin_rate == Decimal("0.0000") for line in charges)
+    assert offer.total_net == Decimal("165.00")
+    assert offer.total_vat == Decimal("31.35")
+    assert offer.total_gross == Decimal("196.35")

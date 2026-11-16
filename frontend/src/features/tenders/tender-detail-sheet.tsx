@@ -92,8 +92,8 @@ function positionAttributes(item: TenderItem): string[] {
   if (item.glove_size !== 'NOT_APPLICABLE') {
     attributes.push(`Gr. ${item.glove_size}`)
   }
-  if (item.thickness_um !== null) {
-    attributes.push(`${formatQuantity(item.thickness_um)} µm`)
+  if (item.thickness_mm !== null) {
+    attributes.push(`${formatQuantity(item.thickness_mm)} mm`)
   }
   return attributes
 }

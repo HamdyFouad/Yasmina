@@ -79,9 +79,39 @@ def _line() -> CustomerOfferLine:
     )
 
 
+def _freight_line() -> CustomerOfferLine:
+    amount = Decimal("25.00")
+    return CustomerOfferLine(
+        position_number="FREIGHT",
+        description="Freight (flat)",
+        quantity=Decimal("1.0000"),
+        unit=UnitOfMeasure.STUECK,
+        cost_unit_price_net=amount,
+        margin_rate=Decimal("0.0000"),
+        unit_price_net=amount,
+        total_net=amount,
+    )
+
+
+def _pallet_line() -> CustomerOfferLine:
+    count = Decimal("2.0000")
+    unit_price = Decimal("12.5000")
+    return CustomerOfferLine(
+        position_number="PALLET",
+        description="Pallet fee (2 pallet(s))",
+        quantity=count,
+        unit=UnitOfMeasure.PALETTE,
+        cost_unit_price_net=unit_price,
+        margin_rate=Decimal("0.0000"),
+        unit_price_net=unit_price,
+        total_net=q2(count * unit_price),
+    )
+
+
 def _offer(*, offer_number: str, tender_id: UUID, status: CustomerOfferStatus) -> CustomerOffer:
     line = _line()
-    net = line.total_net
+    lines = [line, _freight_line(), _pallet_line()]
+    net = q2(sum((offer_line.total_net for offer_line in lines), start=Decimal("0.00")))
     vat = q2(net * Decimal("0.19"))
     return CustomerOffer(
         offer_number=offer_number,
@@ -89,7 +119,7 @@ def _offer(*, offer_number: str, tender_id: UUID, status: CustomerOfferStatus) -
         customer_reference="E2E-REF-1",
         tender_id=tender_id,
         status=status,
-        lines=[line],
+        lines=lines,
         margin_rate=Decimal("0.15"),
         total_net=net,
         total_vat=vat,

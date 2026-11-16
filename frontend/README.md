@@ -64,7 +64,7 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 | `/` | Overview: owner-scoped KPI cards, gross invoiced/paid/outstanding, recent audit events (admin/viewer), ERPNext outbox counts (admin/viewer) and session details. |
 | `/tenders` | Paginated tender board with status filter. Rows open a detail sheet with metadata, the original GAEB/PDF download, hybrid catalogue matching and linked pricing offers with their line/VAT breakdown and totals. |
 | `/offers` | Paginated offer workspace with status and owner filters, a responsive table, a detail side panel (server VAT breakdown, signature state, line items) and the approver/admin four-eyes approval dialog with an optional “Generate e-invoice” section (buyer, Leitweg-ID, due date, IBAN, payment terms). `?offer=<id>` deep-links the side panel (used by the Outbox). |
-| `/invoices` | Responsive invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, the admin-only "Mark as paid" dialog and an invoice detail sheet (authoritative totals, VAT breakdown, credit-note history, document downloads, verified GoBD event timeline, admin-only credit-note dialog with inline amount/reason validation). |
+| `/invoices` | Responsive invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, the admin-only "Mark as paid" dialog and an invoice detail sheet (authoritative totals, line items including freight/pallet surcharges, VAT breakdown, credit-note history, document downloads, verified GoBD event timeline, admin-only credit-note dialog with inline amount/reason validation). |
 | `/ops/outbox` | Operations console for quotation_sync_jobs: status filter, attempts/retry budget, next attempt, last ERPNext error, a Retry action for failed jobs (admin/approver) and a link to the linked offer. |
 | `/admin/catalog` | Admin-only catalogue override table with supplier/article filters, pin badges and a dialog to add, replace or clear pinned merge fields. |
 | `/settings` | Account security: profile summary, TOTP enrolment (QR code, manual secret, otpauth URI), ten one-time recovery codes with mandatory acknowledgment, and a password/code-confirmed disable dialog. Bootstrap-admin accounts see an explanatory notice. |
@@ -99,8 +99,8 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 - `GET /offers?tender_id={id}`, `GET /offers` (status/owner/limit/offset),
   `GET /offers/{id}` (includes the server-computed `vat_breakdown`)
 - `POST /approvals/approve` (server signs the offer for the authenticated approver; optional `invoice` block generates the ZUGFeRD/XRechnung artifacts)
-- `GET /invoices`, `GET /invoices/{id}` (invoice + events + `event_chain_valid`),
-  `GET /invoices/{id}/documents/{zugferd|xrechnung}`,
+- `GET /invoices`, `GET /invoices/{id}` (invoice + line items + events +
+  `event_chain_valid`), `GET /invoices/{id}/documents/{zugferd|xrechnung}`,
   `GET /invoices/{id}/credit-notes`, `POST /invoices/{id}/payments`,
   `POST /invoices/{id}/credits`
 - `GET /ops/summary`, `GET /ops/activity`, `GET /ops/outbox-status`
@@ -134,6 +134,7 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 - [x] Admin Users console (create, roles, reset token, lock/unlock) with a responsive table
 - [x] Playwright admin flow (create/lock user) and `/admin/users` RBAC redirect
 - [x] Responsive container-query invoice table and invoice detail sheet with totals, VAT and downloads
+- [x] Line items (including freight/pallet surcharge badges) in offer and invoice detail views
 - [x] Admin credit-note dialog with amount/reason validation, cancel-first focus and in-place status refresh
 - [x] GoBD hash-chain event timeline with verified/broken chain state and per-event hashes
 

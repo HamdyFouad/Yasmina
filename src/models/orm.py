@@ -223,6 +223,10 @@ class Tender(Base, TimestampMixin):
 
     __table_args__ = (
         CheckConstraint("vat_rate >= 0 AND vat_rate <= 1", name="vat_rate_range"),
+        CheckConstraint(
+            "source_format IN ('GAEB_X83', 'GAEB_D83', 'GAEB_X84', 'PDF_DOCLING', 'PORTAL', 'API', 'MANUAL')",
+            name="source_format_valid",
+        ),
         Index("ix_tenders_submission_deadline", "submission_deadline"),
         Index("ix_tenders_status", "status"),
         Index("ix_tenders_owner", "owner"),
@@ -260,7 +264,7 @@ class TenderItem(Base, TimestampMixin):
         _enum(StandardizedColor, "standardized_color"), nullable=True
     )
 
-    thickness_um: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    thickness_mm: Mapped[Decimal | None] = mapped_column(Numeric(6, 3), nullable=True)
     dimensions: Mapped[str | None] = mapped_column(String(128), nullable=True)
     pack_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     packs_per_carton: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -286,7 +290,8 @@ class TenderItem(Base, TimestampMixin):
         UniqueConstraint("tender_id", "lot", "position_number", name="uq_tender_lot_position"),
         CheckConstraint("quantity > 0", name="quantity_positive"),
         CheckConstraint(
-            "thickness_um IS NULL OR (thickness_um > 0 AND thickness_um <= 2000)", name="thickness_range"
+            "thickness_mm IS NULL OR (thickness_mm >= 0.001 AND thickness_mm <= 2.000)",
+            name="thickness_range",
         ),
         CheckConstraint("pack_size IS NULL OR pack_size > 0", name="pack_size_positive"),
         Index("ix_tender_items_position", "tender_id", "position_number"),
@@ -470,7 +475,7 @@ class CustomerOffer(Base, TimestampMixin):
         server_default=text("'EUR'"),
     )
 
-    margin_rate: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False)
+    margin_rate: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
     total_net: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     vat_rate: Mapped[Decimal] = mapped_column(
         Numeric(6, 4), nullable=False, default=Decimal("0.1900"), server_default=text("0.1900")
@@ -516,6 +521,10 @@ class CustomerOffer(Base, TimestampMixin):
         CheckConstraint(
             "approval_payload_hash IS NULL OR approval_payload_hash ~ '^[0-9a-f]{64}$'",
             name="approval_hash_format",
+        ),
+        CheckConstraint(
+            "approved_by IS NULL OR owner IS NULL OR lower(approved_by) <> lower(owner)",
+            name="four_eyes",
         ),
         CheckConstraint(
             """
@@ -573,7 +582,7 @@ class CustomerOfferLine(Base, TimestampMixin):
     )
 
     cost_unit_price_net: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
-    margin_rate: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False)
+    margin_rate: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
     unit_price_net: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
     total_net: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     vat_rate: Mapped[Decimal] = mapped_column(

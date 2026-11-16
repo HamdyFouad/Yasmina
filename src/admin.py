@@ -29,6 +29,7 @@ from src.repositories.catalog_repository import (
     CatalogSeedItem,
     dedupe_catalog_items,
 )
+from src.repositories.integration_repository import IntegrationRepository
 from src.services.approval_service import generate_keypair
 from src.services.audit_service import AuditService
 from src.services.backup_service import (
@@ -54,6 +55,7 @@ __all__ = [
     "main",
     "parse_catalog_rows",
     "purge_tokens",
+    "reclaim_dispatch_reservations",
     "seed_catalog",
 ]
 
@@ -497,6 +499,43 @@ async def purge_tokens(
         await dispose_engine()
 
 
+async def reclaim_dispatch_reservations(
+    *,
+    settings: Settings,
+    ttl_seconds: int | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Reclaim n8n RFQ reservations left pending by a crashed dispatch."""
+
+    ttl = settings.n8n_dispatch_pending_ttl_seconds if ttl_seconds is None else ttl_seconds
+    if ttl < 1:
+        raise ValueError("ttl_seconds must be positive")
+    factory = get_session_factory(settings)
+    try:
+        async with factory() as session:
+            reclaimed = await IntegrationRepository(session).reclaim_stale_pending(
+                max_age_seconds=ttl,
+                operation="rfq.dispatch",
+                dry_run=dry_run,
+            )
+            if not dry_run and reclaimed:
+                await AuditService(session).append(
+                    event_type=AuditEventType.SYSTEM_INTEGRATION_RESERVATIONS_RECLAIMED,
+                    actor="yasmina-admin",
+                    entity_type="integration",
+                    entity_id="rfq.dispatch",
+                    payload={"reclaimed": reclaimed, "ttl_seconds": ttl},
+                )
+            return {
+                "operation": "rfq.dispatch",
+                "ttl_seconds": ttl,
+                "reclaimed": reclaimed,
+                "dry_run": dry_run,
+            }
+    finally:
+        await dispose_engine()
+
+
 async def backup_postgres(
     *,
     settings: Settings,
@@ -606,6 +645,18 @@ def _parser() -> argparse.ArgumentParser:
     )
     purge.add_argument("--dry-run", action="store_true", help="count rows without deleting")
     purge.add_argument("--json", action="store_true", dest="as_json")
+    reclaim = subparsers.add_parser(
+        "reclaim-dispatch-reservations",
+        help="fail n8n RFQ reservations left pending past their TTL",
+    )
+    reclaim.add_argument(
+        "--ttl-seconds",
+        type=int,
+        default=None,
+        help="pending dispatch age before reclaim (default: N8N_DISPATCH_PENDING_TTL_SECONDS)",
+    )
+    reclaim.add_argument("--dry-run", action="store_true", help="count rows without changing them")
+    reclaim.add_argument("--json", action="store_true", dest="as_json")
     backup = subparsers.add_parser(
         "backup-postgres",
         help="encrypt a pg_dump archive, upload it to MinIO and prune old backups",
@@ -708,6 +759,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"{cleanup.blocklisted_jtis} blocklisted JTIs, "
                     f"{cleanup.password_reset_tokens} password reset tokens "
                     f"(retention {cleanup.retention_days} days)"
+                )
+            return 0
+        if args.command == "reclaim-dispatch-reservations":
+            reclaimed = asyncio.run(
+                reclaim_dispatch_reservations(
+                    settings=settings,
+                    ttl_seconds=args.ttl_seconds,
+                    dry_run=args.dry_run,
+                )
+            )
+            if args.as_json:
+                print(json.dumps(reclaimed, indent=2, ensure_ascii=False))
+            else:
+                action = "would reclaim" if reclaimed["dry_run"] else "reclaimed"
+                print(
+                    f"{action} {reclaimed['reclaimed']} pending "
+                    f"{reclaimed['operation']} reservation(s) older than "
+                    f"{reclaimed['ttl_seconds']}s"
                 )
             return 0
         if args.command == "backup-postgres":

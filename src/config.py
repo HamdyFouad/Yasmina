@@ -157,6 +157,7 @@ class Settings(BaseSettings):
     n8n_max_retries: int = Field(default=2, ge=0, le=5)
     n8n_retry_backoff_seconds: float = Field(default=0.5, ge=0, le=10)
     n8n_callback_max_age_seconds: int = Field(default=300, ge=30, le=3600)
+    n8n_dispatch_pending_ttl_seconds: int = Field(default=900, ge=60, le=86400)
 
     # --- ERPNext -----------------------------------------------------------
     erpnext_base_url: str = "http://localhost:8080"
@@ -181,6 +182,17 @@ class Settings(BaseSettings):
     telegram_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
     telegram_max_retries: int = Field(default=2, ge=0, le=5)
     telegram_retry_backoff_seconds: float = Field(default=0.5, ge=0, le=10)
+
+    # --- SMTP password-reset delivery -------------------------------------
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_from_email: str | None = None
+    smtp_from_name: str = "Yasmina"
+    smtp_starttls: bool = True
+    smtp_ssl: bool = False
+    smtp_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
 
     # --- Portal scrapers ---------------------------------------------------
     scraper_request_delay_seconds: float = Field(default=2.0, ge=0.0, le=120.0)
@@ -276,6 +288,12 @@ class Settings(BaseSettings):
         if not _HEX64_RE.fullmatch(normalized):
             raise ValueError("ed25519 private key must be a 32-byte seed (64 hex characters) or PEM encoded")
         return SecretStr(normalized)
+
+    @model_validator(mode="after")
+    def _validate_smtp_transport(self) -> Self:
+        if self.smtp_starttls and self.smtp_ssl:
+            raise ValueError("SMTP_STARTTLS and SMTP_SSL are mutually exclusive")
+        return self
 
     @model_validator(mode="after")
     def _validate_approval_keypair(self) -> Self:

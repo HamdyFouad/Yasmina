@@ -20,7 +20,7 @@ reconciled with the authoritative spec later.
 | Entity | Assumed fields |
 |---|---|
 | `Tender` | tender number, title, client, procedure, source format, CPV codes, publication/deadline, currency, status, VAT rate, items, metadata |
-| `TenderItem` | position/lot, short/long text, quantity & unit, glove size, material, colour, thickness (µm), dimensions, pack data, delivery location/date, CPV, alternative flag |
+| `TenderItem` | position/lot, short/long text, quantity & unit, glove size, material, colour, thickness (mm), dimensions, pack data, delivery location/date, CPV, alternative flag |
 | `SupplierQuote` | supplier identity, quote reference, tender link, status, validity, payment/Incoterms/delivery days, lines, total, raw extraction |
 | `SupplierQuoteLine` | line number, description, tender item link, material/colour/size, quantity/unit, unit price, MOQ, volume tiers, pack, GTIN, delivery days |
 | `CustomerOffer` | offer number, customer, tender link, status, lines, margin, net/VAT/gross, validity, terms, Ed25519 approval, ERPNext reference, GAEB export path |
@@ -30,7 +30,8 @@ reconciled with the authoritative spec later.
 - **Pricing:** volume tier price applies to the whole line quantity; the highest
   qualifying tier wins. MOQ/pack rounding is opt-in (`round_to_moq=True`) because
   the customer-facing quantity usually stays at the tendered amount. Margin is a
-  fraction (0.15 = 15 %), unit prices round half-up to 4 dp, totals to 2 dp.
+  fraction (0.1500 = 15 %), stored with at most four decimal places; unit prices
+  round half-up to 4 dp, totals to 2 dp.
 - **Matching:** stage 1 rejects only when both sides expose a conflicting
   material/colour/glove size/unit — missing catalogue attributes are not
   penalized. `PgVectorCatalogRepository` filters in SQL and orders by pgvector
@@ -117,8 +118,10 @@ reconciled with the authoritative spec later.
   cached response; a different body or operation is rejected with 409.
 - A dispatch reservation is committed as `pending` before the webhook call.
   A failed dispatch is marked `failed` and may be retried with the same key.
-  A process crash between reservation and completion leaves a `pending` row
-  that currently requires operational cleanup (no automatic TTL reclaim).
+  A stale `pending` reservation older than
+  `N8N_DISPATCH_PENDING_TTL_SECONDS` is reclaimed by the next matching request
+  (same operation and request hash); `yasmina-admin reclaim-dispatch-reservations`
+  also marks all older rows as `failed` for scheduled operational cleanup.
 - Inbound callbacks expect already-normalized canonical `SupplierQuote` JSON;
   `n8n` is responsible for German-text normalization before signing the body.
   Quote ingestion and the idempotency success marker share one transaction.
@@ -689,9 +692,9 @@ reconciled with the authoritative spec later.
 - Linked pricing offers are found with `GET /offers?tender_id=...` (new optional
   filter) so the dashboard does not have to page the entire offer list. Totals
   shown in the UI are the server-computed net/VAT/gross values; the client never
-  recalculates prices. Freight and pallet costs are **not** modelled by the
-  pricing engine yet, so the sheet says so explicitly instead of inventing a
-  line item.
+  recalculates prices. Freight and pallet surcharges are now modelled by the
+  deterministic pricing engine as zero-margin offer lines and are included in
+  the VAT split and invoice line items; the UI labels them as surcharges.
 - Invoice documents are served directly by
   `GET /invoices/{id}/documents/{zugferd|xrechnung}`; the API resolves
   `invoice.offer_id` to the offer number internally, so the browser does not
@@ -704,7 +707,7 @@ reconciled with the authoritative spec later.
   Query keys are namespaced by resource; server state is cached for 30 seconds.
 - The frontend CI job runs `npm ci`, `oxlint` and `tsc -b && vite build`. It does
   not yet run browser end-to-end tests or a production static host deployment.
-- The suite runs 478 tests with live PostgreSQL, Redis, MinIO and ClamAV enabled.
+- The suite runs with live PostgreSQL, Redis, MinIO and ClamAV enabled in CI.
 
 ## E-invoicing assumptions (P2.1)
 
@@ -720,15 +723,43 @@ reconciled with the authoritative spec later.
 - VAT is grouped per rate; the invoice model enforces line, net, VAT and gross
   reconciliation.
 
-## Open questions for spec reconciliation
+## Resolved questions for spec reconciliation (P7.9)
 
-1. Exact naming of the GAEB/PDF "source format" enum values.
-2. Whether supplier quotes are stored per tender item only, or also as free
-   catalogue quotes (this schema supports both).
-3. Official margin semantics (header-level margin vs. per-line margin).
-4. Whether thickness must be stored in µm for bags but mm for gloves.
-5. Required approval roles / four-eyes rules for `approved_by`.
-6. Embedding dimension and model (currently BGE-M3 at `1024`, configurable).
+The six questions left open in earlier phases are now decided and enforced by
+Pydantic schemas, database constraints and/or documented service rules:
+
+1. **Source-format naming.** The canonical `TenderSourceFormat` values are
+   `GAEB_X83`, `GAEB_D83`, `GAEB_X84`, `PDF_DOCLING`, `PORTAL`, `API` and
+   `MANUAL`. They are stored verbatim in `tenders.source_format`, and migration
+   `0015` adds `ck_tenders_source_format_valid` so a non-canonical string cannot
+   reach the database even outside the API.
+2. **Supplier-quote shape.** Both modes are supported and intentional:
+   `tender_id IS NULL` marks a free-standing/catalogue quote, while a quote with
+   `tender_id` may link each line to a `tender_item_id`. `tender_item_id` stays
+   nullable so a tender-bound quote can still include a catalogue substitute; the
+   workflow only consumes lines whose `tender_item_id` matches a tender position.
+3. **Margin semantics.** The header `margin_rate` is the requested/default
+   margin; each offer line carries its own effective `margin_rate` (products use
+   the request value, freight/pallet use `0.0000`). The schema therefore does
+   not require line margins to equal the header. Margins are decimal fractions
+   with at most four decimal places (`0.1500` = 15 %), enforced by
+   `MarginRate`/`OfferRequestPayload` and `NUMERIC(6,4)` columns.
+4. **Thickness units.** Every `TenderItem` stores `thickness_mm` in
+   millimetres, regardless of product family. Parser/LLM inputs accept `mm` or
+   `µm` and convert to mm; the field is bounded to `0.001–2.000` mm with three
+   decimal places. Migration `0015` renames the old µm column and converts
+   existing values by dividing by 1000.
+5. **Approval roles and four-eyes.** Only the `approver` or `admin` role may
+   call `POST /approvals/approve`; `approved_by` is always the authenticated
+   principal (server-side signing), never a client-supplied name. The approver
+   must differ from the offer owner/tender creator (case-insensitive), enforced
+   in the route and as a `CustomerOffer` schema invariant. `admin` can approve,
+   but not their own offer; `sales` and `viewer` cannot approve at all.
+6. **Embedding model and dimension.** Production uses `BAAI/bge-m3` at `1024`
+   dimensions, matching the pgvector `vector(1024)` column and HNSW index. The
+   setting remains overridable for tests/alternative providers, but changing it
+   for a production database requires a schema migration; it is not a per-request
+   option. The catalogue records the embedding model per article.
 
 ## Hash-chained audit log
 
@@ -1009,3 +1040,54 @@ for deterministic fixture and chain-verification tests.
   before paying, verifying `Partially Credited`, the `GS-` number and the reason.
   The payment dialog then prefills the reduced outstanding balance, and the final
   `Paid` status proves the credited amount was applied consistently.
+
+## Business logic & schema finalization assumptions (P7.9)
+
+- **Thickness** is canonical millimetres everywhere: schema field
+  `TenderItem.thickness_mm`, database `NUMERIC(6,3)`, range `0.001–2.000`, three
+  decimal places. GAEB/PDF/LLM extraction accepts `mm` and `µm` and converts
+  µm/1000; no density or product-family-specific unit switching is invented.
+  Migration `0015` adds/converts `thickness_mm` and drops `thickness_um`.
+- **Margin** is a per-line decimal fraction with four decimal places; the offer
+  header carries the requested/default margin. Surcharge lines carry margin
+  `0.0000`, so line margins may legitimately differ from the header. Migration
+  `0015` narrows both margin columns from `NUMERIC(9,6)` to `NUMERIC(6,4)`;
+  Pydantic rejects a fifth decimal place before the database sees it.
+- **Source formats** use the existing canonical enum values (`GAEB_X83`,
+  `GAEB_D83`, `GAEB_X84`, `PDF_DOCLING`, `PORTAL`, `API`, `MANUAL`), and the
+  migration adds `ck_tenders_source_format_valid` as a database backstop. The
+  six reconciliation questions are answered in the resolved-questions section
+  above; supplier quotes remain valid in tender-bound and free-standing modes.
+- **Four-eyes approval** is enforced twice: the API requires an `approver` or
+  `admin` role and rejects an approver equal to the effective owner (casefold),
+  while `CustomerOffer` rejects `approved_by == owner` for imported/constructed
+  models. The API no longer auto-assigns an owner equal to the approver when a
+  new offer has no owner; `approved_by` always comes from the authenticated
+  principal rather than the request body.
+- **Freight and pallet pricing** is deterministic: a flat net freight amount per
+  offer plus `pallet_unit_net × pallet_count`. `OfferRequest`/`OfferRequestPayload`
+  accept optional `freight_flat_net`, `pallet_unit_net` and `pallet_count`
+  (defaults zero); `PricingService.calculate_charges` validates non-negative
+  Decimals/counts and computes amounts with `q2`. The workflow appends
+  zero-margin `FREIGHT` and `PALLET` `CustomerOfferLine`s (units `STUECK` and
+  `PALETTE`) so the charges participate in line/VAT reconciliation and flow into
+  the invoice lines. A zero count or zero rate produces no line.
+- **SMTP reset delivery** uses `aiosmtplib` when `SMTP_HOST` and a sender address
+  (or username) are configured; the message goes to `users.email`. `SMTP_STARTTLS`
+  and `SMTP_SSL` are mutually exclusive. Delivery failures are logged without the
+  token and fall back to the existing Telegram notifier; the audit entry records
+  only a boolean `delivered` flag.
+- **n8n dispatch TTL reclaim** is two-layered. `IntegrationRepository.reserve`
+  atomically reclaims a `pending` row only when the operation and request hash
+  match and `updated_at` is older than
+  `N8N_DISPATCH_PENDING_TTL_SECONDS` (default 900); this lets the same request
+  retry after a crash while still returning 409 for key reuse with a different
+  body. `reclaim_stale_pending` (exposed as
+  `yasmina-admin reclaim-dispatch-reservations`) marks all older `rfq.dispatch`
+  rows `failed` for scheduled maintenance and audits
+  `SYSTEM_DISPATCH_RECLAIMED`. A reclaimed key is safe to redeliver because n8n
+  receives the same idempotency key and deduplicates it.
+- The Playwright seed now includes a €25 freight line and a 2 × €12.50 pallet
+  line, so the E2E detail sheet verifies the surcharge line items and invoice
+  totals alongside the credit-note/payment flow. The invoice list/detail response
+  includes `lines`, making the charges visible without recomputing them client-side.

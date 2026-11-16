@@ -14,6 +14,7 @@ import { useSearchParams } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -211,6 +212,12 @@ function OfferDetailSheet({ offerId, onClose }: { offerId: string; onClose: () =
                         <TableCell className="font-mono text-xs">{line.position_number}</TableCell>
                         <TableCell className="max-w-72">
                           <span className="line-clamp-2">{line.description}</span>
+                          {line.position_number === 'FREIGHT' ||
+                          line.position_number === 'PALLET' ? (
+                            <Badge variant="secondary" className="mt-1">
+                              Surcharge
+                            </Badge>
+                          ) : null}
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-right">
                           {formatQuantityLabel(line.quantity, line.unit)}

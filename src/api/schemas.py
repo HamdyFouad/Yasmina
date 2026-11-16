@@ -113,9 +113,12 @@ class OfferRequestPayload(BaseModel):
     customer_name: str = Field(min_length=1, max_length=256)
     offer_number: str = Field(min_length=1, max_length=128)
     valid_until: date
-    margin_rate: Decimal = Field(default=Decimal("0.15"), ge=0, le=5)
-    vat_rate: Decimal = Field(default=Decimal("0.19"), ge=0, le=1)
+    margin_rate: Decimal = Field(default=Decimal("0.15"), ge=0, le=5, max_digits=6, decimal_places=4)
+    vat_rate: Decimal = Field(default=Decimal("0.19"), ge=0, le=1, max_digits=6, decimal_places=4)
     customer_contact_email: EmailStr | None = None
+    freight_flat_net: Decimal = Field(default=Decimal("0.00"), ge=0, max_digits=18, decimal_places=2)
+    pallet_unit_net: Decimal = Field(default=Decimal("0.00"), ge=0, max_digits=18, decimal_places=2)
+    pallet_count: int = Field(default=0, ge=0, le=10_000)
 
     def to_request(self) -> OfferRequest:
         return OfferRequest(
@@ -125,6 +128,9 @@ class OfferRequestPayload(BaseModel):
             margin_rate=self.margin_rate,
             vat_rate=self.vat_rate,
             customer_contact_email=str(self.customer_contact_email) if self.customer_contact_email else None,
+            freight_flat_net=self.freight_flat_net,
+            pallet_unit_net=self.pallet_unit_net,
+            pallet_count=self.pallet_count,
         )
 
 

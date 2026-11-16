@@ -76,7 +76,7 @@ def test_tender_orm_roundtrip_preserves_optional_fields() -> None:
                         "tender_id": uuid4(),
                         "lot": "Los 2",
                         "long_text": "Langtext",
-                        "thickness_um": Decimal("120.00"),
+                        "thickness_mm": Decimal("0.120"),
                         "attributes": {},
                     }
                 )
@@ -89,7 +89,7 @@ def test_tender_orm_roundtrip_preserves_optional_fields() -> None:
     item = restored.items[0]
     assert item.lot == "Los 2"
     assert item.long_text == "Langtext"
-    assert item.thickness_um == Decimal("120.00")
+    assert item.thickness_mm == Decimal("0.120")
     assert item.attributes == {}
 
 

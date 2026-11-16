@@ -103,6 +103,42 @@ def test_money_rounds_half_up() -> None:
     assert calculate_unit_price(Decimal("0.3333"), Decimal("0.15")) == Decimal("0.3833")
 
 
+def test_freight_and_pallet_charges_are_included_in_totals() -> None:
+    service = PricingService()
+    line = make_line(quantity=Decimal("10.0000"), unit_price_net=Decimal("10.0000"))
+
+    pricing = service.price_offer(
+        [line],
+        margin_rate=Decimal("0.10"),
+        vat_rate=Decimal("0.19"),
+        freight_flat_net=Decimal("25.00"),
+        pallet_unit_net=Decimal("12.50"),
+        pallet_count=3,
+    )
+
+    assert pricing.freight_net == Decimal("25.00")
+    assert pricing.pallet_net == Decimal("37.50")
+    assert pricing.pallet_count == 3
+    assert [charge.kind for charge in pricing.charges] == ["freight", "pallet"]
+    assert pricing.charges[0].description == "Freight (flat)"
+    assert pricing.charges[1].quantity == Decimal("3")
+    assert pricing.total_net == Decimal("172.50")
+    assert pricing.total_vat == Decimal("32.78")
+    assert pricing.total_gross == Decimal("205.28")
+
+
+def test_charge_calculation_rejects_invalid_values() -> None:
+    service = PricingService()
+    with pytest.raises(PricingError, match="freight"):
+        service.calculate_charges(freight_flat_net=Decimal("-1.00"))
+    with pytest.raises(PricingError, match="pallet"):
+        service.calculate_charges(pallet_unit_net=Decimal("-1.00"))
+    with pytest.raises(PricingError, match="pallet_count"):
+        service.calculate_charges(pallet_count=-1)
+    with pytest.raises(PricingError, match="pallet_count"):
+        service.calculate_charges(pallet_count=True)  # type: ignore[arg-type]
+
+
 def test_pricing_rejects_float_and_invalid_ranges() -> None:
     service = PricingService()
     line = make_line()

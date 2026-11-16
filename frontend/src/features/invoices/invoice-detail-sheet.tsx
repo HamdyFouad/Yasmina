@@ -36,12 +36,20 @@ import { useAuth } from '@/features/auth/auth-context'
 import { CreditNoteDialog } from '@/features/invoices/credit-note-dialog'
 import { apiErrorMessage } from '@/lib/api-error'
 import { invoiceOutstanding } from '@/lib/invoice-utils'
+import { unitLabel } from '@/lib/labels'
 import {
   downloadInvoiceDocument,
   fetchInvoice,
   fetchInvoiceCreditNotes,
 } from '@/lib/invoices-api'
-import { formatCurrency, formatDate, formatDateTime, formatPercent, titleCase } from '@/lib/utils'
+import {
+  formatCurrency,
+  formatDate,
+  formatDateTime,
+  formatPercent,
+  formatQuantity,
+  titleCase,
+} from '@/lib/utils'
 import type { Invoice, InvoiceDocumentFormat } from '@/types/domain'
 
 function SummaryItem({ label, children }: { label: string; children: React.ReactNode }) {
@@ -228,6 +236,60 @@ function InvoiceDetailBody({ invoiceId }: { invoiceId: string }) {
             emphasis
           />
         </dl>
+      </section>
+
+      <section aria-labelledby="invoice-lines-heading" className="space-y-2">
+        <h3 id="invoice-lines-heading" className="text-sm font-medium">
+          Line items
+        </h3>
+        {invoice.lines.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No line items are recorded.</p>
+        ) : (
+          <Table>
+            <TableCaption className="sr-only">
+              Invoice positions including freight and pallet surcharges
+            </TableCaption>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Pos.</TableHead>
+                <TableHead>Description</TableHead>
+                <TableHead className="text-right">Qty</TableHead>
+                <TableHead className="text-right">Unit net</TableHead>
+                <TableHead className="text-right">Total net</TableHead>
+                <TableHead className="text-right">VAT</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {invoice.lines.map((line) => {
+                const surcharge =
+                  line.name.startsWith('Freight') || line.name.startsWith('Pallet fee')
+                return (
+                  <TableRow key={line.line_id}>
+                    <TableCell className="font-mono text-xs">{line.line_id}</TableCell>
+                    <TableCell className="max-w-64">
+                      <span className="line-clamp-2">{line.name}</span>
+                      {surcharge ? (
+                        <Badge variant="secondary" className="mt-1">
+                          Surcharge
+                        </Badge>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-right">
+                      {formatQuantity(line.quantity)} {unitLabel(line.unit)}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-right">
+                      {formatCurrency(line.unit_price, invoice.currency)}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-right">
+                      {formatCurrency(line.line_total, invoice.currency)}
+                    </TableCell>
+                    <TableCell className="text-right">{formatPercent(line.vat_rate)}</TableCell>
+                  </TableRow>
+                )
+              })}
+            </TableBody>
+          </Table>
+        )}
       </section>
 
       <section aria-labelledby="invoice-vat-heading" className="space-y-2">

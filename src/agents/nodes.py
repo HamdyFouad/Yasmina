@@ -57,6 +57,8 @@ def _spec_attr(raw: Any, name: str) -> str | None:
 
 
 def _thickness(value: str | None) -> Decimal | None:
+    """Extract a thickness and normalize it to millimetres."""
+
     if not value:
         return None
     match = _THICKNESS_RE.search(value)
@@ -66,11 +68,11 @@ def _thickness(value: str | None) -> Decimal | None:
         number = Decimal(match.group("value").replace(",", "."))
     except InvalidOperation:
         return None
-    if match.group("unit") and match.group("unit").lower() == "mm":
-        number *= Decimal(1000)
-    if number < 1 or number > 2000:
+    unit = (match.group("unit") or "µm").lower()
+    millimetres = number if unit == "mm" else number / Decimal(1000)
+    if millimetres < Decimal("0.001") or millimetres > Decimal("2.000"):
         return None
-    return number.quantize(Decimal("0.01"))
+    return millimetres.quantize(Decimal("0.001"))
 
 
 def _pack_size(value: str | None) -> int | None:
@@ -103,10 +105,10 @@ def _enrich_item(item: TenderItem, raw: Any) -> TenderItem:
         glove_size = normalize_glove_size(_spec_attr(raw, "glove_size") or "")
         if glove_size.value != "NOT_APPLICABLE":
             updates["glove_size"] = glove_size
-    if item.thickness_um is None:
+    if item.thickness_mm is None:
         thickness = _thickness(_spec_attr(raw, "thickness"))
         if thickness is not None:
-            updates["thickness_um"] = thickness
+            updates["thickness_mm"] = thickness
     if item.pack_size is None:
         pack_size = _pack_size(_spec_attr(raw, "pack_size"))
         if pack_size is not None:
@@ -180,7 +182,7 @@ def enrich_specs(state: AgentState, context: AgentContext) -> dict[str, Any]:
             item.material is None
             or item.color is None
             or item.glove_size.value == "NOT_APPLICABLE"
-            or item.thickness_um is None
+            or item.thickness_mm is None
             or item.pack_size is None
         )
         if not needs_enrichment:
@@ -311,6 +313,27 @@ def price_offer(state: AgentState, context: AgentContext) -> dict[str, Any]:
 
     if errors or not offer_lines:
         return {"status": AgentStatus.FAILED, "errors": errors, "warnings": warnings}
+
+    charges = context.pricing.calculate_charges(
+        freight_flat_net=request.freight_flat_net,
+        pallet_unit_net=request.pallet_unit_net,
+        pallet_count=request.pallet_count,
+        vat_rate=request.vat_rate,
+    )
+    for charge in charges.charges:
+        offer_lines.append(
+            CustomerOfferLine(
+                position_number="FREIGHT" if charge.kind == "freight" else "PALLET",
+                description=charge.description,
+                quantity=charge.quantity,
+                unit=charge.unit,
+                cost_unit_price_net=charge.unit_price_net,
+                margin_rate=Decimal("0.0000"),
+                unit_price_net=charge.unit_price_net,
+                total_net=charge.total_net,
+                vat_rate=request.vat_rate,
+            )
+        )
 
     total_net = q2(sum((offer_line.total_net for offer_line in offer_lines), start=Decimal("0.00")))
     by_rate: dict[Decimal, Decimal] = {}

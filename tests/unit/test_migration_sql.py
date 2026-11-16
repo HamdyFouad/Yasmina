@@ -48,6 +48,11 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert "ALTER TABLE users ADD COLUMN mfa_enabled" in sql
     assert "ALTER TABLE catalog_articles ADD COLUMN manual_overrides" in sql
     assert "ALTER TABLE catalog_articles ADD COLUMN embedding_model" in sql
+    assert "ALTER TABLE tender_items ADD COLUMN thickness_mm" in sql
+    assert "ROUND(thickness_um / 1000.0, 3)" in sql
+    assert "ALTER TABLE customer_offers ALTER COLUMN margin_rate TYPE NUMERIC(6, 4)" in sql
+    assert "ck_tenders_source_format_valid" in sql
+    assert "ck_customer_offers_four_eyes" in sql
     assert "CREATE TRIGGER trg_invoice_events_append_only" in sql
     assert "CREATE TRIGGER trg_invoice_events_no_truncate" in sql
     assert "ALTER TABLE tenders ADD COLUMN owner" in sql

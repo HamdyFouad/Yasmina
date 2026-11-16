@@ -110,7 +110,7 @@ export interface TenderItem {
   glove_size: GloveSize
   material: MaterialType | null
   color: StandardizedColor | null
-  thickness_um: string | null
+  thickness_mm: string | null
   dimensions: string | null
   pack_size: number | null
   packs_per_carton: number | null
@@ -200,6 +200,16 @@ export interface InvoiceVatSplit {
   tax_amount: string
 }
 
+export interface InvoiceLine {
+  line_id: number
+  name: string
+  quantity: string
+  unit: UnitOfMeasure
+  unit_price: string
+  line_total: string
+  vat_rate: string
+}
+
 export interface Invoice {
   id: string
   offer_id: string
@@ -216,6 +226,7 @@ export interface Invoice {
   paid_at: string | null
   credit_note_number: string | null
   vat_breakdown: InvoiceVatSplit[]
+  lines: InvoiceLine[]
   artifacts: Record<string, unknown>
 }
 

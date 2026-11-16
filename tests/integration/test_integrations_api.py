@@ -202,6 +202,7 @@ class FakeIntegrationRepository:
         key: str,
         operation: str,
         request_hash: str,
+        stale_after_seconds: int | None = None,
     ) -> tuple[IdempotencyRecord, bool]:
         if key in self.records:
             return self.records[key], False

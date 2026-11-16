@@ -39,6 +39,7 @@ from src.api.security import (
     create_access_token,
 )
 from src.config import Settings
+from src.integrations.smtp_notifier import SmtpNotifier
 from src.integrations.telegram_notifier import TelegramNotifier
 from src.models.enums import AuditEventType
 from src.repositories.user_repository import (
@@ -628,7 +629,7 @@ async def request_password_reset(
             issued_by="self-service",
             ip_address=ip_address,
         )
-        delivered = await _deliver_reset_token(settings, user.username, raw_token)
+        delivered = await _deliver_reset_token(settings, user, raw_token)
     await _audit(
         audit,
         AuditEventType.USER_PASSWORD_RESET_REQUESTED,
@@ -643,13 +644,30 @@ async def request_password_reset(
     return {"status": "reset_requested"}
 
 
-async def _deliver_reset_token(settings: Settings, username: str, token: str) -> bool:
+async def _deliver_reset_token(settings: Settings, user: UserView, token: str) -> bool:
+    if user.email:
+        smtp = SmtpNotifier(settings)
+        if smtp.configured:
+            try:
+                if await smtp.send_password_reset(
+                    user.email,
+                    username=user.username,
+                    token=token,
+                    expires_minutes=settings.password_reset_token_expiry_minutes,
+                ):
+                    return True
+            except Exception:  # pragma: no cover - best-effort delivery channel
+                logger.exception("SMTP password reset delivery failed")
+
     notifier = TelegramNotifier(settings)
     if not notifier.configured:
-        logger.warning("password reset token for %s was not delivered: Telegram is not configured", username)
+        logger.warning(
+            "password reset token for %s was not delivered: SMTP/Telegram are not configured",
+            user.username,
+        )
         return False
     message = (
-        f"Yasmina password reset for {username}\n"
+        f"Yasmina password reset for {user.username}\n"
         f"Token: {token}\n"
         f"Valid for {settings.password_reset_token_expiry_minutes} minutes."
     )

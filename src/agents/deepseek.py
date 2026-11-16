@@ -27,7 +27,9 @@ class RawItemSpecs(BaseModel):
     material: str | None = Field(default=None, description="Material, e.g. Nitril or Latex")
     color: str | None = Field(default=None, description="Colour, e.g. blau or transparent")
     glove_size: str | None = Field(default=None, description="EN 420 size, e.g. M or 8")
-    thickness: str | None = Field(default=None, description="Thickness in µm if stated")
+    thickness: str | None = Field(
+        default=None, description="Thickness in mm or µm if stated; normalized to mm"
+    )
     pack_size: str | None = Field(default=None, description="Units per pack/carton if stated")
 
 

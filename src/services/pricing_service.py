@@ -10,12 +10,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, Decimal
+from typing import Literal
 
 from src.models.enums import UnitOfMeasure
 from src.models.schemas import SupplierQuoteLine, q2, q4
 
 __all__ = [
+    "ChargePricing",
     "OfferPricing",
+    "PricedCharge",
     "PricedLine",
     "PricingError",
     "PricingService",
@@ -49,14 +52,43 @@ class PricedLine:
 
 
 @dataclass(frozen=True, slots=True)
+class PricedCharge:
+    """A freight or pallet surcharge represented as a zero-margin line."""
+
+    kind: Literal["freight", "pallet"]
+    description: str
+    quantity: Decimal
+    unit: UnitOfMeasure
+    unit_price_net: Decimal
+    total_net: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class ChargePricing:
+    """Deterministic freight and pallet surcharges for one offer."""
+
+    charges: tuple[PricedCharge, ...]
+    freight_net: Decimal
+    pallet_net: Decimal
+    pallet_count: int
+    total_net: Decimal
+    total_vat: Decimal
+    total_gross: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class OfferPricing:
-    """Totals for a set of priced lines."""
+    """Totals for a set of priced lines, including freight and pallets."""
 
     lines: tuple[PricedLine, ...]
     total_net: Decimal
     vat_rate: Decimal
     total_vat: Decimal
     total_gross: Decimal
+    freight_net: Decimal = _ZERO
+    pallet_net: Decimal = _ZERO
+    pallet_count: int = 0
+    charges: tuple[PricedCharge, ...] = ()
 
 
 def _decimal(value: Decimal | int, name: str) -> Decimal:
@@ -196,6 +228,78 @@ class PricingService:
             pack_size=line.pack_size,
         )
 
+    def calculate_charges(
+        self,
+        *,
+        freight_flat_net: Decimal | int = _ZERO,
+        pallet_unit_net: Decimal | int = _ZERO,
+        pallet_count: int = 0,
+        vat_rate: Decimal | int | None = None,
+    ) -> ChargePricing:
+        """Calculate flat freight and per-pallet fees with the offer VAT rate.
+
+        Both surcharges are represented as zero-margin lines by the workflow,
+        so their net amounts participate in the normal line/VAT reconciliation.
+        """
+
+        freight_raw = _decimal(freight_flat_net, "freight_flat_net")
+        pallet_raw = _decimal(pallet_unit_net, "pallet_unit_net")
+        if freight_raw < 0:
+            raise PricingError("freight_flat_net must not be negative")
+        if pallet_raw < 0:
+            raise PricingError("pallet_unit_net must not be negative")
+        freight = q2(freight_raw)
+        pallet_rate = q2(pallet_raw)
+        if isinstance(pallet_count, bool) or not isinstance(pallet_count, int):
+            raise PricingError("pallet_count must be an int")
+        if pallet_count < 0:
+            raise PricingError("pallet_count must not be negative")
+
+        charges: list[PricedCharge] = []
+        if freight > 0:
+            charges.append(
+                PricedCharge(
+                    kind="freight",
+                    description="Freight (flat)",
+                    quantity=_ONE,
+                    unit=UnitOfMeasure.STUECK,
+                    unit_price_net=freight,
+                    total_net=freight,
+                )
+            )
+
+        pallet_net = _ZERO
+        if pallet_count > 0 and pallet_rate > 0:
+            pallet_net = q2(pallet_rate * pallet_count)
+            charges.append(
+                PricedCharge(
+                    kind="pallet",
+                    description=f"Pallet fee ({pallet_count} pallet(s))",
+                    quantity=Decimal(pallet_count),
+                    unit=UnitOfMeasure.PALETTE,
+                    unit_price_net=pallet_rate,
+                    total_net=pallet_net,
+                )
+            )
+
+        vat = _decimal(
+            vat_rate if vat_rate is not None else self.default_vat_rate,
+            "vat_rate",
+        )
+        if vat < 0 or vat > 1:
+            raise PricingError("vat_rate must be between 0 and 1")
+        total_net = q2(freight + pallet_net)
+        total_vat = q2(total_net * vat)
+        return ChargePricing(
+            charges=tuple(charges),
+            freight_net=freight,
+            pallet_net=pallet_net,
+            pallet_count=pallet_count,
+            total_net=total_net,
+            total_vat=total_vat,
+            total_gross=q2(total_net + total_vat),
+        )
+
     def price_offer(
         self,
         lines: Sequence[SupplierQuoteLine],
@@ -204,8 +308,11 @@ class PricingService:
         vat_rate: Decimal | int | None = None,
         quantities: Sequence[Decimal | int] | None = None,
         round_to_moq: bool = False,
+        freight_flat_net: Decimal | int = _ZERO,
+        pallet_unit_net: Decimal | int = _ZERO,
+        pallet_count: int = 0,
     ) -> OfferPricing:
-        """Price a sequence of supplier lines into an offer total."""
+        """Price supplier lines plus optional freight/pallet surcharges."""
 
         if not lines:
             raise PricingError("at least one supplier quote line is required")
@@ -232,7 +339,13 @@ class PricingService:
                 )
             )
 
-        net = q2(sum((line.total_net for line in priced), start=_ZERO))
+        charges = self.calculate_charges(
+            freight_flat_net=freight_flat_net,
+            pallet_unit_net=pallet_unit_net,
+            pallet_count=pallet_count,
+            vat_rate=vat,
+        )
+        net = q2(sum((line.total_net for line in priced), start=_ZERO) + charges.total_net)
         total_vat = q2(net * vat)
         total_gross = q2(net + total_vat)
         return OfferPricing(
@@ -241,4 +354,8 @@ class PricingService:
             vat_rate=vat,
             total_vat=total_vat,
             total_gross=total_gross,
+            freight_net=charges.freight_net,
+            pallet_net=charges.pallet_net,
+            pallet_count=charges.pallet_count,
+            charges=charges.charges,
         )

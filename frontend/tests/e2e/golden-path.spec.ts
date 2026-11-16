@@ -81,6 +81,9 @@ test('golden path: approve with invoice, pay it, and retry the outbox job', asyn
     await expect(invoiceSheet).toBeVisible()
     await expect(invoiceSheet.getByText('GoBD event log')).toBeVisible()
     await expect(invoiceSheet.getByText('Chain verified', { exact: true })).toBeVisible()
+    await expect(invoiceSheet.getByText('Freight (flat)').first()).toBeVisible()
+    await expect(invoiceSheet.getByText('Pallet fee (2 pallet(s))').first()).toBeVisible()
+    await expect(invoiceSheet.getByText('Surcharge').first()).toBeVisible()
 
     await invoiceSheet.getByRole('button', { name: 'Issue credit note' }).click()
     const creditDialog = adminPage.getByRole('dialog', {

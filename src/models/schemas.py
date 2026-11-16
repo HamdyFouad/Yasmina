@@ -70,8 +70,8 @@ HEX128_PATTERN = r"^[0-9a-f]{128}$"
 Money = Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=4)]
 Money2 = Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=2)]
 Quantity = Annotated[Decimal, Field(gt=0, max_digits=18, decimal_places=4)]
-VatRate = Annotated[Decimal, Field(ge=0, le=1, max_digits=6, decimal_places=6)]
-MarginRate = Annotated[Decimal, Field(ge=0, le=5, max_digits=9, decimal_places=6)]
+VatRate = Annotated[Decimal, Field(ge=0, le=1, max_digits=6, decimal_places=4)]
+MarginRate = Annotated[Decimal, Field(ge=0, le=5, max_digits=6, decimal_places=4)]
 
 ShortText = Annotated[str, Field(min_length=1, max_length=512)]
 Reference = Annotated[str, Field(min_length=1, max_length=128)]
@@ -152,7 +152,13 @@ class TenderItem(YasminaSchema):
     material: MaterialType | None = None
     color: StandardizedColor | None = None
 
-    thickness_um: Annotated[Decimal, Field(ge=1, le=2000, decimal_places=2)] | None = None
+    thickness_mm: (
+        Annotated[
+            Decimal,
+            Field(ge=Decimal("0.001"), le=Decimal("2.000"), decimal_places=3),
+        ]
+        | None
+    ) = None
     dimensions: Annotated[str, Field(max_length=128)] | None = None
     pack_size: Annotated[int, Field(gt=0, le=1_000_000)] | None = None
     packs_per_carton: Annotated[int, Field(gt=0, le=1_000_000)] | None = None
@@ -467,4 +473,21 @@ class CustomerOffer(YasminaSchema):
                     "HITL approval required (Ed25519 signature) before export/approval; missing: "
                     + ", ".join(missing)
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_four_eyes(self) -> Self:
+        """Reject an approval whose approver is the offer/creator owner.
+
+        Only the API role gate can prove the caller is an ``approver`` or
+        ``admin``; this schema invariant prevents a forged/imported approval
+        from bypassing the four-eyes separation.
+        """
+
+        if (
+            self.approved_by is not None
+            and self.owner is not None
+            and self.approved_by.strip().casefold() == self.owner.strip().casefold()
+        ):
+            raise ValueError("four-eyes principle: approved_by must differ from the offer owner")
         return self

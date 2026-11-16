@@ -67,6 +67,9 @@ class OfferRequest:
     margin_rate: Decimal = Decimal("0.15")
     vat_rate: Decimal = Decimal("0.19")
     customer_contact_email: str | None = None
+    freight_flat_net: Decimal = Decimal("0.00")
+    pallet_unit_net: Decimal = Decimal("0.00")
+    pallet_count: int = 0
 
 
 @dataclass(frozen=True)

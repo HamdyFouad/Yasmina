@@ -44,7 +44,7 @@ def make_item(**overrides: object) -> TenderItem:
         "glove_size": GloveSize.M,
         "material": MaterialType.NITRILE,
         "color": StandardizedColor.BLUE,
-        "thickness_um": Decimal("120.00"),
+        "thickness_mm": Decimal("0.120"),
         "pack_size": 1000,
         "cpv_code": "33141420",
     }
@@ -270,3 +270,31 @@ def test_offer_rejects_duplicate_positions() -> None:
 def test_offer_margin_is_bounded() -> None:
     with pytest.raises(ValidationError):
         make_offer(margin_rate=Decimal("6.0"))
+
+
+def test_offer_margin_is_limited_to_four_decimal_places() -> None:
+    with pytest.raises(ValidationError):
+        make_offer(margin_rate=Decimal("0.12345"))
+    assert make_offer(margin_rate=Decimal("0.1234")).margin_rate == Decimal("0.1234")
+
+
+def test_offer_rejects_self_approval_four_eyes() -> None:
+    with pytest.raises(ValidationError, match="four-eyes"):
+        make_offer(
+            status=CustomerOfferStatus.APPROVED,
+            owner="sales-a",
+            approved_by="SALES-A",
+            ed25519_approval_signature="ab" * 64,
+            approval_payload_hash="cd" * 32,
+            approved_at=NOW,
+        )
+
+
+def test_thickness_is_stored_in_millimetres_and_bounded() -> None:
+    assert make_item(thickness_mm=Decimal("0.120")).thickness_mm == Decimal("0.120")
+    with pytest.raises(ValidationError):
+        make_item(thickness_mm=Decimal("0.0005"))
+    with pytest.raises(ValidationError):
+        make_item(thickness_mm=Decimal("2.001"))
+    with pytest.raises(ValidationError):
+        make_item(thickness_mm=Decimal("0.1234"))

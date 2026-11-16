@@ -194,17 +194,19 @@ def _extract_glove_size(text: str) -> GloveSize:
 
 
 def _extract_thickness(text: str) -> Decimal | None:
+    """Extract a thickness and normalize it to millimetres."""
+
     match = _THICKNESS_RE.search(text)
     if match is None:
         return None
     value = _as_decimal(match.group("value"))
     if value is None:
         return None
-    if match.group("unit").lower() == "mm":
-        value *= Decimal(1000)
-    if value < 1 or value > 2000:
+    unit = (match.group("unit") or "µm").lower()
+    millimetres = value if unit == "mm" else value / Decimal(1000)
+    if millimetres < Decimal("0.001") or millimetres > Decimal("2.000"):
         return None
-    return value.quantize(Decimal("0.01"))
+    return millimetres.quantize(Decimal("0.001"))
 
 
 def _extract_pack_size(text: str) -> int | None:
@@ -279,7 +281,7 @@ def _build_item(
         glove_size=_extract_glove_size(combined),
         material=material,
         color=color,
-        thickness_um=_extract_thickness(combined),
+        thickness_mm=_extract_thickness(combined),
         dimensions=_extract_dimensions(combined),
         pack_size=_extract_pack_size(combined),
         cpv_code=None,

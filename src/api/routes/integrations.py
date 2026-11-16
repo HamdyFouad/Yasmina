@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import (
+    get_app_settings,
     get_audit_service,
     get_integration_repository,
     get_n8n_client,
@@ -29,6 +30,7 @@ from src.api.schemas import (
     parse_supplier_quotes,
 )
 from src.api.security import Principal, Role
+from src.config import Settings
 from src.integrations.n8n_client import (
     N8nClient,
     N8nConfigurationError,
@@ -108,6 +110,7 @@ async def dispatch_rfq(
     tender_repository: TenderRepository = Depends(get_tender_repository),
     repository: IntegrationRepository = Depends(get_integration_repository),
     n8n: N8nClient = Depends(get_n8n_client),
+    settings: Settings = Depends(get_app_settings),
     audit: AuditService = Depends(get_audit_service),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
@@ -129,6 +132,7 @@ async def dispatch_rfq(
         key=key,
         operation=_DISPATCH_OPERATION,
         request_hash=request_hash,
+        stale_after_seconds=settings.n8n_dispatch_pending_ttl_seconds,
     )
     if not created:
         _reject_key_reuse(

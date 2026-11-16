@@ -85,6 +85,18 @@ class StoredInvoice:
             "paid_at": self.paid_at.isoformat() if self.paid_at is not None else None,
             "credit_note_number": self.credit_note_number,
             "vat_breakdown": [dict(item) for item in self.vat_breakdown],
+            "lines": [
+                {
+                    "line_id": line.line_id,
+                    "name": line.name,
+                    "quantity": format(line.quantity, "f"),
+                    "unit": line.unit.value,
+                    "unit_price": format(line.unit_price, "f"),
+                    "line_total": format(line.line_total, "f"),
+                    "vat_rate": format(line.vat_rate, "f"),
+                }
+                for line in self.invoice.lines
+            ],
             "artifacts": dict(self.artifacts),
         }
 

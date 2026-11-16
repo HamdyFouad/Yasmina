@@ -423,8 +423,9 @@ metrics for scraping; see [Production deployment & observability](#production-de
   token with `POST /auth/users/{username}/password/reset` and hand it over
   out-of-band; `POST /auth/password/reset/request` is the public self-service
   variant and always returns `202` (no account enumeration), delivering the raw
-  token through the Telegram notifier when it is configured. Only the SHA-256
-  hash is stored in `password_reset_tokens`, tokens expire after
+  token by SMTP to the account e-mail when configured, with the Telegram
+  notifier as fallback. Only the SHA-256 hash is stored in
+  `password_reset_tokens`, tokens expire after
   `PASSWORD_RESET_TOKEN_EXPIRY_MINUTES` (15), only the newest token per account
   stays usable, and consuming a token revokes all refresh sessions.
 - **Logout everywhere** (`POST /auth/logout/all`) revokes every live refresh
@@ -511,6 +512,11 @@ state machine.
   (`prev_hash` → `entry_hash`), mirroring the `audit_logs` design. PostgreSQL
   triggers reject `UPDATE`, `DELETE` and `TRUNCATE`, so the log is append-only
   and GoBD-compliant; `GET /invoices/{id}` re-verifies the chain on read.
+- Freight and pallet costs are deterministic surcharges: a flat net freight fee
+  per offer plus a per-pallet fee multiplied by the operator-supplied pallet
+  count. `PricingService.price_offer` includes them in the net, VAT and gross
+  totals, and the workflow represents them as zero-margin `FREIGHT`/`PALLET`
+  lines so they flow into the offer, invoice line items and VAT breakdown.
 - The dashboard renders that contract directly: the invoices table opens a
   detail sheet with the server totals, VAT split, paid/credited/outstanding
   amounts, e-invoice downloads and the `GS-` credit-note history. The event
@@ -535,7 +541,10 @@ state machine.
 - `POST /integrations/rfq/dispatch` requires an `Idempotency-Key` header. The
   key, request hash and cached response are persisted in
   `integration_idempotency`, so a replay returns the original result without
-  sending a second webhook.
+  sending a second webhook. A crashed dispatch leaves a `pending` row; the next
+  matching request reclaims it after `N8N_DISPATCH_PENDING_TTL_SECONDS` (default
+  900), and `python -m src.admin reclaim-dispatch-reservations` performs the same
+  cleanup for scheduled operations.
 - `POST /integrations/n8n/supplier-quotes` is called by n8n (no JWT). Every
   request must carry `X-Yasmina-Timestamp`, `X-Yasmina-Signature:
   sha256=HMAC_SHA256(secret, "<timestamp>." + raw_body)` and an
@@ -804,7 +813,13 @@ from src.services.pricing_service import PricingService
 from src.services.matching_service import HybridMatchingService
 
 parsed = parse_gaeb("tender.x83")
-pricing = PricingService().price_offer(quote.lines, margin_rate=Decimal("0.15"))
+pricing = PricingService().price_offer(
+    quote.lines,
+    margin_rate=Decimal("0.15"),
+    freight_flat_net=Decimal("25.00"),
+    pallet_unit_net=Decimal("12.50"),
+    pallet_count=2,
+)
 matches = HybridMatchingService().rank(tender_item, catalog_candidates)
 ```
 
@@ -1363,8 +1378,9 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | DeepSeek | `DEEPSEEK_ENABLED`, `DEEPSEEK_API_KEY`, `DEEPSEEK_CHAT_MODEL`, `DEEPSEEK_REASONER_MODEL` |
 | Embeddings | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_TIMEOUT_SECONDS`, `EMBEDDING_BATCH_SIZE`, `EMBEDDING_MAX_RETRIES`, `EMBEDDING_RETRY_BACKOFF_SECONDS` |
 | Embeddings | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` (BGE-M3, 1024) |
-| n8n | `N8N_WEBHOOK_BASE_URL`, `N8N_WEBHOOK_HMAC_SECRET`, `N8N_RFQ_WEBHOOK_PATH`, `N8N_CALLBACK_URL`, `N8N_CALLBACK_MAX_AGE_SECONDS` |
+| n8n | `N8N_WEBHOOK_BASE_URL`, `N8N_WEBHOOK_HMAC_SECRET`, `N8N_RFQ_WEBHOOK_PATH`, `N8N_CALLBACK_URL`, `N8N_CALLBACK_MAX_AGE_SECONDS`, `N8N_DISPATCH_PENDING_TTL_SECONDS` |
 | Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_APPROVAL_CHAT_ID`, `TELEGRAM_ALERTS_ENABLED`, `TELEGRAM_TIMEOUT_SECONDS`, `TELEGRAM_MAX_RETRIES`, `TELEGRAM_RETRY_BACKOFF_SECONDS` |
+| SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME`, `SMTP_STARTTLS`, `SMTP_SSL`, `SMTP_TIMEOUT_SECONDS` |
 | ERPNext | `ERPNEXT_BASE_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `ERPNEXT_ITEM_GROUP`, `ERPNEXT_SELLING_PRICE_LIST`, `ERPNEXT_QUOTATION_SERIES`, `QUOTATION_SYNC_MAX_ATTEMPTS`, `QUOTATION_SYNC_BACKOFF_SECONDS`, `QUOTATION_SYNC_BATCH_SIZE` |
 | Portal scrapers | `PORTAL_CONFIG_FILE`, `SCRAPER_REQUEST_DELAY_SECONDS`, `SCRAPER_ROBOTS_CACHE_SECONDS`, `SCRAPER_MAX_PAGES`, `SCRAPER_MAX_CONCURRENT_PORTALS`, `SCRAPER_DOMAIN_LOCK_TTL_SECONDS`, `SCRAPER_PREFER_API`, `SCRAPER_ARCHIVE_RAW`, `SCRAPER_ARCHIVE_PREFIX`, `SCRAPER_USER_AGENTS`, `SCRAPER_HARVEST_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENT_MB`, `SCRAPER_SCHEDULE_CRON` |
 | HITL | `ED25519_APPROVAL_PRIVATE_KEY`, `ED25519_APPROVAL_PUBLIC_KEY`, `APPROVAL_SIGNATURE_REQUIRED` |
@@ -1379,7 +1395,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 ## Domain model
 
 - **Tender / TenderItem** — tender metadata and normalized positions (quantity,
-  unit, glove size, material, colour, thickness in µm, packaging); portal
+  unit, glove size, material, colour, thickness in mm, packaging); portal
   discoveries use `source_format=PORTAL` and retain the raw artifact key.
 - **SupplierQuote / SupplierQuoteLine / PriceTier** — supplier pricing with MOQ
   and volume breaks.
@@ -1502,6 +1518,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P7.6 — Playwright golden-path E2E: deterministic seed script (approver + admin users, tender, pending offer, failed outbox job), browser flow for four-eyes approval with e-invoice, invoice payment and outbox retry, and a CI job wiring PostgreSQL/MinIO/ClamAV, uvicorn and Vite
 - [x] P7.7 — security & user administration: TOTP enrolment settings page with QR/manual key and ten single-use recovery codes (hashed, acknowledged before dismissal), recovery-code login, an admin Users console (responsive table, create account, role editing, reset tokens, lock/unlock with cancel-focused confirmations), `/auth/users` listing/roles/lock/unlock APIs with self-action guards and audit events, and Playwright coverage for the admin flow and RBAC redirect
 - [x] P7.8 — billing completion UI: responsive container-query invoice table with an invoice detail sheet (authoritative totals, VAT split, paid/credited/outstanding, ZUGFeRD/XRechnung downloads, `GS-` credit-note history), an admin credit-note dialog with amount/reason validation, cancel-first focus and in-place status refresh, a verified GoBD hash-chain event timeline, and a Playwright credit-note → payment flow with the credit-note reason included in the API response
+- [x] P7.9 — business logic & schema finalization: all six assumption questions decided (canonical source formats, dual supplier-quote modes, header/per-line margin semantics, millimetre thickness, approver/four-eyes rules, BGE-M3 at 1024 dimensions), strict margin/thickness validation and migration `0015`, deterministic freight/pallet surcharge lines in the offer, VAT and invoice views, SMTP password-reset delivery with Telegram fallback and `SMTP_*` settings, plus automatic n8n pending-dispatch TTL reclaim and the `reclaim-dispatch-reservations` admin command
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

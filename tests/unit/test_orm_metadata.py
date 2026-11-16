@@ -271,6 +271,23 @@ def test_password_reset_token_shape() -> None:
     }
 
 
+def test_finalized_thickness_margin_and_source_format_shape() -> None:
+    items = Base.metadata.tables["tender_items"]
+    offers = Base.metadata.tables["customer_offers"]
+    lines = Base.metadata.tables["customer_offer_lines"]
+    tenders = Base.metadata.tables["tenders"]
+
+    assert items.c.thickness_mm.type.precision == 6
+    assert items.c.thickness_mm.type.scale == 3
+    assert "ck_tender_items_thickness_range" in {constraint.name for constraint in items.constraints}
+    assert offers.c.margin_rate.type.precision == 6
+    assert offers.c.margin_rate.type.scale == 4
+    assert lines.c.margin_rate.type.precision == 6
+    assert lines.c.margin_rate.type.scale == 4
+    assert "ck_tenders_source_format_valid" in {constraint.name for constraint in tenders.constraints}
+    assert "ck_customer_offers_four_eyes" in {constraint.name for constraint in offers.constraints}
+
+
 def test_billing_event_and_credit_note_shape() -> None:
     events = Base.metadata.tables["invoice_events"]
     notes = Base.metadata.tables["credit_notes"]
