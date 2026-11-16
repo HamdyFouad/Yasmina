@@ -25,7 +25,7 @@ test('admin lists users, creates an account and locks it', async ({ page }) => {
   await expect(createDialog.getByRole('heading', { name: 'Create user' })).toBeVisible()
 
   await createDialog.getByLabel('Username').fill(username)
-  await createDialog.getByLabel(/E-mail/).fill(`${username}@example.test`)
+  await createDialog.getByLabel(/E-mail/).fill(`${username}@musterstadt.de`)
   await createDialog.getByLabel('Initial password').fill(password)
   await createDialog.getByLabel('Sales').check()
   await createDialog.getByRole('button', { name: 'Create user' }).click()
