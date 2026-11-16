@@ -16,6 +16,8 @@ from src.models.enums import ProcurementProcedure
 from src.scrapers.base_scraper import BaseScraper, ScrapedArtifact, ScrapedPage, ScrapeReport
 from src.scrapers.models import (
     DiscoveredTender,
+    DiscoveryDiagnostics,
+    DiscoveryIssue,
     PortalAttachment,
     extract_cpv_codes,
     filter_hygiene_cpv,
@@ -85,6 +87,7 @@ _DETAIL_HINTS = (
 _DETAIL_REJECTS = ("publisher", "apply", "mailto:", "javascript:", "#")
 _ATTACHMENT_SUFFIXES = (".pdf", ".x83", ".d83", ".x84", ".zip", ".xml")
 _ATTACHMENT_REJECTS = ("mailto:", "javascript:", "#", "apply")
+_MAX_DIAGNOSTIC_ISSUES = 50
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +335,8 @@ class HTMLPortalScraper(BaseScraper):
             self.start_url = start_url
         if fetch_details is not None:
             self.fetch_details = fetch_details
+        # Populated by ``discover`` for read-only diagnostics (probe CLI).
+        self.last_diagnostics: DiscoveryDiagnostics | None = None
 
     async def _first_listing_page(self, url: str) -> ScrapedPage:
         page = await self.fetch(url)
@@ -587,6 +592,18 @@ class HTMLPortalScraper(BaseScraper):
         pages_fetched = 0
         since_date = since.date() if since is not None else None
 
+        cards_seen = 0
+        details_fetched = 0
+        issues: list[DiscoveryIssue] = []
+        issues_truncated = 0
+
+        def record_issue(url: str, code: str, message: str) -> None:
+            nonlocal issues_truncated
+            if len(issues) >= _MAX_DIAGNOSTIC_ISSUES:
+                issues_truncated += 1
+                return
+            issues.append(DiscoveryIssue(url=url, code=code, message=message))
+
         while page is not None and pages_fetched < limit:
             if page.final_url in visited:
                 break
@@ -598,6 +615,7 @@ class HTMLPortalScraper(BaseScraper):
             for card in cards:
                 if card.url in seen_tenders:
                     continue
+                cards_seen += 1
                 if since_date is not None and card.publication_date is not None:
                     if card.publication_date < since_date:
                         skipped_stale += 1
@@ -616,6 +634,7 @@ class HTMLPortalScraper(BaseScraper):
                 if should_fetch_detail:
                     try:
                         detail_page = await self.fetch(card.url)
+                        details_fetched += 1
                         detail = self.parse_detail(
                             detail_page.text,
                             detail_page.final_url,
@@ -636,9 +655,37 @@ class HTMLPortalScraper(BaseScraper):
                             errors.extend(attachment_errors)
                     except Exception as exc:
                         errors.append(f"{card.url}: detail fetch failed: {exc}")
+                        record_issue(
+                            card.url,
+                            "detail_failed",
+                            f"detail fetch failed: {exc}",
+                        )
                         if needs_detail:
                             skipped_invalid += 1
                             continue
+
+                if card.title in {"", "Unbenannte Ausschreibung"}:
+                    record_issue(card.url, "missing_title", "no usable title selector matched")
+                if card.deadline is None:
+                    record_issue(
+                        card.url,
+                        "missing_deadline",
+                        "no submission deadline found in the card or detail page",
+                    )
+                if card.publication_date is None:
+                    record_issue(
+                        card.url,
+                        "missing_publication_date",
+                        "no publication date found in the card or detail page",
+                    )
+                if not card.client:
+                    record_issue(
+                        card.url,
+                        "missing_client",
+                        "no contracting authority found in the card or detail page",
+                    )
+                if not card.cpv_codes:
+                    record_issue(card.url, "missing_cpv", "no CPV code found in the card or detail page")
 
                 if not filter_hygiene_cpv(card.cpv_codes):
                     skipped_cpv += 1
@@ -660,6 +707,7 @@ class HTMLPortalScraper(BaseScraper):
                     )
                 except Exception as exc:
                     errors.append(f"{card.url}: invalid metadata: {exc}")
+                    record_issue(card.url, "invalid_metadata", f"invalid metadata: {exc}")
                     skipped_invalid += 1
                     continue
                 if tender is None:
@@ -677,8 +725,22 @@ class HTMLPortalScraper(BaseScraper):
                 page = await self.fetch(next_url)
             except Exception as exc:
                 errors.append(f"{next_url}: pagination fetch failed: {exc}")
+                record_issue(next_url, "pagination_failed", f"pagination fetch failed: {exc}")
                 break
 
+        if cards_seen == 0 and pages_fetched > 0:
+            record_issue(
+                self.start_url,
+                "no_cards",
+                "no recognisable tender cards matched the configured selectors",
+            )
+
+        self.last_diagnostics = DiscoveryDiagnostics(
+            cards_seen=cards_seen,
+            details_fetched=details_fetched,
+            issues=tuple(issues),
+            issues_truncated=issues_truncated,
+        )
         self.last_report = ScrapeReport(
             portal=self.portal_name,
             discovered=tuple(discovered),

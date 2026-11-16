@@ -4,7 +4,7 @@
 # enabled: true. Entries marked verified:false are discovery targets whose
 # start_url and engine must be validated against the live portal before they
 # are enabled. Only verified portals are enabled by default so a scheduled run
-# never hammers an unverified endpoint.
+# never hammers an unverified endpoint. Verify a disabled entry without writing to\n# PostgreSQL/MinIO with: python -m src.worker probe --portal <id> --json
 version: 1
 defaults:
   engine: standard

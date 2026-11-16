@@ -41,6 +41,7 @@ from src.scrapers.engines import build_engine_scraper
 from src.scrapers.ingestion import IngestionPipeline, PortalIngestionBridge, PortalIngestionResult
 from src.scrapers.oeffentlichevergabe import OeffentlicheVergabeScraper
 from src.scrapers.portal_config import PortalTarget, load_portal_targets
+from src.scrapers.probe import format_probe_report, probe_portal
 from src.services.audit_service import AuditService
 from src.services.ingestion_processor import TenderIngestionProcessor
 from src.services.quotation_sync import process_quotation_sync_jobs_once
@@ -943,6 +944,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     process.add_argument("--json", action="store_true", dest="as_json")
 
+    probe = subparsers.add_parser(
+        "probe",
+        help="read-only diagnostic scrape of one portal (no DB/MinIO/outbox writes)",
+    )
+    probe.add_argument(
+        "--portal",
+        required=True,
+        help="portal id from portals.yaml; enabled and disabled entries are accepted",
+    )
+    probe.add_argument(
+        "--max-pages",
+        type=int,
+        default=1,
+        help="listing pages to fetch (default: 1, first page only)",
+    )
+    probe.add_argument("--json", action="store_true", dest="as_json")
+
     schedule = subparsers.add_parser("schedule", help="run the daily cron scheduler")
     schedule.add_argument("--portal", default="all", help="target id from portals.yaml, or all")
     schedule.add_argument("--cron", default=None, help="five-field cron expression")
@@ -1031,6 +1049,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for summary in synced:
                     print(f"{summary['job_id']}: {summary['status']} (quotation sync)")
             return 0
+
+        if args.command == "probe":
+            targets = load_portal_targets(settings.portal_config_file, enabled_only=False)
+            target = next((item for item in targets if item.id == args.portal), None)
+            if target is None:
+                raise ValueError(
+                    f"unknown portal {args.portal!r}; expected one of {sorted(item.id for item in targets)}"
+                )
+            report = asyncio.run(probe_portal(target, settings, max_pages=args.max_pages))
+            if args.as_json:
+                # ASCII-escaped JSON survives Windows consoles and pipes that are
+                # not UTF-8; the payload stays valid JSON either way.
+                print(json.dumps(report.as_dict(), indent=2, ensure_ascii=True))
+            else:
+                print(format_probe_report(report))
+            return 0 if report.notices_parsed > 0 else 2
 
         runs = asyncio.run(
             _run_with_shutdown(

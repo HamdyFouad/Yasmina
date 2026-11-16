@@ -660,6 +660,35 @@ python -m src.worker process --limit 20
 python -m src.worker process --interval 30
 ```
 
+#### Port pilot probe (read-only)
+
+Before enabling a catalogue entry, dry-run its engine without touching any
+system of record:
+
+```powershell
+# first listing page, human-readable report
+python -m src.worker probe --portal nrw
+
+# machine-readable report for piping (JSON on stdout, logs on stderr)
+python -m src.worker probe --portal nrw --max-pages 2 --json
+```
+
+The probe fetches `robots.txt`, the listing and (when selectors need them)
+detail pages through the configured engine with archival and attachment
+harvesting forced off and a storage stub that raises on any write. It never
+opens a database session, never writes MinIO and never enqueues ingestion or
+outbox jobs. It accepts disabled entries (`enabled: false`), which is what makes
+the 118 rollout candidates safe to test.
+
+The report distinguishes **notices discovered** (listing cards recognised) from
+**notices parsed** (cards that produced a complete tender) and lists extraction
+issues by code (`missing_deadline`, `missing_title`, `missing_client`,
+`missing_cpv`, `missing_publication_date`, `detail_failed`, `no_cards`). When
+the engine succeeds but parses zero notices, the report prints an explicit
+**Zero-Result Warning** pointing at a dead `start_url`, an API-first change or a
+modified layout. Exit codes: `0` parsed at least one notice, `2` zero results or
+a configuration error, `1` an unexpected fetch/engine failure.
+
 The scheduler is dependency-free and logs job failures without terminating.
 Network discovery runs in batches of `SCRAPER_MAX_CONCURRENT_PORTALS` (default 6)
 across different domains; persistence and outbox writes remain sequential. Each

@@ -355,3 +355,27 @@ class DiscoveredTender:
             created_at=now,
             updated_at=now,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryIssue:
+    """One extraction problem found while parsing a portal listing."""
+
+    url: str
+    code: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryDiagnostics:
+    """Read-only counters/notes collected by :meth:`HTMLPortalScraper.discover`.
+
+    The probe CLI renders these so an operator can see *why* a portal yielded
+    zero results (dead URL, changed layout, missing selectors) without touching
+    the database or object storage.
+    """
+
+    cards_seen: int = 0
+    details_fetched: int = 0
+    issues: tuple[DiscoveryIssue, ...] = ()
+    issues_truncated: int = 0
