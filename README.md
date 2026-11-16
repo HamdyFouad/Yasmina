@@ -309,9 +309,11 @@ automatically. The dashboard ships the branded login, protected shell,
 cookie-based JWT/refresh interceptor, a live overview with KPIs and the audit
 activity feed, the tender board with a detail sheet (source download, catalogue
 matching and linked offer pricing), the paginated invoice table with
-ZUGFeRD/XRechnung downloads plus the admin-only payment dialog, and the
+ZUGFeRD/XRechnung downloads plus the admin-only payment dialog, the
 Operations → Outbox console where admins/approvers retry failed ERPNext
-quotation jobs. See `frontend/README.md` for the view-by-view scope.
+quotation jobs and jump to the linked offer, and the Offers workspace with
+status/owner filters, VAT and line-item detail, and the four-eyes approval
+dialog. See `frontend/README.md` for the view-by-view scope.
 
 If the dashboard is hosted on another origin, set `VITE_API_BASE_URL` to the
 absolute backend URL, allow the origin via `CORS_ALLOWED_ORIGINS` on the API, and
@@ -348,8 +350,8 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | POST | `/approvals/verify` | viewer/approver/admin |
 | POST | `/approvals/approve` | approver/admin, four-eyes enforced |
 | GET | `/approvals/{offer_number}/documents/{format}` | viewer/approver/admin |
-| GET | `/offers` | sales (own), viewer/admin (all); supports `tender_id` and `status` |
-| GET | `/offers/{id}` | sales (own), viewer/admin (all) |
+| GET | `/offers` | sales (own subject only), approver/viewer/admin (all); supports `tender_id`, `status` and `owner` |
+| GET | `/offers/{id}` | sales (own subject only), approver/viewer/admin (all); includes a server-computed `vat_breakdown` |
 | GET | `/invoices` | sales (own), viewer/admin (all) |
 | GET | `/invoices/{id}` | sales (own), viewer/admin (all) |
 | GET | `/invoices/{id}/documents/{zugferd\|xrechnung}` | sales (own), viewer/admin (all) |
@@ -1435,6 +1437,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P7.1 — staging deployment: GHCR-built SHA images, SSH rollout with `pg_dump`, Alembic and smoke-tested rollback, plus a staging Caddy edge with real Let's Encrypt TLS
 - [x] P7.2 — approval key custody and outbox operations: server-side Ed25519 signing from `ED25519_APPROVAL_PRIVATE_KEY` with four-eyes enforcement, paginated `/ops/outbox` + admin/approver retry, Telegram alerts for exhausted quotation jobs, and an accessible Outbox console in the dashboard
 - [x] P7.3 — portal rollout factory: read-only `worker probe --portal <id>` dry run with discovered-vs-parsed counts, per-selector extraction diagnostics, zero-result warnings and JSON output for automation
+- [x] P7.4 — offer & approval workspace: approver read access to offers with an optional owner filter and a server-computed VAT breakdown, a responsive `/offers` console with status/owner filters and a detail side panel, a server-signed four-eyes approval dialog with 403 handling, and outbox rows deep-linking to the linked offer
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

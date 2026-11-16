@@ -9,6 +9,7 @@ import {
   RefreshCw,
   RotateCcw,
 } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { EmptyState } from '@/components/empty-state'
@@ -203,7 +204,7 @@ export function OutboxPage() {
             aria-labelledby={captionId}
             aria-busy={jobsQuery.isFetching}
             tabIndex={0}
-            className="outbox-table max-h-[70vh] overflow-auto focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+            className="stacked-table max-h-[70vh] overflow-auto focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           >
             <table className="w-full min-w-[880px] border-collapse text-sm">
               <caption id={captionId} className="sr-only">
@@ -261,7 +262,13 @@ export function OutboxPage() {
                         scope="row"
                         className="px-3 py-3 text-left align-top font-mono text-sm font-medium"
                       >
-                        {job.offer_number}
+                        <Link
+                          to={`/offers?offer=${encodeURIComponent(job.offer_id)}`}
+                          aria-label={`Open offer ${job.offer_number}`}
+                          className="rounded-sm text-primary underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                        >
+                          {job.offer_number}
+                        </Link>
                         {job.quotation_name !== null ? (
                           <span className="block font-sans text-xs font-normal text-muted-foreground">
                             {job.quotation_name}

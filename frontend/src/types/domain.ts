@@ -399,3 +399,26 @@ export interface OutboxJobsResponse {
 export interface OutboxRetryResponse {
   job: QuotationSyncJob
 }
+export interface OfferVatSplit {
+  rate: string
+  taxable_amount: string
+  tax_amount: string
+}
+
+export interface OfferDetailResponse {
+  offer: CustomerOffer
+  vat_breakdown: OfferVatSplit[]
+}
+
+export interface ApproveOfferResponse {
+  offer: CustomerOffer
+  artifacts: Record<string, unknown> | null
+  erpnext: {
+    status: string
+    job_id?: string
+    quotation_name?: string
+    created?: boolean
+    reason?: string
+  }
+  created: boolean
+}

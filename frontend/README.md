@@ -43,12 +43,10 @@ npm run preview    # serve the built bundle
 | `/login` | Username/password login with an MFA (TOTP) step when the account requires it. |
 | `/` | Overview: owner-scoped KPI cards, gross invoiced/paid/outstanding, recent audit events (admin/viewer), ERPNext outbox counts (admin/viewer) and session details. |
 | `/tenders` | Paginated tender board with status filter. Rows open a detail sheet with metadata, the original GAEB/PDF download, hybrid catalogue matching and linked pricing offers with their line/VAT breakdown and totals. |
+| `/offers` | Paginated offer workspace with status and owner filters, a responsive table, a detail side panel (server VAT breakdown, signature state, line items) and the approver/admin four-eyes approval dialog. `?offer=<id>` deep-links the side panel (used by the Outbox). |
 | `/invoices` | Paginated invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, and the admin-only "Mark as paid" dialog. |
-| `/ops/outbox` | Operations console for quotation_sync_jobs: status filter, attempts/retry budget, next attempt, last ERPNext error and a Retry action for failed jobs (admin/approver). |
+| `/ops/outbox` | Operations console for quotation_sync_jobs: status filter, attempts/retry budget, next attempt, last ERPNext error, a Retry action for failed jobs (admin/approver) and a link to the linked offer. |
 | `/admin/catalog` | Admin-only catalogue override table with supplier/article filters, pin badges and a dialog to add, replace or clear pinned merge fields. |
-
-The `Offers` navigation entry is still a placeholder; offer pricing is currently
-shown inside the tender detail sheet, filtered with `GET /offers?tender_id=...`.
 
 ## Auth flow
 
@@ -70,7 +68,9 @@ shown inside the tender detail sheet, filtered with `GET /offers?tender_id=...`.
 - `POST /auth/token`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`
 - `GET /tenders`, `GET /tenders/{id}`, `GET /tenders/{id}/document`
 - `POST /tenders/{id}/match`
-- `GET /offers?tender_id={id}`
+- `GET /offers?tender_id={id}`, `GET /offers` (status/owner/limit/offset),
+  `GET /offers/{id}` (includes the server-computed `vat_breakdown`)
+- `POST /approvals/approve` (server signs the offer for the authenticated approver)
 - `GET /invoices`, `GET /invoices/{id}/documents/{zugferd|xrechnung}`,
   `POST /invoices/{id}/payments`
 - `GET /ops/summary`, `GET /ops/activity`, `GET /ops/outbox-status`
@@ -96,7 +96,7 @@ shown inside the tender detail sheet, filtered with `GET /offers?tender_id=...`.
 - [x] Admin-only "Mark as paid" payment dialog
 - [x] Admin catalogue override table and pin/replace/clear dialog
 - [x] Outbox console with status filter, pagination and a failed-job Retry action
-- [ ] Offer workspace beyond the tender detail sheet
+- [x] Offer workspace with status/owner filters, detail side panel and four-eyes approval dialog
 - [ ] Browser end-to-end tests
 
 ## Production edge

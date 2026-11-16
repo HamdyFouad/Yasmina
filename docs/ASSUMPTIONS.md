@@ -842,3 +842,33 @@ for deterministic fixture and chain-verification tests.
   `NET_BIND_SERVICE` capability and no-new-privileges. Replacing `localhost`
   with the public hostname and removing `tls internal` is the production
   deployment change.
+
+## Offer & approval workspace assumptions (P7.4)
+
+- Offer reads are owner-scoped only for *pure* sales users. A principal holding
+  `approver` (or `admin`/`viewer`) sees every offer, including a dual-role
+  `sales` + `approver` user; enforcing owner scoping there would make four-eyes
+  approval impossible. The approval endpoint remains the authority on the
+  four-eyes rule.
+- `GET /offers` accepts an optional exact-match `owner` filter for
+  approver/viewer/admin. Pure sales users have the filter ignored and are always
+  scoped to their own subject, so a crafted `?owner=` cannot escape ownership.
+- `GET /offers/{id}` adds a server-computed `vat_breakdown` (`rate`,
+  `taxable_amount`, `tax_amount`) built from the offer lines with the same
+  `Decimal`/`q2` rounding as `CustomerOffer.total_vat`. The dashboard never
+  re-derives financial values from string fields.
+- The `/offers` workspace pages 25 rows with status and owner filters, a
+  container-query stacked table and a detail side panel (server VAT breakdown,
+  signature state, line items). `?offer=<id>` deep-links the panel and is used by
+  the Outbox row link.
+- The approval dialog is the project's pinned Radix dialog primitive, which
+  supplies the native-`<dialog>` contract (top layer, inert page, focus
+  containment and return, Esc/overlay dismissal). It is named by `DialogTitle`
+  and described by `DialogDescription`, focuses Cancel as the safe action, and
+  never hand-rolls a focus trap or `aria-modal`. A four-eyes rejection is shown
+  inline with `role="alert"` while the dialog stays open; success closes the
+  dialog, toasts and invalidates the offer list, detail and ops widgets.
+- The Approve action is offered for `DRAFT`/`PENDING_APPROVAL` rows to
+  approver/admin only. Self-owned rows keep the action enabled but warn that the
+  server will reject the signature, so the documented 403 path is reachable and
+  displayed rather than hidden by client-side logic.

@@ -425,19 +425,23 @@ def test_offer_read_routes_enforce_sales_ownership(api: Any) -> None:
     other = api.client.get(f"/api/v1/offers/{offer_id}", headers=auth(SALES_B))
     viewer = api.client.get(f"/api/v1/offers/{offer_id}", headers=auth(VIEWER))
     admin = api.client.get(f"/api/v1/offers/{offer_id}", headers=auth(ADMIN))
+    approver = api.client.get(f"/api/v1/offers/{offer_id}", headers=auth(APPROVER))
 
     assert own.status_code == 200
     assert other.status_code == 403
     assert viewer.status_code == 200
     assert admin.status_code == 200
+    assert approver.status_code == 200
     assert own.json()["offer"]["offer_number"] == "AN-2026-0200"
 
     own_list = api.client.get("/api/v1/offers", headers=auth(SALES_A))
     other_list = api.client.get("/api/v1/offers", headers=auth(SALES_B))
     viewer_list = api.client.get("/api/v1/offers", headers=auth(VIEWER))
+    approver_list = api.client.get("/api/v1/offers", headers=auth(APPROVER))
     assert own_list.json()["count"] == 1
     assert other_list.json()["count"] == 0
     assert viewer_list.json()["count"] == 1
+    assert approver_list.json()["count"] == 1
 
 
 def test_missing_offer_is_404(api: Any) -> None:
@@ -465,3 +469,71 @@ def test_offers_can_be_filtered_by_tender(api: Any) -> None:
     assert response.status_code == 200, response.text
     assert [offer["offer_number"] for offer in response.json()["offers"]] == ["AN-2026-0300"]
     assert response.json()["count"] == 1
+
+
+def test_approvers_read_every_offer_and_can_filter_by_owner(api: Any) -> None:
+    first = make_offer(offer_number="AN-2026-0400").model_copy(update={"owner": "sales-a"})
+    second = make_offer(offer_number="AN-2026-0401").model_copy(update={"owner": "sales-b"})
+    api.repository.offers[first.offer_number] = first
+    api.repository.offers[second.offer_number] = second
+
+    listing = api.client.get("/api/v1/offers", headers=auth(APPROVER))
+    assert listing.status_code == 200, listing.text
+    assert listing.json()["count"] == 2
+
+    filtered = api.client.get(
+        "/api/v1/offers",
+        params={"owner": "sales-b"},
+        headers=auth(APPROVER),
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert filtered.json()["count"] == 1
+    assert filtered.json()["offers"][0]["offer_number"] == "AN-2026-0401"
+
+    detail = api.client.get(f"/api/v1/offers/{first.id}", headers=auth(APPROVER))
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["offer"]["offer_number"] == "AN-2026-0400"
+
+
+def test_sales_and_approver_dual_role_sees_the_global_offer_view(api: Any) -> None:
+    foreign = make_offer(offer_number="AN-2026-0500").model_copy(update={"owner": "sales-b"})
+    api.repository.offers[foreign.offer_number] = foreign
+    dual_role = create_access_token(SETTINGS, "sales-a", [Role.SALES, Role.APPROVER])
+
+    listing = api.client.get("/api/v1/offers", headers=auth(dual_role))
+    detail = api.client.get(f"/api/v1/offers/{foreign.id}", headers=auth(dual_role))
+
+    assert listing.status_code == 200, listing.text
+    assert listing.json()["count"] == 1
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["offer"]["offer_number"] == "AN-2026-0500"
+
+
+def test_pure_sales_users_cannot_escape_their_owner_scope(api: Any) -> None:
+    foreign = make_offer(offer_number="AN-2026-0550").model_copy(update={"owner": "sales-b"})
+    api.repository.offers[foreign.offer_number] = foreign
+
+    response = api.client.get(
+        "/api/v1/offers",
+        params={"owner": "sales-b"},
+        headers=auth(SALES_A),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["count"] == 0
+
+
+def test_offer_detail_includes_the_server_vat_breakdown(api: Any) -> None:
+    offer = make_offer(offer_number="AN-2026-0600")
+    api.repository.offers[offer.offer_number] = offer
+
+    response = api.client.get(f"/api/v1/offers/{offer.id}", headers=auth(VIEWER))
+
+    assert response.status_code == 200, response.text
+    assert response.json()["vat_breakdown"] == [
+        {
+            "rate": "0.19",
+            "taxable_amount": str(offer.total_net),
+            "tax_amount": str(offer.total_vat),
+        }
+    ]
