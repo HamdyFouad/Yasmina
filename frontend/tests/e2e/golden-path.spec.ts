@@ -145,7 +145,7 @@ test('golden path: approve with invoice, pay it, and retry the outbox job', asyn
       .getByRole('button', { name: `Retry quotation ${fixtures.outbox_offer_number}` })
       .click()
 
-    await expect(adminPage.getByText('Retry queued')).toBeVisible()
+    await expect(adminPage.getByText('Retry queued', { exact: true })).toBeVisible()
     await expect(outboxRow.getByText('Pending', { exact: true })).toBeVisible()
     await expect(outboxRow.getByText('0/1', { exact: true })).toBeVisible()
   } finally {
