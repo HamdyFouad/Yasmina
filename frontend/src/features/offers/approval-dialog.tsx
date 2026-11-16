@@ -163,7 +163,7 @@ export function ApprovalDialog({
 
   return (
     <Dialog open onOpenChange={(open) => (!open ? close() : undefined)}>
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
         <form ref={formRef} noValidate className="space-y-4" onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>Approve offer {offer.offer_number}?</DialogTitle>
