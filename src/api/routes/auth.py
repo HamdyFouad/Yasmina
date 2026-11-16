@@ -29,6 +29,7 @@ from src.api.schemas import (
     RefreshTokenRequest,
     TokenRequest,
     UserCreatePayload,
+    UserRolesPayload,
 )
 from src.api.security import (
     AuthError,
@@ -57,7 +58,9 @@ from src.services.mfa_service import (
     build_otpauth_uri,
     decrypt_secret,
     encrypt_secret,
+    generate_recovery_codes,
     generate_secret,
+    hash_recovery_code,
     verify_totp,
 )
 from src.services.password_service import PasswordHashError, validate_password
@@ -179,6 +182,20 @@ async def _verify_second_factor(
     return verification.step
 
 
+async def _verify_recovery_code(
+    users: UserRepository,
+    user: UserView,
+    code: str | None,
+) -> None:
+    """Burn one single-use recovery code for an MFA-enabled account."""
+
+    if code is None or not code.strip():
+        raise _mfa_required()
+    if not await users.consume_mfa_recovery_code(user.id, hash_recovery_code(code)):
+        await users.record_failed_mfa(user.id)
+        raise _mfa_required("invalid recovery code")
+
+
 @router.post("/token")
 async def issue_token(
     payload: TokenRequest,
@@ -221,8 +238,19 @@ async def issue_token(
                 headers={"WWW-Authenticate": "Bearer"},
             ) from exc
         if user.mfa_enabled:
-            step = await _verify_second_factor(settings, users, user, payload.totp_code)
-            await users.record_mfa_step(user.id, step)
+            if payload.recovery_code:
+                await _verify_recovery_code(users, user, payload.recovery_code)
+                remaining = await users.mfa_recovery_codes_remaining(user.id)
+                await _audit(
+                    audit,
+                    AuditEventType.USER_MFA_RECOVERY_CODE_USED,
+                    actor=user.username,
+                    entity_id=str(user.id),
+                    payload={"remaining": remaining, "ip_address": ip_address},
+                )
+            else:
+                step = await _verify_second_factor(settings, users, user, payload.totp_code)
+                await users.record_mfa_step(user.id, step)
         principal = _principal_for_user(user)
 
     if user is not None:
@@ -383,10 +411,14 @@ async def me(
     principal: Principal = Depends(require_roles(Role.ADMIN, Role.SALES, Role.APPROVER, Role.VIEWER)),
 ) -> dict[str, object]:
     user = await users.get_by_username(principal.sub)
+    remaining = 0
+    if user is not None and user.mfa_enabled:
+        remaining = await users.mfa_recovery_codes_remaining(user.id)
     return {
         "subject": principal.sub,
         "roles": [role.value for role in principal.roles],
         "mfa_enabled": user.mfa_enabled if user is not None else None,
+        "recovery_codes_remaining": remaining,
     }
 
 
@@ -419,6 +451,110 @@ async def create_user(
         payload={"username": user.username, "roles": [role.value for role in user.roles]},
     )
     return {"user": user.as_dict()}
+
+
+@router.get("/users")
+async def list_users(
+    principal: Principal = Depends(require_roles(Role.ADMIN)),
+    users: UserRepository = Depends(get_user_repository),
+) -> dict[str, object]:
+    """List database users with role, MFA and lockout state (admin only)."""
+
+    records = await users.list_users()
+    return {"users": [user.as_dict() for user in records], "count": len(records)}
+
+
+@router.patch("/users/{username}/roles")
+async def update_user_roles(
+    username: str,
+    payload: UserRolesPayload,
+    principal: Principal = Depends(require_roles(Role.ADMIN)),
+    users: UserRepository = Depends(get_user_repository),
+    audit: AuditService = Depends(get_audit_service),
+) -> dict[str, object]:
+    """Replace another account's roles; self-demotion is rejected."""
+
+    target = await users.get_by_username(username)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found")
+    if target.username == principal.sub:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="you cannot change your own roles",
+        )
+    previous = [role.value for role in target.roles]
+    try:
+        updated = await users.set_roles(target.id, payload.roles)
+    except UserRepositoryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    await _audit(
+        audit,
+        AuditEventType.USER_ROLES_CHANGED,
+        actor=principal.sub,
+        entity_id=str(target.id),
+        payload={
+            "username": target.username,
+            "previous_roles": previous,
+            "roles": [role.value for role in updated.roles],
+        },
+    )
+    return {"user": updated.as_dict()}
+
+
+@router.post("/users/{username}/lock")
+async def lock_user(
+    username: str,
+    principal: Principal = Depends(require_roles(Role.ADMIN)),
+    users: UserRepository = Depends(get_user_repository),
+    refresh_tokens: RefreshTokenRepository = Depends(get_refresh_token_repository),
+    audit: AuditService = Depends(get_audit_service),
+) -> dict[str, object]:
+    """Deactivate another account and revoke its refresh sessions."""
+
+    target = await users.get_by_username(username)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found")
+    if target.username == principal.sub:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="you cannot lock your own account",
+        )
+    updated = await users.set_active(target.id, False)
+    revoked = await refresh_tokens.revoke_all_for_user(target.id)
+    await _audit(
+        audit,
+        AuditEventType.USER_LOCKED,
+        actor=principal.sub,
+        entity_id=str(target.id),
+        payload={"username": target.username, "refresh_tokens_revoked": revoked},
+    )
+    return {"user": updated.as_dict(), "refresh_tokens_revoked": revoked}
+
+
+@router.post("/users/{username}/unlock")
+async def unlock_user(
+    username: str,
+    principal: Principal = Depends(require_roles(Role.ADMIN)),
+    users: UserRepository = Depends(get_user_repository),
+    audit: AuditService = Depends(get_audit_service),
+) -> dict[str, object]:
+    """Reactivate an account and clear its brute-force lockout counters."""
+
+    target = await users.get_by_username(username)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found")
+    updated = await users.unlock(target.id)
+    await _audit(
+        audit,
+        AuditEventType.USER_UNLOCKED,
+        actor=principal.sub,
+        entity_id=str(target.id),
+        payload={"username": target.username},
+    )
+    return {"user": updated.as_dict()}
 
 
 @router.post("/password/change")
@@ -690,14 +826,27 @@ async def verify_mfa_enrolment(
             detail="invalid mfa code",
         )
     await users.activate_mfa(user.id, verification.step)
+    recovery_codes = generate_recovery_codes()
+    await users.replace_mfa_recovery_codes(
+        user.id,
+        [hash_recovery_code(code) for code in recovery_codes],
+    )
     await _audit(
         audit,
         AuditEventType.USER_MFA_ENABLED,
         actor=principal.sub,
         entity_id=str(user.id),
-        payload={"issuer": settings.mfa_issuer, "digits": settings.mfa_totp_digits},
+        payload={
+            "issuer": settings.mfa_issuer,
+            "digits": settings.mfa_totp_digits,
+            "recovery_codes": len(recovery_codes),
+        },
     )
-    return {"status": "mfa_enabled", "mfa_enabled": True}
+    return {
+        "status": "mfa_enabled",
+        "mfa_enabled": True,
+        "recovery_codes": recovery_codes,
+    }
 
 
 @router.post("/mfa/disable")

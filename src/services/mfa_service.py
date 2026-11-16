@@ -25,11 +25,15 @@ from src.config import Settings
 __all__ = [
     "MfaConfigurationError",
     "MfaVerification",
+    "RECOVERY_CODE_COUNT",
     "build_otpauth_uri",
     "decrypt_secret",
     "encrypt_secret",
+    "generate_recovery_codes",
     "generate_secret",
+    "hash_recovery_code",
     "normalize_code",
+    "normalize_recovery_code",
     "totp_at",
     "totp_step",
     "verify_totp",
@@ -38,6 +42,8 @@ __all__ = [
 _DEFAULT_INTERVAL = 30
 _DEFAULT_DIGITS = 6
 _SECRET_BYTES = 20
+_RECOVERY_BYTES = 8
+RECOVERY_CODE_COUNT = 10
 
 
 class MfaConfigurationError(RuntimeError):
@@ -48,6 +54,33 @@ def generate_secret() -> str:
     """Return a fresh 160-bit base32 secret without padding."""
 
     return base64.b32encode(secrets.token_bytes(_SECRET_BYTES)).decode("ascii").rstrip("=")
+
+
+def generate_recovery_codes(count: int = RECOVERY_CODE_COUNT) -> list[str]:
+    """Return ``count`` high-entropy single-use recovery codes.
+
+    Each code carries 64 random bits formatted as ``XXXX-XXXX-XXXX-XXXX``.
+    Only the SHA-256 digest is stored, so the plaintext exists exactly once.
+    """
+
+    codes: list[str] = []
+    for _ in range(max(1, count)):
+        raw = secrets.token_hex(_RECOVERY_BYTES).upper()
+        codes.append("-".join(raw[index : index + 4] for index in range(0, len(raw), 4)))
+    return codes
+
+
+def normalize_recovery_code(code: str) -> str:
+    """Strip formatting and case so users can retype codes freely."""
+
+    return "".join(character for character in code.upper() if character.isalnum())
+
+
+def hash_recovery_code(code: str) -> str:
+    """SHA-256 digest used as the stored recovery-code lookup key."""
+
+    normalized = normalize_recovery_code(code)
+    return hashlib.sha256(normalized.encode("ascii", "ignore")).hexdigest()
 
 
 def _secret_bytes(secret: str) -> bytes:

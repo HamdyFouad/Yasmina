@@ -17,6 +17,7 @@ interface AuthContextValue {
   isAuthenticated: boolean
   login: (credentials: LoginRequest) => Promise<void>
   logout: () => Promise<void>
+  refreshUser: () => Promise<void>
   hasRole: (...roles: Role[]) => boolean
 }
 
@@ -78,6 +79,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+  const refreshUser = React.useCallback(async (): Promise<void> => {
+    try {
+      setUser(await fetchMe())
+    } catch {
+      // Keep the current session; a 401 is handled by the API client.
+    }
+  }, [])
+
   const roles = React.useMemo<Role[]>(() => user?.roles ?? [], [user])
 
   const hasRole = React.useCallback(
@@ -98,9 +107,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isAuthenticated: status === 'authenticated',
       login,
       logout,
+      refreshUser,
       hasRole,
     }),
-    [status, user, roles, login, logout, hasRole],
+    [status, user, roles, login, logout, refreshUser, hasRole],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

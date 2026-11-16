@@ -8,8 +8,10 @@ import {
   LogOut,
   Menu,
   ReceiptText,
+  Settings,
   ShieldCheck,
   Tags,
+  Users,
   X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -74,7 +76,18 @@ const NAV_GROUPS: NavGroup[] = [
         end: false,
         roles: ['admin'],
       },
+      {
+        to: '/admin/users',
+        label: 'Users',
+        icon: Users,
+        end: false,
+        roles: ['admin'],
+      },
     ],
+  },
+  {
+    label: 'Account',
+    items: [{ to: '/settings', label: 'Security', icon: Settings, end: false }],
   },
 ]
 
@@ -143,7 +156,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 function Header({ onOpenMobileNav }: { onOpenMobileNav: () => void }) {
-  const { user, logout } = useAuth()
+  const { user, logout, hasRole } = useAuth()
   const navigate = useNavigate()
   const [loggingOut, setLoggingOut] = React.useState(false)
 
@@ -200,6 +213,25 @@ function Header({ onOpenMobileNav }: { onOpenMobileNav: () => void }) {
             <div className="truncate font-medium text-foreground">{user?.subject}</div>
             <div className="truncate">{user?.roles.map(titleCase).join(' · ')}</div>
           </div>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => {
+              navigate('/settings')
+            }}
+          >
+            <Settings className="h-4 w-4" />
+            Security settings
+          </DropdownMenuItem>
+          {hasRole('admin') ? (
+            <DropdownMenuItem
+              onSelect={() => {
+                navigate('/admin/users')
+              }}
+            >
+              <Users className="h-4 w-4" />
+              Manage users
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuSeparator />
           <DropdownMenuItem
             onSelect={() => {

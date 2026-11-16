@@ -11,6 +11,7 @@ export interface LoginRequest {
   username: string
   password: string
   totp_code?: string
+  recovery_code?: string
 }
 
 export interface TokenResponse {
@@ -24,6 +25,62 @@ export interface MeResponse {
   subject: string
   roles: Role[]
   mfa_enabled: boolean | null
+  recovery_codes_remaining: number
+}
+
+export interface UserSummary {
+  id: string
+  username: string
+  email: string | null
+  roles: Role[]
+  is_active: boolean
+  mfa_enabled: boolean
+  failed_login_attempts: number
+  locked_until: string | null
+  last_login_at: string | null
+}
+
+export interface UserListResponse {
+  users: UserSummary[]
+  count: number
+}
+
+export interface UserCreateRequest {
+  username: string
+  password: string
+  email?: string
+  roles: Role[]
+}
+
+export interface UserRolesRequest {
+  roles: Role[]
+}
+
+export interface MfaSetupResponse {
+  secret: string
+  otpauth_uri: string
+  issuer: string
+  digits: number
+  period: number
+}
+
+export interface MfaVerifyResponse {
+  status: string
+  mfa_enabled: boolean
+  recovery_codes: string[]
+}
+
+export interface MfaDisableResponse {
+  status: string
+  mfa_enabled: boolean
+}
+
+export interface PasswordResetIssueResponse {
+  status: string
+  username: string
+  reset_token: string
+  expires_in: number
+  expires_at: string
 }
 
 export type SessionStatus = 'loading' | 'authenticated' | 'unauthenticated'

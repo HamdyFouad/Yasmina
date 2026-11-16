@@ -8,7 +8,9 @@ import { InvoicesPage } from '@/features/invoices/invoices-page'
 import { NotFoundPage } from '@/features/not-found-page'
 import { OffersPage } from '@/features/offers/offers-page'
 import { OutboxPage } from '@/features/outbox/outbox-page'
+import { SettingsPage } from '@/features/settings/settings-page'
 import { TendersPage } from '@/features/tenders/tenders-page'
+import { UsersPage } from '@/features/admin/users-page'
 
 export const router = createBrowserRouter([
   {
@@ -26,6 +28,7 @@ export const router = createBrowserRouter([
           { path: 'tenders', element: <TendersPage /> },
           { path: 'offers', element: <OffersPage /> },
           { path: 'invoices', element: <InvoicesPage /> },
+          { path: 'settings', element: <SettingsPage /> },
           {
             path: 'ops/outbox',
             element: (
@@ -39,6 +42,14 @@ export const router = createBrowserRouter([
             element: (
               <RequireAdmin>
                 <CatalogAdminPage />
+              </RequireAdmin>
+            ),
+          },
+          {
+            path: 'admin/users',
+            element: (
+              <RequireAdmin>
+                <UsersPage />
               </RequireAdmin>
             ),
           },

@@ -34,6 +34,7 @@ EXPECTED_TABLES = {
     "refresh_tokens",
     "token_blocklist",
     "password_reset_tokens",
+    "mfa_recovery_codes",
     "credit_note_number_sequences",
     "credit_notes",
     "invoice_events",

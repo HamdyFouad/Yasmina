@@ -36,6 +36,7 @@ __all__ = [
     "SupplierQuoteCallbackPayload",
     "TokenRequest",
     "UserCreatePayload",
+    "UserRolesPayload",
     "VerifyPayload",
     "WorkflowPayload",
     "parse_customer_offer",
@@ -47,6 +48,7 @@ class TokenRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=256)
     totp_code: str | None = Field(default=None, min_length=6, max_length=16)
+    recovery_code: str | None = Field(default=None, min_length=8, max_length=40)
 
 
 class RefreshTokenRequest(BaseModel):
@@ -84,6 +86,10 @@ class UserCreatePayload(BaseModel):
     password: str = Field(min_length=1, max_length=256)
     email: EmailStr | None = None
     roles: list[Role] = Field(min_length=1)
+
+
+class UserRolesPayload(BaseModel):
+    roles: list[Role] = Field(min_length=1, max_length=4)
 
 
 class CatalogOverridePayload(BaseModel):

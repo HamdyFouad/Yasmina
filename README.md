@@ -311,10 +311,13 @@ activity feed, the tender board with a detail sheet (source download, catalogue
 matching and linked offer pricing), the paginated invoice table with
 ZUGFeRD/XRechnung downloads plus the admin-only payment dialog, the
 Operations → Outbox console where admins/approvers retry failed ERPNext
-quotation jobs and jump to the linked offer, and the Offers workspace with
+quotation jobs and jump to the linked offer, the Offers workspace with
 status/owner filters, VAT and line-item detail, and the four-eyes approval
 dialog that can optionally issue the ZUGFeRD/XRechnung invoice in the same
-step. See `frontend/README.md` for the view-by-view scope.
+step. Security → Settings enrols or disables TOTP MFA with a QR/manual key and
+one-time recovery codes, and admins get an Operations → Users console for
+creating accounts, editing roles, issuing reset tokens and locking/unlocking
+accounts. See `frontend/README.md` for the view-by-view scope.
 
 If the dashboard is hosted on another origin, set `VITE_API_BASE_URL` to the
 absolute backend URL, allow the origin via `CORS_ALLOWED_ORIGINS` on the API, and
@@ -328,12 +331,16 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 
 | Method | Path | Role |
 |---|---|---|
-| POST | `/auth/token` | username/password login (+ `totp_code` when MFA is enabled); sets the refresh cookie |
+| POST | `/auth/token` | username/password login (+ `totp_code` or a one-time `recovery_code` when MFA is enabled); sets the refresh cookie |
 | POST | `/auth/refresh` | rotates the HttpOnly refresh cookie and returns a new access token |
 | POST | `/auth/logout` | clears the refresh cookie and revokes the access JTI |
 | POST | `/auth/logout/all` | authenticated user; revokes every refresh session |
-| GET | `/auth/me` | any authenticated role |
+| GET | `/auth/me` | any authenticated role; includes MFA state and remaining recovery codes |
+| GET | `/auth/users` | admin only; users with roles, MFA and lockout state |
 | POST | `/auth/users` | admin only |
+| PATCH | `/auth/users/{username}/roles` | admin only; replaces roles (self-change rejected) |
+| POST | `/auth/users/{username}/lock` | admin only; deactivates the account and revokes its refresh sessions |
+| POST | `/auth/users/{username}/unlock` | admin only; reactivates and clears lockout counters |
 | POST | `/auth/password/change` | authenticated user (current password required) |
 | POST | `/auth/password/reset/request` | public; always `202`, token delivered out-of-band |
 | POST | `/auth/password/reset` | public; single-use reset token + new password |
@@ -426,14 +433,23 @@ metrics for scraping; see [Production deployment & observability](#production-de
   inactive until `/auth/mfa/verify` proves a live code, and it is sealed with
   Fernet using a key derived from `APP_SECRET_KEY` before storage. When MFA is
   enabled, `/auth/token` returns `401` with `X-Yasmina-MFA-Required: true` until
-  a valid `totp_code` is supplied; the accepted time step is persisted so a code
-  cannot be replayed. `/auth/mfa/disable` requires both the password and a live
-  code.
+  a valid `totp_code` (or a one-time `recovery_code`) is supplied; the accepted
+  time step is persisted so a code cannot be replayed. `/auth/mfa/verify`
+  returns ten recovery codes (only their SHA-256 hashes are stored in
+  `mfa_recovery_codes`), and `/auth/mfa/disable` requires both the password and
+  a live code.
+- **User administration** (`GET/POST /auth/users`, `PATCH
+  /auth/users/{username}/roles`, `POST /auth/users/{username}/lock|unlock`) is
+  admin-only. Admins cannot change their own roles or lock themselves; locking
+  sets `is_active=false`, clears lockout counters and revokes every refresh
+  session. Role, lock and unlock changes append `USER_ROLES_CHANGED`,
+  `USER_LOCKED` and `USER_UNLOCKED` audit entries.
 - **Audit logging.** Login success/failure (including failures caused by a bad
-  TOTP code), logout, logout-all, user creation, password change, reset request
-  and completion, MFA enable/disable and the token-retention job append
-  hash-chained entries to `audit_logs`. Raw passwords, reset tokens and TOTP
-  secrets are never written to the audit payload.
+  TOTP or recovery code), logout, logout-all, user creation, password change,
+  reset request and completion, MFA enable/disable, recovery-code use, role
+  changes, lock/unlock and the token-retention job append hash-chained entries
+  to `audit_logs`. Raw passwords, reset tokens, recovery codes and TOTP secrets
+  are never written to the audit payload.
 
 ```powershell
 # expire old rows: expired refresh tokens, stale revoked sessions, expired JTIs
@@ -1036,6 +1052,9 @@ The API needs `ED25519_APPROVAL_PRIVATE_KEY` (a throwaway key is fine) and the
 `COMPANY_*` invoice-seller values; `python -m src.admin generate-approval-key`
 prints a pair. The seed script only writes PostgreSQL rows; it never calls the
 API, MinIO or the outbox worker. Fixtures and Playwright reports are git-ignored.
+The suite also covers the admin-only Users console: it creates an account,
+asserts its role/status badges, locks it through the confirmation dialog and
+checks that approvers are redirected away from `/admin/users`.
 
 ---
 
@@ -1471,6 +1490,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P7.4 — offer & approval workspace: approver read access to offers with an optional owner filter and a server-computed VAT breakdown, a responsive `/offers` console with status/owner filters and a detail side panel, a server-signed four-eyes approval dialog with 403 handling, and outbox rows deep-linking to the linked offer
 - [x] P7.5 — invoice issuance in the approval console: collapsed buyer/invoice section with inline validation (aria-invalid/aria-describedby, blur-then-submit timing), Leitweg reference, due date, IBAN and payment terms in the approval payload, artifact keys/links in the success toast, `['invoices']`/`['ops']` invalidation and a 422 invoice-failure path that keeps the signed approval
 - [x] P7.6 — Playwright golden-path E2E: deterministic seed script (approver + admin users, tender, pending offer, failed outbox job), browser flow for four-eyes approval with e-invoice, invoice payment and outbox retry, and a CI job wiring PostgreSQL/MinIO/ClamAV, uvicorn and Vite
+- [x] P7.7 — security & user administration: TOTP enrolment settings page with QR/manual key and ten single-use recovery codes (hashed, acknowledged before dismissal), recovery-code login, an admin Users console (responsive table, create account, role editing, reset tokens, lock/unlock with cancel-focused confirmations), `/auth/users` listing/roles/lock/unlock APIs with self-action guards and audit events, and Playwright coverage for the admin flow and RBAC redirect
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

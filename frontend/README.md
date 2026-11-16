@@ -24,7 +24,8 @@ npm run dev
 
 Open <http://localhost:5173> and sign in with an operator account from the
 backend configuration (bootstrap admin or a database user). If the account has
-MFA enabled, the page reveals the TOTP field after the password step.
+MFA enabled, the page reveals the code field after the password step; a
+one-time recovery code can be used instead of the authenticator code.
 
 Scripts:
 
@@ -41,8 +42,11 @@ npm run test:e2e   # Playwright golden path (needs a seeded API)
 
 `tests/e2e/golden-path.spec.ts` covers the operator lifecycle in a real browser:
 approver login → pending offer → four-eyes approval with an e-invoice →
-admin login → invoice list → payment → outbox retry. It uses ARIA locators
-(`getByRole`, `getByLabel`) and a single worker, so the run is deterministic.
+admin login → invoice list → payment → outbox retry. `tests/e2e/admin-users.spec.ts`
+logs in as the seeded admin, creates an account in the Users console, locks it
+through the cancel-focused confirmation, and checks that an approver is
+redirected away from `/admin/users`. Both use ARIA locators (`getByRole`,
+`getByLabel`) and a single worker, so the run is deterministic.
 
 Prerequisites: PostgreSQL/MinIO/ClamAV, Alembic migrations, an API on
 `127.0.0.1:8000` with `ED25519_APPROVAL_PRIVATE_KEY` and `COMPANY_*` values, and
@@ -62,6 +66,8 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 | `/invoices` | Paginated invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, and the admin-only "Mark as paid" dialog. |
 | `/ops/outbox` | Operations console for quotation_sync_jobs: status filter, attempts/retry budget, next attempt, last ERPNext error, a Retry action for failed jobs (admin/approver) and a link to the linked offer. |
 | `/admin/catalog` | Admin-only catalogue override table with supplier/article filters, pin badges and a dialog to add, replace or clear pinned merge fields. |
+| `/settings` | Account security: profile summary, TOTP enrolment (QR code, manual secret, otpauth URI), ten one-time recovery codes with mandatory acknowledgment, and a password/code-confirmed disable dialog. Bootstrap-admin accounts see an explanatory notice. |
+| `/admin/users` | Admin-only user administration: responsive container-query table (roles, MFA, active/locked status, last login), create-user dialog, role editing, one-time reset-token issuance, and lock/unlock confirmations that focus Cancel first. |
 
 ## Auth flow
 
@@ -75,12 +81,18 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 - `403` (RBAC/four-eyes) and `429` (rate limit, with `Retry-After`) produce
   toast notifications; the Axios error normalizes FastAPI `detail` payloads.
 - MFA is detected from the `401` + `X-Yasmina-MFA-Required` response header and
-  the login form then requests `totp_code`.
+  the login form then requests `totp_code`, with a toggle for a single-use
+  `recovery_code`.
 - A session-expiry event clears local state and routes back to `/login`.
 
 ## Backend endpoints used
 
 - `POST /auth/token`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`
+- `POST /auth/mfa/setup`, `POST /auth/mfa/verify`, `POST /auth/mfa/disable`
+- `GET /auth/users`, `POST /auth/users`,
+  `PATCH /auth/users/{username}/roles`,
+  `POST /auth/users/{username}/lock|unlock`,
+  `POST /auth/users/{username}/password/reset`
 - `GET /tenders`, `GET /tenders/{id}`, `GET /tenders/{id}/document`
 - `POST /tenders/{id}/match`
 - `GET /offers?tender_id={id}`, `GET /offers` (status/owner/limit/offset),
@@ -114,6 +126,10 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 - [x] Offer workspace with status/owner filters, detail side panel and four-eyes approval dialog
 - [x] Optional e-invoice issuance (ZUGFeRD/XRechnung) from the approval dialog with inline validation and 422 recovery
 - [x] Playwright golden-path E2E (approval + invoice + payment + outbox retry) in CI
+- [x] Settings page for TOTP enrolment, QR/manual secret and one-time recovery codes
+- [x] Recovery-code login fallback for MFA-enabled accounts
+- [x] Admin Users console (create, roles, reset token, lock/unlock) with a responsive table
+- [x] Playwright admin flow (create/lock user) and `/admin/users` RBAC redirect
 
 ## Production edge
 

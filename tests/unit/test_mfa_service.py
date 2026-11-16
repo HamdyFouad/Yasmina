@@ -12,8 +12,11 @@ from src.services.mfa_service import (
     build_otpauth_uri,
     decrypt_secret,
     encrypt_secret,
+    generate_recovery_codes,
     generate_secret,
+    hash_recovery_code,
     normalize_code,
+    normalize_recovery_code,
     totp_at,
     totp_step,
     verify_totp,
@@ -117,3 +120,19 @@ def test_otpauth_uri_contains_standard_parameters() -> None:
     assert "algorithm=SHA1" in uri
     assert "digits=6" in uri
     assert "period=30" in uri
+
+
+def test_recovery_codes_are_unique_grouped_and_hashed() -> None:
+    codes = generate_recovery_codes()
+
+    assert len(codes) == 10
+    assert len(set(codes)) == 10
+    for code in codes:
+        assert len(code) == 19  # 16 hex characters plus three separators
+        assert code.count("-") == 3
+        assert len(hash_recovery_code(code)) == 64
+        assert hash_recovery_code(code) == hash_recovery_code(code.lower().replace("-", ""))
+
+
+def test_normalize_recovery_code_strips_formatting() -> None:
+    assert normalize_recovery_code(" abcd-ef01 2345 ") == "ABCDEF012345"

@@ -44,6 +44,7 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert "CREATE TABLE credit_notes" in sql
     assert "CREATE TABLE invoice_events" in sql
     assert "CREATE TABLE password_reset_tokens" in sql
+    assert "CREATE TABLE mfa_recovery_codes" in sql
     assert "ALTER TABLE users ADD COLUMN mfa_enabled" in sql
     assert "ALTER TABLE catalog_articles ADD COLUMN manual_overrides" in sql
     assert "ALTER TABLE catalog_articles ADD COLUMN embedding_model" in sql
@@ -60,6 +61,6 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert sql.rstrip().endswith("COMMIT;")
 
     # Every domain table is created exactly once.
-    assert sql.count("CREATE TABLE ") == 30  # 29 domain tables + alembic_version
+    assert sql.count("CREATE TABLE ") == 31  # 30 domain tables + alembic_version
 
     reset_settings_cache()

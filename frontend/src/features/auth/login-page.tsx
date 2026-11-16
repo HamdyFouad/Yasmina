@@ -23,6 +23,8 @@ export function LoginPage() {
   const [username, setUsername] = React.useState('')
   const [password, setPassword] = React.useState('')
   const [totpCode, setTotpCode] = React.useState('')
+  const [recoveryCode, setRecoveryCode] = React.useState('')
+  const [useRecoveryCode, setUseRecoveryCode] = React.useState(false)
   const [needsMfa, setNeedsMfa] = React.useState(false)
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -52,7 +54,11 @@ export function LoginPage() {
       await login({
         username: username.trim(),
         password,
-        ...(needsMfa && totpCode.trim().length > 0 ? { totp_code: totpCode.trim() } : {}),
+        ...(needsMfa && useRecoveryCode && recoveryCode.trim().length > 0
+          ? { recovery_code: recoveryCode.trim() }
+          : needsMfa && totpCode.trim().length > 0
+            ? { totp_code: totpCode.trim() }
+            : {}),
       })
       toast.success('Signed in', { description: `Welcome back, ${username.trim()}.` })
       navigate(redirectTo, { replace: true })
@@ -165,25 +171,72 @@ export function LoginPage() {
                 </div>
 
                 {needsMfa ? (
-                  <div className="space-y-1.5">
-                    <Label htmlFor="totp">Authenticator code</Label>
-                    <Input
-                      id="totp"
-                      name="totp"
-                      inputMode="numeric"
-                      autoComplete="one-time-code"
-                      pattern="[0-9]{6,8}"
-                      maxLength={8}
-                      required
-                      value={totpCode}
-                      onChange={(event) => setTotpCode(event.target.value)}
-                      placeholder="123456"
-                      disabled={submitting}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Enter the current 6–8 digit code from your authenticator app.
-                    </p>
-                  </div>
+                  useRecoveryCode ? (
+                    <div className="space-y-1.5">
+                      <Label htmlFor="recovery-code">Recovery code</Label>
+                      <Input
+                        id="recovery-code"
+                        name="recovery-code"
+                        autoComplete="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        required
+                        value={recoveryCode}
+                        onChange={(event) => setRecoveryCode(event.target.value)}
+                        placeholder="XXXX-XXXX-XXXX-XXXX"
+                        autoFocus
+                        disabled={submitting}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Each recovery code signs you in once and is then burned.
+                      </p>
+                      <Button
+                        type="button"
+                        variant="link"
+                        size="sm"
+                        className="h-auto p-0 text-xs"
+                        onClick={() => {
+                          setUseRecoveryCode(false)
+                          setRecoveryCode('')
+                        }}
+                      >
+                        Use an authenticator code instead
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      <Label htmlFor="totp">Authenticator code</Label>
+                      <Input
+                        id="totp"
+                        name="totp"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        pattern="[0-9]{6,8}"
+                        maxLength={8}
+                        required
+                        value={totpCode}
+                        onChange={(event) => setTotpCode(event.target.value)}
+                        placeholder="123456"
+                        autoFocus
+                        disabled={submitting}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Enter the current 6–8 digit code from your authenticator app.
+                      </p>
+                      <Button
+                        type="button"
+                        variant="link"
+                        size="sm"
+                        className="h-auto p-0 text-xs"
+                        onClick={() => {
+                          setUseRecoveryCode(true)
+                          setTotpCode('')
+                        }}
+                      >
+                        Use a recovery code instead
+                      </Button>
+                    </div>
+                  )
                 ) : null}
 
                 {error !== null ? (

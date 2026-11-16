@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.enums import Role
-from src.models.orm import PasswordResetToken, RefreshToken, TokenBlocklist, User
+from src.models.orm import MfaRecoveryCode, PasswordResetToken, RefreshToken, TokenBlocklist, User
 from src.services.password_service import (
     PasswordHashError,
     dummy_verify,
@@ -68,6 +69,9 @@ class UserView:
     is_active: bool
     mfa_enabled: bool = False
     password_changed_at: datetime | None = None
+    failed_login_attempts: int = 0
+    locked_until: datetime | None = None
+    last_login_at: datetime | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -77,6 +81,9 @@ class UserView:
             "roles": [role.value for role in self.roles],
             "is_active": self.is_active,
             "mfa_enabled": self.mfa_enabled,
+            "failed_login_attempts": self.failed_login_attempts,
+            "locked_until": self.locked_until.isoformat() if self.locked_until else None,
+            "last_login_at": self.last_login_at.isoformat() if self.last_login_at else None,
         }
 
 
@@ -138,6 +145,9 @@ def _user_view(row: User) -> UserView:
         is_active=row.is_active,
         mfa_enabled=row.mfa_enabled,
         password_changed_at=row.password_changed_at,
+        failed_login_attempts=row.failed_login_attempts,
+        locked_until=row.locked_until,
+        last_login_at=row.last_login_at,
     )
 
 
@@ -174,6 +184,55 @@ class UserRepository:
     async def get_by_username(self, username: str) -> UserView | None:
         row = (await self.session.execute(select(User).where(User.username == username))).scalars().first()
         return _user_view(row) if row is not None else None
+
+    async def list_users(self, *, limit: int = 200, offset: int = 0) -> list[UserView]:
+        """Administrative listing ordered by username."""
+
+        statement = select(User).order_by(User.username).limit(limit).offset(offset)
+        rows = (await self.session.execute(statement)).scalars().all()
+        return [_user_view(row) for row in rows]
+
+    async def set_roles(
+        self,
+        user_id: UUID,
+        roles: Sequence[Role],
+    ) -> UserView:
+        """Replace a user's role set (at least one role is required)."""
+
+        normalized = tuple(dict.fromkeys(Role(role) for role in roles))
+        if not normalized:
+            raise UserRepositoryError("a user must have at least one role")
+        row = await self.session.get(User, user_id)
+        if row is None:
+            raise UserRepositoryError(f"user {user_id} does not exist")
+        row.roles = [role.value for role in normalized]
+        await self.session.commit()
+        return _user_view(row)
+
+    async def set_active(self, user_id: UUID, active: bool) -> UserView:
+        """Lock (deactivate) or reactivate an account."""
+
+        row = await self.session.get(User, user_id)
+        if row is None:
+            raise UserRepositoryError(f"user {user_id} does not exist")
+        row.is_active = active
+        if not active:
+            row.locked_until = None
+            row.failed_login_attempts = 0
+        await self.session.commit()
+        return _user_view(row)
+
+    async def unlock(self, user_id: UUID) -> UserView:
+        """Reactivate an account and clear brute-force lockout counters."""
+
+        row = await self.session.get(User, user_id)
+        if row is None:
+            raise UserRepositoryError(f"user {user_id} does not exist")
+        row.is_active = True
+        row.failed_login_attempts = 0
+        row.locked_until = None
+        await self.session.commit()
+        return _user_view(row)
 
     async def create(
         self,
@@ -339,6 +398,7 @@ class UserRepository:
         row = await self.session.get(User, user_id)
         if row is None:
             raise UserRepositoryError(f"user {user_id} does not exist")
+        await self.session.execute(delete(MfaRecoveryCode).where(MfaRecoveryCode.user_id == user_id))
         row.mfa_secret = sealed_secret
         row.mfa_enabled = False
         row.mfa_enrolled_at = None
@@ -364,6 +424,7 @@ class UserRepository:
         row = await self.session.get(User, user_id)
         if row is None:
             raise UserRepositoryError(f"user {user_id} does not exist")
+        await self.session.execute(delete(MfaRecoveryCode).where(MfaRecoveryCode.user_id == user_id))
         row.mfa_enabled = False
         row.mfa_secret = None
         row.mfa_enrolled_at = None
@@ -395,6 +456,60 @@ class UserRepository:
             row.locked_until = current + timedelta(minutes=_LOCKOUT_MINUTES)
             row.failed_login_attempts = 0
         await self.session.commit()
+
+    async def replace_mfa_recovery_codes(
+        self,
+        user_id: UUID,
+        code_hashes: Sequence[str],
+    ) -> int:
+        """Replace every unused recovery code with the supplied digests."""
+
+        await self.session.execute(delete(MfaRecoveryCode).where(MfaRecoveryCode.user_id == user_id))
+        for digest in code_hashes:
+            self.session.add(MfaRecoveryCode(user_id=user_id, code_hash=digest))
+        await self.session.commit()
+        return len(code_hashes)
+
+    async def consume_mfa_recovery_code(
+        self,
+        user_id: UUID,
+        code_hash: str,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        """Atomically burn one unused recovery code; returns ``False`` if unknown."""
+
+        row = (
+            (
+                await self.session.execute(
+                    select(MfaRecoveryCode)
+                    .where(
+                        MfaRecoveryCode.user_id == user_id,
+                        MfaRecoveryCode.code_hash == code_hash,
+                        MfaRecoveryCode.used_at.is_(None),
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if row is None:
+            return False
+        row.used_at = now or datetime.now(UTC)
+        await self.session.commit()
+        return True
+
+    async def mfa_recovery_codes_remaining(self, user_id: UUID) -> int:
+        count = await self.session.scalar(
+            select(func.count())
+            .select_from(MfaRecoveryCode)
+            .where(
+                MfaRecoveryCode.user_id == user_id,
+                MfaRecoveryCode.used_at.is_(None),
+            )
+        )
+        return int(count or 0)
 
 
 class RefreshTokenRepository:

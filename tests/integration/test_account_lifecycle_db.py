@@ -279,6 +279,9 @@ async def test_mfa_enrolment_login_challenge_and_replay_protection() -> None:
             )
             assert verified.status_code == 200, verified.text
             assert verified.json()["mfa_enabled"] is True
+            recovery_codes = verified.json()["recovery_codes"]
+            assert len(recovery_codes) == 10
+            assert all(code.count("-") == 3 for code in recovery_codes)
 
             challenged = _login(client, username)
             assert challenged.status_code == 401
@@ -297,9 +300,25 @@ async def test_mfa_enrolment_login_challenge_and_replay_protection() -> None:
             replay = _login(client, username, totp_code=next_code)
             assert replay.status_code == 401
 
+            recovery_login = _login(client, username, recovery_code=recovery_codes[0])
+            assert recovery_login.status_code == 200, recovery_login.text
+            recovery_access = recovery_login.json()["access_token"]
+
+            normalized = recovery_codes[1].replace("-", "").lower()
+            normalized_login = _login(client, username, recovery_code=normalized)
+            assert normalized_login.status_code == 200, normalized_login.text
+
+            reused = _login(client, username, recovery_code=recovery_codes[0])
+            assert reused.status_code == 401
+            assert reused.json()["detail"] == "invalid recovery code"
+
             me = client.get("/api/v1/auth/me", headers=_bearer(mfa_access))
             assert me.status_code == 200
             assert me.json()["mfa_enabled"] is True
+
+            recovery_me = client.get("/api/v1/auth/me", headers=_bearer(recovery_access))
+            assert recovery_me.status_code == 200
+            assert recovery_me.json()["recovery_codes_remaining"] == 8
 
         async with factory() as session:
             enabled = await _audit_events(
@@ -308,6 +327,12 @@ async def test_mfa_enrolment_login_challenge_and_replay_protection() -> None:
                 entity_id=str(user.id),
             )
             assert len(enabled) == 1
+            used = await _audit_events(
+                session,
+                event_type=AuditEventType.USER_MFA_RECOVERY_CODE_USED.value,
+                entity_id=str(user.id),
+            )
+            assert len(used) == 2
     finally:
         async with get_session_factory(current_settings)() as session:
             await _cleanup(session)
@@ -519,6 +544,106 @@ async def test_token_cleanup_purges_only_expired_and_stale_rows() -> None:
                 event_type=AuditEventType.SYSTEM_TOKEN_CLEANUP.value,
             )
             assert cleanup_audit
+    finally:
+        async with get_session_factory(current_settings)() as session:
+            await _cleanup(session)
+        await dispose_engine()
+
+
+async def test_admin_user_management_lists_roles_locks_and_unlocks() -> None:
+    current_settings = settings()
+    factory = get_session_factory(current_settings)
+    admin_name = _username()
+    target_name = _username()
+    try:
+        async with factory() as session:
+            await _cleanup(session)
+            repository = UserRepository(session)
+            admin = await repository.create(admin_name, PASSWORD, [Role.ADMIN])
+            target = await repository.create(target_name, PASSWORD, [Role.VIEWER])
+        await dispose_engine()
+
+        with _client(current_settings) as client:
+            admin_token = _login(client, admin_name).json()["access_token"]
+            target_token = _login(client, target_name).json()["access_token"]
+
+            listing = client.get("/api/v1/auth/users", headers=_bearer(admin_token))
+            assert listing.status_code == 200, listing.text
+            payload = listing.json()
+            assert payload["count"] >= 2
+            rows = {row["username"]: row for row in payload["users"]}
+            assert rows[target_name]["roles"] == ["viewer"]
+            assert rows[target_name]["is_active"] is True
+            assert rows[target_name]["mfa_enabled"] is False
+            assert "locked_until" in rows[target_name]
+            assert "failed_login_attempts" in rows[target_name]
+
+            forbidden = client.get("/api/v1/auth/users", headers=_bearer(target_token))
+            assert forbidden.status_code == 403
+
+            self_change = client.patch(
+                f"/api/v1/auth/users/{admin_name}/roles",
+                json={"roles": ["approver"]},
+                headers=_bearer(admin_token),
+            )
+            assert self_change.status_code == 400
+
+            updated = client.patch(
+                f"/api/v1/auth/users/{target_name}/roles",
+                json={"roles": ["approver"]},
+                headers=_bearer(admin_token),
+            )
+            assert updated.status_code == 200, updated.text
+            assert updated.json()["user"]["roles"] == ["approver"]
+
+            locked = client.post(
+                f"/api/v1/auth/users/{target_name}/lock",
+                headers=_bearer(admin_token),
+            )
+            assert locked.status_code == 200, locked.text
+            assert locked.json()["user"]["is_active"] is False
+            assert _login(client, target_name).status_code == 401
+
+            still_listed = client.get("/api/v1/auth/users", headers=_bearer(admin_token))
+            locked_row = next(row for row in still_listed.json()["users"] if row["username"] == target_name)
+            assert locked_row["is_active"] is False
+
+            locked_self = client.post(
+                f"/api/v1/auth/users/{admin_name}/lock",
+                headers=_bearer(admin_token),
+            )
+            assert locked_self.status_code == 400
+
+            unlocked = client.post(
+                f"/api/v1/auth/users/{target_name}/unlock",
+                headers=_bearer(admin_token),
+            )
+            assert unlocked.status_code == 200, unlocked.text
+            assert unlocked.json()["user"]["is_active"] is True
+            assert _login(client, target_name).status_code == 200
+
+        async with factory() as session:
+            role_events = await _audit_events(
+                session,
+                event_type=AuditEventType.USER_ROLES_CHANGED.value,
+                entity_id=str(target.id),
+            )
+            assert len(role_events) == 1
+            lock_events = await _audit_events(
+                session,
+                event_type=AuditEventType.USER_LOCKED.value,
+                entity_id=str(target.id),
+            )
+            assert len(lock_events) == 1
+            unlock_events = await _audit_events(
+                session,
+                event_type=AuditEventType.USER_UNLOCKED.value,
+                entity_id=str(target.id),
+            )
+            assert len(unlock_events) == 1
+            admin_roles = await UserRepository(session).get(admin.id)
+            assert admin_roles is not None
+            assert Role.ADMIN in admin_roles.roles
     finally:
         async with get_session_factory(current_settings)() as session:
             await _cleanup(session)
