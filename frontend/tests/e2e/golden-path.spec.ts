@@ -94,7 +94,7 @@ test('golden path: approve with invoice, pay it, and retry the outbox job', asyn
 
     await expect(creditDialog).toBeHidden()
     await expect(adminPage.getByText(/Credit note GS-\d{4}-\d{4} issued/)).toBeVisible()
-    await expect(invoiceSheet.getByText('Partially credited', { exact: true })).toBeVisible()
+    await expect(invoiceSheet.getByText('Partially Credited', { exact: true })).toBeVisible()
     await expect(invoiceSheet.getByText(/^GS-\d{4}-\d{4}$/).first()).toBeVisible()
     await expect(invoiceSheet.getByText('E2E partial credit')).toBeVisible()
 

@@ -1006,6 +1006,6 @@ for deterministic fixture and chain-verification tests.
   cells in the stacked layout. The row header is the invoice number so the
   table remains understandable when the column header row is hidden.
 - The Playwright golden path issues a €2.00 partial credit from the detail sheet
-  before paying, verifying `Partially credited`, the `GS-` number and the reason.
+  before paying, verifying `Partially Credited`, the `GS-` number and the reason.
   The payment dialog then prefills the reduced outstanding balance, and the final
   `Paid` status proves the credited amount was applied consistently.
