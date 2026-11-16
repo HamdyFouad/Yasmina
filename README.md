@@ -1434,6 +1434,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P6.5 — frontend admin parity and local-first production edge: admin Catalogue Overrides table/dialog, ERPNext outbox dashboard widget and `/ops/outbox-status`, plus a Caddy image serving the Vite bundle over local HTTPS with strict security headers and API/docs reverse proxying
 - [x] P7.1 — staging deployment: GHCR-built SHA images, SSH rollout with `pg_dump`, Alembic and smoke-tested rollback, plus a staging Caddy edge with real Let's Encrypt TLS
 - [x] P7.2 — approval key custody and outbox operations: server-side Ed25519 signing from `ED25519_APPROVAL_PRIVATE_KEY` with four-eyes enforcement, paginated `/ops/outbox` + admin/approver retry, Telegram alerts for exhausted quotation jobs, and an accessible Outbox console in the dashboard
+- [x] P7.3 — portal rollout factory: read-only `worker probe --portal <id>` dry run with discovered-vs-parsed counts, per-selector extraction diagnostics, zero-result warnings and JSON output for automation
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and
