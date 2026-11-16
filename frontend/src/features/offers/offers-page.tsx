@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -10,21 +10,12 @@ import {
   Tags,
 } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
-import { toast } from 'sonner'
 
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -45,10 +36,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { ApprovalDialog } from '@/features/offers/approval-dialog'
 import { useAuth } from '@/features/auth/auth-context'
-import { apiErrorMessage, isApiError } from '@/lib/api-error'
+import { apiErrorMessage } from '@/lib/api-error'
 import { unitLabel } from '@/lib/labels'
-import { approveOffer, fetchOffer, fetchOffers } from '@/lib/offers-api'
+import { fetchOffer, fetchOffers } from '@/lib/offers-api'
 import { formatCurrency, formatDate, formatDateTime, formatPercent } from '@/lib/utils'
 import type { CustomerOffer, CustomerOfferStatus, UnitOfMeasure } from '@/types/domain'
 
@@ -72,13 +64,6 @@ const APPROVABLE_STATUSES: ReadonlySet<CustomerOfferStatus> = new Set([
 
 function isCustomerOfferStatus(value: string): value is CustomerOfferStatus {
   return STATUS_OPTIONS.some((option) => option.value === value && option.value !== 'ALL')
-}
-
-function approvalErrorMessage(error: unknown): string {
-  if (isApiError(error) && error.status === 403) {
-    return 'Four-eyes policy: the offer owner cannot approve their own offer. A different approver must sign it.'
-  }
-  return apiErrorMessage(error)
 }
 
 function SummaryItem({ label, children }: { label: string; children: React.ReactNode }) {
@@ -268,7 +253,6 @@ function formatQuantityLabel(quantity: string, unit: UnitOfMeasure): string {
 
 export function OffersPage() {
   const { user, hasRole } = useAuth()
-  const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
   const captionId = React.useId()
 
@@ -293,25 +277,6 @@ export function OffersPage() {
         ...(owner.length > 0 ? { owner } : {}),
       }),
     placeholderData: keepPreviousData,
-  })
-
-  const approve = useMutation({
-    mutationFn: (offer: CustomerOffer) => approveOffer(offer),
-    onSuccess: async (result, offer) => {
-      const outcome =
-        result.erpnext.status === 'queued'
-          ? 'signed and queued for ERPNext'
-          : result.erpnext.status === 'skipped'
-            ? 'signed (ERPNext is not configured)'
-            : 'signed'
-      setApproving(null)
-      toast.success(`Offer ${offer.offer_number} ${outcome}`)
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['offers'] }),
-        queryClient.invalidateQueries({ queryKey: ['offer', offer.id] }),
-        queryClient.invalidateQueries({ queryKey: ['ops'] }),
-      ])
-    },
   })
 
   const offers = offersQuery.data?.offers ?? []
@@ -348,14 +313,6 @@ export function OffersPage() {
     setOwner('')
     setPage(0)
   }
-
-  const closeApproval = (): void => {
-    approve.reset()
-    setApproving(null)
-  }
-
-  const isApprovingOwnOffer =
-    approving !== null && approving.owner !== null && approving.owner === user?.subject
 
   return (
     <div className="space-y-6">
@@ -569,10 +526,7 @@ export function OffersPage() {
                               variant="outline"
                               size="sm"
                               aria-label={`Approve offer ${offer.offer_number}`}
-                              onClick={() => {
-                                approve.reset()
-                                setApproving(offer)
-                              }}
+                              onClick={() => setApproving(offer)}
                             >
                               <CheckCircle2 aria-hidden="true" />
                               Approve
@@ -625,66 +579,11 @@ export function OffersPage() {
       ) : null}
 
       {approving !== null ? (
-        <Dialog open onOpenChange={(open) => (!open ? closeApproval() : undefined)}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Approve offer {approving.offer_number}?</DialogTitle>
-              <DialogDescription>
-                The server signs the canonical offer payload with the Ed25519 custody key and, when
-                ERPNext is configured, queues the quotation for the background outbox.
-              </DialogDescription>
-            </DialogHeader>
-
-            <dl className="grid grid-cols-3 gap-2 rounded-md border border-border bg-muted/40 p-3 text-sm">
-              <SummaryItem label="Net">
-                {formatCurrency(approving.total_net, approving.currency)}
-              </SummaryItem>
-              <SummaryItem label="VAT">
-                {formatCurrency(approving.total_vat, approving.currency)}
-              </SummaryItem>
-              <SummaryItem label="Gross">
-                {formatCurrency(approving.total_gross, approving.currency)}
-              </SummaryItem>
-            </dl>
-
-            {isApprovingOwnOffer ? (
-              <p className="rounded-md border border-warning/40 bg-warning/10 p-2 text-xs text-foreground">
-                You own this offer. The four-eyes policy will reject this approval; a different
-                approver must sign it.
-              </p>
-            ) : null}
-
-            {approve.isError ? (
-              <p role="alert" className="text-sm text-destructive">
-                {approvalErrorMessage(approve.error)}
-              </p>
-            ) : null}
-
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                autoFocus
-                disabled={approve.isPending}
-                onClick={closeApproval}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                disabled={approve.isPending}
-                onClick={() => approve.mutate(approving)}
-              >
-                {approve.isPending ? (
-                  <Loader2 className="animate-spin" aria-hidden="true" />
-                ) : (
-                  <CheckCircle2 aria-hidden="true" />
-                )}
-                Approve and sign
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <ApprovalDialog
+          key={approving.id}
+          offer={approving}
+          onClose={() => setApproving(null)}
+        />
       ) : null}
     </div>
   )

@@ -1,7 +1,7 @@
 import { api } from '@/lib/api-client'
 import type {
+  ApproveOfferPayload,
   ApproveOfferResponse,
-  CustomerOffer,
   CustomerOfferStatus,
   MatchResponse,
   OfferDetailResponse,
@@ -35,8 +35,8 @@ export async function fetchOffer(offerId: string): Promise<OfferDetailResponse> 
   return response.data
 }
 
-export async function approveOffer(offer: CustomerOffer): Promise<ApproveOfferResponse> {
-  const response = await api.post<ApproveOfferResponse>('/approvals/approve', { offer })
+export async function approveOffer(payload: ApproveOfferPayload): Promise<ApproveOfferResponse> {
+  const response = await api.post<ApproveOfferResponse>('/approvals/approve', payload)
   return response.data
 }
 

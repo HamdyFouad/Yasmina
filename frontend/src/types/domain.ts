@@ -412,7 +412,7 @@ export interface OfferDetailResponse {
 
 export interface ApproveOfferResponse {
   offer: CustomerOffer
-  artifacts: Record<string, unknown> | null
+  artifacts: Record<string, InvoiceArtifact> | null
   erpnext: {
     status: string
     job_id?: string
@@ -421,4 +421,33 @@ export interface ApproveOfferResponse {
     reason?: string
   }
   created: boolean
+}
+
+export interface InvoiceBuyerPayload {
+  street: string
+  city: string
+  postal_code: string
+  country_code?: string
+  vat_id?: string | null
+  email?: string | null
+}
+
+export interface InvoiceRequestPayload {
+  buyer: InvoiceBuyerPayload
+  buyer_reference: string
+  due_date: string
+  delivery_date?: string | null
+  iban?: string | null
+  payment_terms?: string | null
+}
+
+export interface InvoiceArtifact {
+  object_name: string
+  download_url: string
+  media_type: string
+}
+
+export interface ApproveOfferPayload {
+  offer: CustomerOffer
+  invoice?: InvoiceRequestPayload
 }

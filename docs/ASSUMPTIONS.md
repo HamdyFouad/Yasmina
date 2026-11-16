@@ -872,3 +872,31 @@ for deterministic fixture and chain-verification tests.
   approver/admin only. Self-owned rows keep the action enabled but warn that the
   server will reject the signature, so the documented 403 path is reachable and
   displayed rather than hidden by client-side logic.
+## Invoice issuance from the approval console (P7.5)
+
+- The approve dialog exposes a collapsed "Generate e-invoice" section. Collapsed
+  (the default) keeps the previous behaviour: sign and queue ERPNext without an
+  invoice. Enabling it builds an `InvoiceRequestPayload` and appends it to the
+  same `POST /approvals/approve` request, so the operator performs signing and
+  invoicing as one action even though the backend persists the approval before
+  generating artifacts.
+- Client validation only mirrors cheap UX constraints (required buyer
+  street/city/postal code, two-letter country, 5-46 character buyer reference,
+  due date, e-mail shape, field max length). Leitweg-ID MOD-97-10 checks,
+  KoSIT/Schematron rules and all tax math stay server-side; the browser
+  validation is never a security boundary.
+- Validation timing follows the pinned guidance: errors appear after `blur` or a
+  submit attempt, clear as soon as the field becomes valid, `aria-invalid` and
+  the error entry in `aria-describedby` exist only while the message is visible,
+  and a failed submit moves focus to the first invalid field plus a form-level
+  `role="alert"` summary. The form uses `noValidate` so the custom messages (not
+  browser bubbles) are what users see; `required`, `type="email"`, `maxLength`
+  and `autocomplete` remain on the controls for assistive tech and autofill.
+- A `422` whose detail contains `e-invoice generation failed` means the approval
+  was persisted: the dialog stays open, invalidates offers/invoices/`ops`, explains that
+  the offer is approved, and permits resubmission, which the replay path uses to
+  retry artifact generation. Any other 422/403 is shown without the "saved"
+  claim.
+- On success the toast includes the returned artifact object keys and download
+  URLs, and `['invoices']` plus `['ops']` are invalidated so the invoice list and
+  dashboard widgets refresh.

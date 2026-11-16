@@ -24,6 +24,7 @@ from src.api.deps import (
 from src.api.security import Role, create_access_token
 from src.config import Settings
 from src.integrations.erpnext_client import ERPQuotation
+from src.integrations.minio_client import ObjectStorageError
 from src.main import create_app
 from src.models.enums import CustomerOfferStatus, UnitOfMeasure
 from src.models.schemas import CustomerOffer, CustomerOfferLine, q2, q4
@@ -205,6 +206,13 @@ class FakeStorage:
         return self.objects[object_name]
 
 
+class FailingStorage(FakeStorage):
+    """Storage double that fails the artifact upload after the approval persisted."""
+
+    async def put_bytes(self, object_name: str, data: bytes, content_type: str) -> str:
+        raise ObjectStorageError("MinIO is unavailable")
+
+
 class FakeERPNext:
     configured = True
 
@@ -277,6 +285,7 @@ def api() -> Any:
     with TestClient(app) as client:
         yield SimpleNamespace(
             client=client,
+            app=app,
             repository=repository,
             storage=storage,
             erpnext=erpnext,
@@ -537,3 +546,21 @@ def test_offer_detail_includes_the_server_vat_breakdown(api: Any) -> None:
             "tax_amount": str(offer.total_vat),
         }
     ]
+
+
+def test_invoice_generation_failure_keeps_the_signed_approval(api: Any) -> None:
+    api.app.dependency_overrides[get_object_storage] = lambda: FailingStorage()
+    offer = make_offer(offer_number="AN-2026-0700")
+
+    response = api.client.post(
+        "/api/v1/approvals/approve",
+        json=approval_body(offer),
+        headers=auth(APPROVER),
+    )
+
+    assert response.status_code == 422, response.text
+    assert "e-invoice generation failed" in response.text
+    persisted = api.repository.offers[offer.offer_number]
+    assert persisted.status == CustomerOfferStatus.APPROVED
+    assert persisted.ed25519_approval_signature is not None
+    assert persisted.invoice_artifacts == {}

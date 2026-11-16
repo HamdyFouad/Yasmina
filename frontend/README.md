@@ -43,7 +43,7 @@ npm run preview    # serve the built bundle
 | `/login` | Username/password login with an MFA (TOTP) step when the account requires it. |
 | `/` | Overview: owner-scoped KPI cards, gross invoiced/paid/outstanding, recent audit events (admin/viewer), ERPNext outbox counts (admin/viewer) and session details. |
 | `/tenders` | Paginated tender board with status filter. Rows open a detail sheet with metadata, the original GAEB/PDF download, hybrid catalogue matching and linked pricing offers with their line/VAT breakdown and totals. |
-| `/offers` | Paginated offer workspace with status and owner filters, a responsive table, a detail side panel (server VAT breakdown, signature state, line items) and the approver/admin four-eyes approval dialog. `?offer=<id>` deep-links the side panel (used by the Outbox). |
+| `/offers` | Paginated offer workspace with status and owner filters, a responsive table, a detail side panel (server VAT breakdown, signature state, line items) and the approver/admin four-eyes approval dialog with an optional “Generate e-invoice” section (buyer, Leitweg-ID, due date, IBAN, payment terms). `?offer=<id>` deep-links the side panel (used by the Outbox). |
 | `/invoices` | Paginated invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, and the admin-only "Mark as paid" dialog. |
 | `/ops/outbox` | Operations console for quotation_sync_jobs: status filter, attempts/retry budget, next attempt, last ERPNext error, a Retry action for failed jobs (admin/approver) and a link to the linked offer. |
 | `/admin/catalog` | Admin-only catalogue override table with supplier/article filters, pin badges and a dialog to add, replace or clear pinned merge fields. |
@@ -70,7 +70,7 @@ npm run preview    # serve the built bundle
 - `POST /tenders/{id}/match`
 - `GET /offers?tender_id={id}`, `GET /offers` (status/owner/limit/offset),
   `GET /offers/{id}` (includes the server-computed `vat_breakdown`)
-- `POST /approvals/approve` (server signs the offer for the authenticated approver)
+- `POST /approvals/approve` (server signs the offer for the authenticated approver; optional `invoice` block generates the ZUGFeRD/XRechnung artifacts)
 - `GET /invoices`, `GET /invoices/{id}/documents/{zugferd|xrechnung}`,
   `POST /invoices/{id}/payments`
 - `GET /ops/summary`, `GET /ops/activity`, `GET /ops/outbox-status`
@@ -97,6 +97,7 @@ npm run preview    # serve the built bundle
 - [x] Admin catalogue override table and pin/replace/clear dialog
 - [x] Outbox console with status filter, pagination and a failed-job Retry action
 - [x] Offer workspace with status/owner filters, detail side panel and four-eyes approval dialog
+- [x] Optional e-invoice issuance (ZUGFeRD/XRechnung) from the approval dialog with inline validation and 422 recovery
 - [ ] Browser end-to-end tests
 
 ## Production edge

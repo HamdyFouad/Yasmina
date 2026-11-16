@@ -313,7 +313,8 @@ ZUGFeRD/XRechnung downloads plus the admin-only payment dialog, the
 Operations → Outbox console where admins/approvers retry failed ERPNext
 quotation jobs and jump to the linked offer, and the Offers workspace with
 status/owner filters, VAT and line-item detail, and the four-eyes approval
-dialog. See `frontend/README.md` for the view-by-view scope.
+dialog that can optionally issue the ZUGFeRD/XRechnung invoice in the same
+step. See `frontend/README.md` for the view-by-view scope.
 
 If the dashboard is hosted on another origin, set `VITE_API_BASE_URL` to the
 absolute backend URL, allow the origin via `CORS_ALLOWED_ORIGINS` on the API, and
@@ -348,7 +349,7 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | POST | `/tenders/{id}/price` | sales (own), admin |
 | POST | `/tenders/{id}/workflow` | sales (own), admin |
 | POST | `/approvals/verify` | viewer/approver/admin |
-| POST | `/approvals/approve` | approver/admin, four-eyes enforced |
+| POST | `/approvals/approve` | approver/admin, four-eyes enforced; optional `invoice` block issues ZUGFeRD/XRechnung artifacts |
 | GET | `/approvals/{offer_number}/documents/{format}` | viewer/approver/admin |
 | GET | `/offers` | sales (own subject only), approver/viewer/admin (all); supports `tender_id`, `status` and `owner` |
 | GET | `/offers/{id}` | sales (own subject only), approver/viewer/admin (all); includes a server-computed `vat_breakdown` |
@@ -1438,6 +1439,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P7.2 — approval key custody and outbox operations: server-side Ed25519 signing from `ED25519_APPROVAL_PRIVATE_KEY` with four-eyes enforcement, paginated `/ops/outbox` + admin/approver retry, Telegram alerts for exhausted quotation jobs, and an accessible Outbox console in the dashboard
 - [x] P7.3 — portal rollout factory: read-only `worker probe --portal <id>` dry run with discovered-vs-parsed counts, per-selector extraction diagnostics, zero-result warnings and JSON output for automation
 - [x] P7.4 — offer & approval workspace: approver read access to offers with an optional owner filter and a server-computed VAT breakdown, a responsive `/offers` console with status/owner filters and a detail side panel, a server-signed four-eyes approval dialog with 403 handling, and outbox rows deep-linking to the linked offer
+- [x] P7.5 — invoice issuance in the approval console: collapsed buyer/invoice section with inline validation (aria-invalid/aria-describedby, blur-then-submit timing), Leitweg reference, due date, IBAN and payment terms in the approval payload, artifact keys/links in the success toast, `['invoices']`/`['ops']` invalidation and a 422 invoice-failure path that keeps the signed approval
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and
