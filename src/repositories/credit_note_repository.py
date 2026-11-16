@@ -53,6 +53,7 @@ class StoredCreditNote:
     credit_note_number: str
     issue_date: date
     status: str
+    reason: str
     total_net: Decimal
     total_vat: Decimal
     total_gross: Decimal
@@ -67,6 +68,7 @@ class StoredCreditNote:
             "credit_note_number": self.credit_note_number,
             "issue_date": self.issue_date.isoformat(),
             "status": self.status,
+            "reason": self.reason,
             "total_net": format(self.total_net, "f"),
             "total_vat": format(self.total_vat, "f"),
             "total_gross": format(self.total_gross, "f"),
@@ -83,6 +85,7 @@ def _stored(row: CreditNote) -> StoredCreditNote:
         credit_note_number=row.credit_note_number,
         issue_date=row.issue_date,
         status=row.status,
+        reason=row.reason or "",
         total_net=row.total_net,
         total_vat=row.total_vat,
         total_gross=row.total_gross,

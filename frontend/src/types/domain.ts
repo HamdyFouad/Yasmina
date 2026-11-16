@@ -291,6 +291,46 @@ export interface InvoiceEvent {
   entry_hash: string
 }
 
+export interface CreditNoteLine {
+  description: string
+  net_amount: string
+  vat_rate: string
+  tax_amount: string
+  gross_amount: string
+}
+
+export interface CreditNote {
+  id: string
+  invoice_id: string
+  credit_note_number: string
+  issue_date: string
+  status: string
+  reason: string
+  total_net: string
+  total_vat: string
+  total_gross: string
+  vat_breakdown: InvoiceVatSplit[]
+  lines: CreditNoteLine[]
+  artifacts: Record<string, unknown>
+}
+
+export interface InvoiceCreditRequest {
+  amount?: string
+  reason: string
+  issue_date?: string
+}
+
+export interface InvoiceCreditResponse {
+  credit_note: CreditNote
+  invoice: Invoice | null
+  events: InvoiceEvent[]
+}
+
+export interface InvoiceCreditNotesResponse {
+  invoice_id: string
+  credit_notes: CreditNote[]
+}
+
 export interface OfferListResponse {
   offers: CustomerOffer[]
   count: number

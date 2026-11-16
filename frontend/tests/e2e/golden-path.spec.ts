@@ -75,6 +75,32 @@ test('golden path: approve with invoice, pay it, and retry the outbox job', asyn
     await expect(invoiceRow).toHaveCount(1)
     await expect(invoiceRow.getByText('Issued', { exact: true })).toBeVisible()
 
+    // --- Invoice detail, GoBD timeline and partial credit note -------------
+    await invoiceRow.getByRole('button', { name: /^View invoice INV-/ }).click()
+    const invoiceSheet = adminPage.getByRole('dialog', { name: /^Invoice INV-/ })
+    await expect(invoiceSheet).toBeVisible()
+    await expect(invoiceSheet.getByText('GoBD event log')).toBeVisible()
+    await expect(invoiceSheet.getByText('Chain verified', { exact: true })).toBeVisible()
+
+    await invoiceSheet.getByRole('button', { name: 'Issue credit note' }).click()
+    const creditDialog = adminPage.getByRole('dialog', {
+      name: /^Issue credit note for INV-/,
+    })
+    await expect(creditDialog).toBeVisible()
+    await expect(creditDialog.getByRole('button', { name: 'Cancel' })).toBeFocused()
+    await creditDialog.getByLabel(/^Credit amount/).fill('2.00')
+    await creditDialog.getByLabel('Reason').fill('E2E partial credit')
+    await creditDialog.getByRole('button', { name: 'Issue credit note' }).click()
+
+    await expect(creditDialog).toBeHidden()
+    await expect(adminPage.getByText(/Credit note GS-\d{4}-\d{4} issued/)).toBeVisible()
+    await expect(invoiceSheet.getByText('Partially credited', { exact: true })).toBeVisible()
+    await expect(invoiceSheet.getByText(/^GS-\d{4}-\d{4}$/).first()).toBeVisible()
+    await expect(invoiceSheet.getByText('E2E partial credit')).toBeVisible()
+
+    await invoiceSheet.getByRole('button', { name: 'Close' }).click()
+    await expect(invoiceSheet).toBeHidden()
+
     await invoiceRow.getByRole('button', { name: 'Mark as paid' }).click()
     const paymentDialog = adminPage.getByRole('dialog', { name: 'Mark invoice as paid' })
     await paymentDialog.getByLabel(/Bank reference/).fill('E2E-PAYMENT-1')

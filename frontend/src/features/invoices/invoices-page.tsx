@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CreditCard,
   Download,
+  Eye,
   FileDown,
   Loader2,
   ReceiptText,
@@ -36,16 +37,10 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
 import { useAuth } from '@/features/auth/auth-context'
+import { InvoiceDetailSheet } from '@/features/invoices/invoice-detail-sheet'
 import { apiErrorMessage } from '@/lib/api-error'
+import { invoiceOutstanding } from '@/lib/invoice-utils'
 import {
   downloadInvoiceDocument,
   fetchInvoices,
@@ -73,14 +68,7 @@ function isInvoiceStatus(value: string): value is InvoiceStatus {
 }
 
 function remainingAmount(invoice: Invoice): number {
-  const gross = Number.parseFloat(invoice.total_gross)
-  const paid = Number.parseFloat(invoice.paid_amount)
-  const credited = Number.parseFloat(invoice.credited_amount)
-  if (Number.isNaN(gross)) {
-    return 0
-  }
-  const remaining = gross - (Number.isNaN(paid) ? 0 : paid) - (Number.isNaN(credited) ? 0 : credited)
-  return remaining > 0 ? Math.round(remaining * 100) / 100 : 0
+  return invoiceOutstanding(invoice)
 }
 
 function PaymentDialog({
@@ -188,10 +176,15 @@ function PaymentDialog({
 
 export function InvoicesPage() {
   const { hasRole } = useAuth()
+  const captionId = React.useId()
   const [status, setStatus] = React.useState<InvoiceStatus | null>(null)
   const [page, setPage] = React.useState(0)
   const [downloading, setDownloading] = React.useState<string | null>(null)
   const [payingInvoice, setPayingInvoice] = React.useState<Invoice | null>(null)
+  const [detailInvoice, setDetailInvoice] = React.useState<{
+    id: string
+    number: string
+  } | null>(null)
 
   const canMarkPaid = hasRole('admin')
   const offset = page * PAGE_SIZE
@@ -313,114 +306,214 @@ export function InvoicesPage() {
         />
       ) : (
         <Card>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Invoice</TableHead>
-                <TableHead>Issued / due</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Net</TableHead>
-                <TableHead className="text-right">VAT</TableHead>
-                <TableHead className="text-right">Gross</TableHead>
-                <TableHead className="text-right">Paid</TableHead>
-                <TableHead>Documents</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((invoice) => {
-                const open = remainingAmount(invoice)
-                const paidUp =
-                  invoice.status === 'PAID' ||
-                  invoice.status === 'CREDITED' ||
-                  invoice.status === 'CANCELLED'
-                return (
-                  <TableRow key={invoice.id}>
-                    <TableCell>
-                      <div className="font-mono text-sm font-medium">
+          <div
+            role="region"
+            aria-labelledby={captionId}
+            aria-busy={invoices.isFetching}
+            tabIndex={0}
+            className="stacked-table max-h-[70vh] overflow-auto focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          >
+            <table className="w-full min-w-[1120px] border-collapse text-sm">
+              <caption id={captionId} className="sr-only">
+                Invoices with status, totals, documents and billing actions
+              </caption>
+              <thead className="sticky top-0 z-10 bg-card shadow-sm">
+                <tr className="border-b border-border">
+                  <th
+                    scope="col"
+                    className="h-10 px-3 text-left align-middle text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  >
+                    Invoice
+                  </th>
+                  <th
+                    scope="col"
+                    className="h-10 px-3 text-left align-middle text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  >
+                    Issued / due
+                  </th>
+                  <th
+                    scope="col"
+                    className="h-10 px-3 text-left align-middle text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  >
+                    Status
+                  </th>
+                  <th
+                    scope="col"
+                    className="h-10 px-3 text-right align-middle text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  >
+                    Net
+                  </th>
+                  <th
+                    scope="col"
+                    className="h-10 px-3 text-right align-middle text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  >
+                    VAT
+                  </th>
+                  <th
+                    scope="col"
+                    className="h-10 px-3 text-right align-middle text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  >
+                    Gross
+                  </th>
+                  <th
+                    scope="col"
+                    className="h-10 px-3 text-right align-middle text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  >
+                    Paid
+                  </th>
+                  <th
+                    scope="col"
+                    className="h-10 px-3 text-left align-middle text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  >
+                    Documents
+                  </th>
+                  <th
+                    scope="col"
+                    className="h-10 px-3 text-right align-middle text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  >
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((invoice) => {
+                  const open = remainingAmount(invoice)
+                  const paidUp =
+                    invoice.status === 'PAID' ||
+                    invoice.status === 'CREDITED' ||
+                    invoice.status === 'CANCELLED'
+                  return (
+                    <tr
+                      key={invoice.id}
+                      className="border-b border-border transition-colors last:border-0 hover:bg-muted/50"
+                    >
+                      <th
+                        scope="row"
+                        className="px-3 py-3 text-left align-top font-mono text-sm font-medium"
+                      >
                         {invoice.invoice_number}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {invoice.vat_breakdown.length} VAT rate(s)
-                      </div>
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-sm">
-                      <div>{formatDate(invoice.issue_date)}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {formatDate(invoice.due_date)}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <StatusBadge status={invoice.status} />
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-right">
-                      {formatCurrency(invoice.total_net, invoice.currency)}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-right">
-                      {formatCurrency(invoice.total_vat, invoice.currency)}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-right font-medium">
-                      {formatCurrency(invoice.total_gross, invoice.currency)}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-right">
-                      {formatCurrency(invoice.paid_amount, invoice.currency)}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          title="Download ZUGFeRD PDF/A-3"
-                          disabled={downloading !== null}
-                          onClick={() => void handleDownload(invoice, 'zugferd')}
-                        >
-                          {downloading === `${invoice.id}:zugferd` ? (
-                            <Loader2 className="animate-spin" />
-                          ) : (
-                            <Download />
-                          )}
-                          PDF
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          title="Download XRechnung XML"
-                          disabled={downloading !== null}
-                          onClick={() => void handleDownload(invoice, 'xrechnung')}
-                        >
-                          {downloading === `${invoice.id}:xrechnung` ? (
-                            <Loader2 className="animate-spin" />
-                          ) : (
-                            <FileDown />
-                          )}
-                          XML
-                        </Button>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {canMarkPaid && !paidUp && open > 0 ? (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setPayingInvoice(invoice)}
-                        >
-                          <CreditCard />
-                          Mark as paid
-                        </Button>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">
-                          {paidUp ? 'Closed' : 'Admin only'}
+                        <span className="block font-sans text-xs font-normal text-muted-foreground">
+                          {invoice.vat_breakdown.length} VAT rate(s)
                         </span>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                )
-              })}
-            </TableBody>
-          </Table>
+                      </th>
+                      <td
+                        data-label="Issued / due"
+                        className="whitespace-nowrap px-3 py-3 align-top text-sm"
+                      >
+                        <div>{formatDate(invoice.issue_date)}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {formatDate(invoice.due_date)}
+                        </div>
+                      </td>
+                      <td data-label="Status" className="px-3 py-3 align-top">
+                        <StatusBadge status={invoice.status} />
+                      </td>
+                      <td
+                        data-label="Net"
+                        className="whitespace-nowrap px-3 py-3 text-right align-top"
+                      >
+                        {formatCurrency(invoice.total_net, invoice.currency)}
+                      </td>
+                      <td
+                        data-label="VAT"
+                        className="whitespace-nowrap px-3 py-3 text-right align-top"
+                      >
+                        {formatCurrency(invoice.total_vat, invoice.currency)}
+                      </td>
+                      <td
+                        data-label="Gross"
+                        className="whitespace-nowrap px-3 py-3 text-right align-top font-medium"
+                      >
+                        {formatCurrency(invoice.total_gross, invoice.currency)}
+                      </td>
+                      <td
+                        data-label="Paid"
+                        className="whitespace-nowrap px-3 py-3 text-right align-top"
+                      >
+                        {formatCurrency(invoice.paid_amount, invoice.currency)}
+                      </td>
+                      <td data-label="Documents" className="px-3 py-3 align-top">
+                        <div className="flex flex-wrap items-center gap-1">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            title="Download ZUGFeRD PDF/A-3"
+                            aria-label={`Download ZUGFeRD PDF for ${invoice.invoice_number}`}
+                            disabled={downloading !== null}
+                            onClick={() => void handleDownload(invoice, 'zugferd')}
+                          >
+                            {downloading === `${invoice.id}:zugferd` ? (
+                              <Loader2 className="animate-spin" aria-hidden="true" />
+                            ) : (
+                              <Download aria-hidden="true" />
+                            )}
+                            PDF
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            title="Download XRechnung XML"
+                            aria-label={`Download XRechnung XML for ${invoice.invoice_number}`}
+                            disabled={downloading !== null}
+                            onClick={() => void handleDownload(invoice, 'xrechnung')}
+                          >
+                            {downloading === `${invoice.id}:xrechnung` ? (
+                              <Loader2 className="animate-spin" aria-hidden="true" />
+                            ) : (
+                              <FileDown aria-hidden="true" />
+                            )}
+                            XML
+                          </Button>
+                        </div>
+                      </td>
+                      <td data-label="Actions" className="px-3 py-3 align-top">
+                        <div className="flex flex-wrap items-center justify-end gap-1">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            aria-label={`View invoice ${invoice.invoice_number}`}
+                            onClick={() =>
+                              setDetailInvoice({
+                                id: invoice.id,
+                                number: invoice.invoice_number,
+                              })
+                            }
+                          >
+                            <Eye aria-hidden="true" />
+                            Details
+                          </Button>
+                          {canMarkPaid && !paidUp && open > 0 ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setPayingInvoice(invoice)}
+                            >
+                              <CreditCard aria-hidden="true" />
+                              Mark as paid
+                            </Button>
+                          ) : null}
+                        </div>
+                        {!canMarkPaid && !paidUp && open > 0 ? (
+                          <span className="mt-1 block text-right text-xs text-muted-foreground">
+                            Admin only
+                          </span>
+                        ) : null}
+                        {paidUp ? (
+                          <span className="mt-1 block text-right text-xs text-muted-foreground">
+                            Closed
+                          </span>
+                        ) : null}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         </Card>
       )}
 
@@ -462,6 +555,16 @@ export function InvoicesPage() {
           onClose={() => setPayingInvoice(null)}
         />
       ) : null}
+
+      <InvoiceDetailSheet
+        invoiceId={detailInvoice?.id ?? null}
+        invoiceNumber={detailInvoice?.number ?? null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDetailInvoice(null)
+          }
+        }}
+      />
     </div>
   )
 }

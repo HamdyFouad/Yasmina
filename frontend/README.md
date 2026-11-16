@@ -42,7 +42,8 @@ npm run test:e2e   # Playwright golden path (needs a seeded API)
 
 `tests/e2e/golden-path.spec.ts` covers the operator lifecycle in a real browser:
 approver login → pending offer → four-eyes approval with an e-invoice →
-admin login → invoice list → payment → outbox retry. `tests/e2e/admin-users.spec.ts`
+admin login → invoice detail → partial credit note → payment → outbox retry.
+`tests/e2e/admin-users.spec.ts`
 logs in as the seeded admin, creates an account in the Users console, locks it
 through the cancel-focused confirmation, and checks that an approver is
 redirected away from `/admin/users`. Both use ARIA locators (`getByRole`,
@@ -63,7 +64,7 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 | `/` | Overview: owner-scoped KPI cards, gross invoiced/paid/outstanding, recent audit events (admin/viewer), ERPNext outbox counts (admin/viewer) and session details. |
 | `/tenders` | Paginated tender board with status filter. Rows open a detail sheet with metadata, the original GAEB/PDF download, hybrid catalogue matching and linked pricing offers with their line/VAT breakdown and totals. |
 | `/offers` | Paginated offer workspace with status and owner filters, a responsive table, a detail side panel (server VAT breakdown, signature state, line items) and the approver/admin four-eyes approval dialog with an optional “Generate e-invoice” section (buyer, Leitweg-ID, due date, IBAN, payment terms). `?offer=<id>` deep-links the side panel (used by the Outbox). |
-| `/invoices` | Paginated invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, and the admin-only "Mark as paid" dialog. |
+| `/invoices` | Responsive invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, the admin-only "Mark as paid" dialog and an invoice detail sheet (authoritative totals, VAT breakdown, credit-note history, document downloads, verified GoBD event timeline, admin-only credit-note dialog with inline amount/reason validation). |
 | `/ops/outbox` | Operations console for quotation_sync_jobs: status filter, attempts/retry budget, next attempt, last ERPNext error, a Retry action for failed jobs (admin/approver) and a link to the linked offer. |
 | `/admin/catalog` | Admin-only catalogue override table with supplier/article filters, pin badges and a dialog to add, replace or clear pinned merge fields. |
 | `/settings` | Account security: profile summary, TOTP enrolment (QR code, manual secret, otpauth URI), ten one-time recovery codes with mandatory acknowledgment, and a password/code-confirmed disable dialog. Bootstrap-admin accounts see an explanatory notice. |
@@ -98,8 +99,10 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 - `GET /offers?tender_id={id}`, `GET /offers` (status/owner/limit/offset),
   `GET /offers/{id}` (includes the server-computed `vat_breakdown`)
 - `POST /approvals/approve` (server signs the offer for the authenticated approver; optional `invoice` block generates the ZUGFeRD/XRechnung artifacts)
-- `GET /invoices`, `GET /invoices/{id}/documents/{zugferd|xrechnung}`,
-  `POST /invoices/{id}/payments`
+- `GET /invoices`, `GET /invoices/{id}` (invoice + events + `event_chain_valid`),
+  `GET /invoices/{id}/documents/{zugferd|xrechnung}`,
+  `GET /invoices/{id}/credit-notes`, `POST /invoices/{id}/payments`,
+  `POST /invoices/{id}/credits`
 - `GET /ops/summary`, `GET /ops/activity`, `GET /ops/outbox-status`
 - `GET /ops/outbox` (status/limit/offset), `POST /ops/outbox/{job_id}/retry`
 - `GET /admin/catalog/overrides`, `POST /admin/catalog/overrides`
@@ -119,17 +122,20 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 - [x] Overview KPIs, billing totals, audit activity feed and ERPNext outbox widget
 - [x] Paginated tender board, status filter and detail sheet
 - [x] Source-document download, catalogue matching scores and linked offer pricing
-- [x] Paginated invoice table with ZUGFeRD/XRechnung downloads
+- [x] Responsive invoice table with ZUGFeRD/XRechnung downloads
 - [x] Admin-only "Mark as paid" payment dialog
 - [x] Admin catalogue override table and pin/replace/clear dialog
 - [x] Outbox console with status filter, pagination and a failed-job Retry action
 - [x] Offer workspace with status/owner filters, detail side panel and four-eyes approval dialog
 - [x] Optional e-invoice issuance (ZUGFeRD/XRechnung) from the approval dialog with inline validation and 422 recovery
-- [x] Playwright golden-path E2E (approval + invoice + payment + outbox retry) in CI
+- [x] Playwright golden-path E2E (approval + credit note + invoice + payment + outbox retry) in CI
 - [x] Settings page for TOTP enrolment, QR/manual secret and one-time recovery codes
 - [x] Recovery-code login fallback for MFA-enabled accounts
 - [x] Admin Users console (create, roles, reset token, lock/unlock) with a responsive table
 - [x] Playwright admin flow (create/lock user) and `/admin/users` RBAC redirect
+- [x] Responsive container-query invoice table and invoice detail sheet with totals, VAT and downloads
+- [x] Admin credit-note dialog with amount/reason validation, cancel-first focus and in-place status refresh
+- [x] GoBD hash-chain event timeline with verified/broken chain state and per-event hashes
 
 ## Production edge
 

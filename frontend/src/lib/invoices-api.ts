@@ -1,6 +1,10 @@
 import { api } from '@/lib/api-client'
 import { filenameFromDisposition, saveBlob } from '@/lib/download'
 import type {
+  CreditNote,
+  InvoiceCreditNotesResponse,
+  InvoiceCreditRequest,
+  InvoiceCreditResponse,
   InvoiceDetailResponse,
   InvoiceDocumentFormat,
   InvoiceListResponse,
@@ -26,6 +30,24 @@ export async function fetchInvoices(params: {
 
 export async function fetchInvoice(invoiceId: string): Promise<InvoiceDetailResponse> {
   const response = await api.get<InvoiceDetailResponse>(`/invoices/${invoiceId}`)
+  return response.data
+}
+
+export async function fetchInvoiceCreditNotes(invoiceId: string): Promise<CreditNote[]> {
+  const response = await api.get<InvoiceCreditNotesResponse>(
+    `/invoices/${invoiceId}/credit-notes`,
+  )
+  return response.data.credit_notes
+}
+
+export async function issueInvoiceCredit(
+  invoiceId: string,
+  payload: InvoiceCreditRequest,
+): Promise<InvoiceCreditResponse> {
+  const response = await api.post<InvoiceCreditResponse>(
+    `/invoices/${invoiceId}/credits`,
+    payload,
+  )
   return response.data
 }
 

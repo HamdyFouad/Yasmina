@@ -309,8 +309,10 @@ automatically. The dashboard ships the branded login, protected shell,
 cookie-based JWT/refresh interceptor, a live overview with KPIs and the audit
 activity feed, the tender board with a detail sheet (source download, catalogue
 matching and linked offer pricing), the paginated invoice table with
-ZUGFeRD/XRechnung downloads plus the admin-only payment dialog, the
-Operations → Outbox console where admins/approvers retry failed ERPNext
+ZUGFeRD/XRechnung downloads plus the admin-only payment dialog, an invoice
+detail sheet with authoritative totals, VAT breakdown, credit notes, document
+downloads and the verified GoBD event timeline, the admin-only credit-note
+dialog, the Operations → Outbox console where admins/approvers retry failed ERPNext
 quotation jobs and jump to the linked offer, the Offers workspace with
 status/owner filters, VAT and line-item detail, and the four-eyes approval
 dialog that can optionally issue the ZUGFeRD/XRechnung invoice in the same
@@ -509,6 +511,14 @@ state machine.
   (`prev_hash` → `entry_hash`), mirroring the `audit_logs` design. PostgreSQL
   triggers reject `UPDATE`, `DELETE` and `TRUNCATE`, so the log is append-only
   and GoBD-compliant; `GET /invoices/{id}` re-verifies the chain on read.
+- The dashboard renders that contract directly: the invoices table opens a
+  detail sheet with the server totals, VAT split, paid/credited/outstanding
+  amounts, e-invoice downloads and the `GS-` credit-note history. The event
+  timeline shows actor, timestamp, sequence, amount, reference and the
+  `prev_hash`/`entry_hash` pair, with a verified/broken chain badge. Admins issue
+  partial or full credits from the sheet through a validated amount/reason
+  dialog; the cache updates in place, so the invoice status and credited total
+  change without a page reload.
 
 #### ERPNext and n8n integration
 
@@ -1491,6 +1501,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P7.5 — invoice issuance in the approval console: collapsed buyer/invoice section with inline validation (aria-invalid/aria-describedby, blur-then-submit timing), Leitweg reference, due date, IBAN and payment terms in the approval payload, artifact keys/links in the success toast, `['invoices']`/`['ops']` invalidation and a 422 invoice-failure path that keeps the signed approval
 - [x] P7.6 — Playwright golden-path E2E: deterministic seed script (approver + admin users, tender, pending offer, failed outbox job), browser flow for four-eyes approval with e-invoice, invoice payment and outbox retry, and a CI job wiring PostgreSQL/MinIO/ClamAV, uvicorn and Vite
 - [x] P7.7 — security & user administration: TOTP enrolment settings page with QR/manual key and ten single-use recovery codes (hashed, acknowledged before dismissal), recovery-code login, an admin Users console (responsive table, create account, role editing, reset tokens, lock/unlock with cancel-focused confirmations), `/auth/users` listing/roles/lock/unlock APIs with self-action guards and audit events, and Playwright coverage for the admin flow and RBAC redirect
+- [x] P7.8 — billing completion UI: responsive container-query invoice table with an invoice detail sheet (authoritative totals, VAT split, paid/credited/outstanding, ZUGFeRD/XRechnung downloads, `GS-` credit-note history), an admin credit-note dialog with amount/reason validation, cancel-first focus and in-place status refresh, a verified GoBD hash-chain event timeline, and a Playwright credit-note → payment flow with the credit-note reason included in the API response
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

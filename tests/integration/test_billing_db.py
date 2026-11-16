@@ -212,6 +212,8 @@ async def test_credit_notes_gaplessly_numbered_and_events_hash_chained() -> None
                 actor="billing-test",
             )
             assert note.credit_note_number == "GS-2099-0001"
+            assert note.reason == "Retoure"
+            assert note.as_dict()["reason"] == "Retoure"
             assert note.total_gross == Decimal("26.00")
             assert note.total_net + note.total_vat == note.total_gross
 
