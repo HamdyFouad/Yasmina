@@ -31,3 +31,8 @@ var/
 *.sqlite3
 .DS_Store
 Thumbs.db
+
+# Playwright E2E artefacts
+frontend/tests/e2e/.fixtures.json
+frontend/playwright-report/
+frontend/test-results/

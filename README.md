@@ -981,7 +981,7 @@ yasmina-approval verify --offer signed.json --public-key $env:ED25519_APPROVAL_P
 `yasmina-approval sign` remains available for offline tooling, but the API
 ignores client signatures and re-signs with the custody key.
 
-GitHub Actions (`.github/workflows/ci.yml`) has five gates:
+GitHub Actions (`.github/workflows/ci.yml`) has six gates:
 
 - **quality** — `ruff check .`, `ruff format --check .`, `mypy src` (strict),
   byte compilation, offline migration rendering, compose validation and the
@@ -1003,9 +1003,39 @@ GitHub Actions (`.github/workflows/ci.yml`) has five gates:
   CRITICAL/HIGH OS/package scan of the freshly built image.
 - **frontend** — `npm ci`, `oxlint` and the strict TypeScript/Vite production
   build of the operations dashboard.
+- **e2e** — a Playwright golden-path run against a live stack: PostgreSQL,
+  MinIO and ClamAV services, Alembic migrations, `scripts/seed_e2e.py` fixtures
+  (approver + admin users, tender, pending offer, failed outbox job), a
+  throwaway Ed25519 custody key, uvicorn on `127.0.0.1:8000` and Vite on
+  `127.0.0.1:5173`. The test logs in as the approver, approves the offer with
+  an e-invoice, then as the admin verifies the invoice, records a payment and
+  retries the failed outbox job. Traces, screenshots and the Playwright HTML
+  report are uploaded on failure.
 
 CI uses `.[dev,e-invoicing]`; local installations may also add
 `.[catalogue]` for local BGE-M3 embeddings.
+
+### End-to-end browser tests
+
+The Playwright suite lives in `frontend/tests/e2e/` and expects a seeded
+database plus a running API. Locally:
+
+```powershell
+docker compose up -d postgres minio clamav
+python -m alembic upgrade head
+# create the MinIO bucket once, then seed fixture rows and a fixture file
+python scripts/seed_e2e.py --suffix local --output frontend/tests/e2e/.fixtures.json
+python -m uvicorn src.main:app --host 127.0.0.1 --port 8000
+
+cd frontend
+npx playwright install chromium
+npm run test:e2e
+```
+
+The API needs `ED25519_APPROVAL_PRIVATE_KEY` (a throwaway key is fine) and the
+`COMPANY_*` invoice-seller values; `python -m src.admin generate-approval-key`
+prints a pair. The seed script only writes PostgreSQL rows; it never calls the
+API, MinIO or the outbox worker. Fixtures and Playwright reports are git-ignored.
 
 ---
 
@@ -1440,6 +1470,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P7.3 — portal rollout factory: read-only `worker probe --portal <id>` dry run with discovered-vs-parsed counts, per-selector extraction diagnostics, zero-result warnings and JSON output for automation
 - [x] P7.4 — offer & approval workspace: approver read access to offers with an optional owner filter and a server-computed VAT breakdown, a responsive `/offers` console with status/owner filters and a detail side panel, a server-signed four-eyes approval dialog with 403 handling, and outbox rows deep-linking to the linked offer
 - [x] P7.5 — invoice issuance in the approval console: collapsed buyer/invoice section with inline validation (aria-invalid/aria-describedby, blur-then-submit timing), Leitweg reference, due date, IBAN and payment terms in the approval payload, artifact keys/links in the success toast, `['invoices']`/`['ops']` invalidation and a 422 invoice-failure path that keeps the signed approval
+- [x] P7.6 — Playwright golden-path E2E: deterministic seed script (approver + admin users, tender, pending offer, failed outbox job), browser flow for four-eyes approval with e-invoice, invoice payment and outbox retry, and a CI job wiring PostgreSQL/MinIO/ClamAV, uvicorn and Vite
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

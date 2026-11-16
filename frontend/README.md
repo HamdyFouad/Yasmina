@@ -34,7 +34,22 @@ npm run lint       # oxlint
 npm run typecheck  # tsc -b
 npm run build      # type-check + production bundle
 npm run preview    # serve the built bundle
+npm run test:e2e   # Playwright golden path (needs a seeded API)
 ```
+
+## End-to-end tests
+
+`tests/e2e/golden-path.spec.ts` covers the operator lifecycle in a real browser:
+approver login → pending offer → four-eyes approval with an e-invoice →
+admin login → invoice list → payment → outbox retry. It uses ARIA locators
+(`getByRole`, `getByLabel`) and a single worker, so the run is deterministic.
+
+Prerequisites: PostgreSQL/MinIO/ClamAV, Alembic migrations, an API on
+`127.0.0.1:8000` with `ED25519_APPROVAL_PRIVATE_KEY` and `COMPANY_*` values, and
+the fixture rows from `python scripts/seed_e2e.py` (repo root). The seed writes
+the git-ignored `tests/e2e/.fixtures.json` consumed by the spec. `CI=true` lets
+Playwright start Vite itself; locally an already running dev server is reused.
+Reports and traces land in `playwright-report/` and `test-results/`.
 
 ## Views
 
@@ -98,7 +113,7 @@ npm run preview    # serve the built bundle
 - [x] Outbox console with status filter, pagination and a failed-job Retry action
 - [x] Offer workspace with status/owner filters, detail side panel and four-eyes approval dialog
 - [x] Optional e-invoice issuance (ZUGFeRD/XRechnung) from the approval dialog with inline validation and 422 recovery
-- [ ] Browser end-to-end tests
+- [x] Playwright golden-path E2E (approval + invoice + payment + outbox retry) in CI
 
 ## Production edge
 

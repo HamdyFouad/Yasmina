@@ -900,3 +900,33 @@ for deterministic fixture and chain-verification tests.
 - On success the toast includes the returned artifact object keys and download
   URLs, and `['invoices']` plus `['ops']` are invalidated so the invoice list and
   dashboard widgets refresh.
+## Playwright golden-path E2E assumptions (P7.6)
+
+- `scripts/seed_e2e.py` is the only fixture source. It writes users, a published
+  tender, a `PENDING_APPROVAL` offer (owner `e2e-sales`), a second DRAFT offer
+  and one terminal `FAILED` quotation-sync job, then emits
+  `frontend/tests/e2e/.fixtures.json`. It never calls the API, MinIO, the
+  outbox worker or the scheduler; it only uses the existing repositories/ORM.
+- Every run gets a unique suffix (default UTC timestamp, CI uses
+  `run_id-run_attempt`) so usernames, tender numbers, offer numbers and the
+  tender `dedup_hash` cannot collide on reruns. The fixture file and Playwright
+  artefacts are git-ignored.
+- The golden path uses two browser contexts: the seeded `approver` performs the
+  four-eyes approval, then the seeded `admin` verifies the invoice, records the
+  payment and retries the outbox job. This mirrors the real RBAC boundary
+  (approvers cannot read invoices; payments are admin-only) instead of giving
+  the approver an admin role.
+- Playwright runs chromium only, with one worker and no retries because the test
+  consumes seeded state (approval/invoice/retry); a retry would need a fresh
+  database. Vite is started by Playwright's `webServer` (reusing a local server
+  outside CI) and proxies `/api` to `127.0.0.1:8000`.
+- The E2E CI job provisions PostgreSQL and ClamAV services plus a MinIO
+  container, applies Alembic, seeds fixtures, generates a throwaway Ed25519 key
+  pair (never a committed private key), starts uvicorn behind a `/healthz` wait
+  loop and installs Playwright Chromium before running `npm run test:e2e`.
+  Traces, screenshots, the HTML report and the API log are uploaded on failure.
+- ERPNext is intentionally unconfigured in CI, so the approval toast reports
+  "signed (ERPNext is not configured)" and the only outbox job is the seeded
+  failed one; the spec asserts the `signed` prefix rather than the ERP status.
+- Locators are role/label based (`getByRole`, `getByLabel`) so the suite fails
+  on real accessibility regressions instead of CSS churn.
