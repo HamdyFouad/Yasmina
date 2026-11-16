@@ -169,7 +169,7 @@ class XRechnungGenerator:
                     "IssueDate",
                     invoice.preceding_invoice_date.isoformat(),
                 )
-        if invoice.order_reference:
+        if invoice.order_reference and not credit_note:
             order = _sub(root, UBL_CAC, "OrderReference")
             _sub(order, UBL_CBC, "ID", invoice.order_reference)
 

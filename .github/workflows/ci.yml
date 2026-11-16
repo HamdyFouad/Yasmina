@@ -327,6 +327,9 @@ jobs:
 
     env:
       E2E_SUFFIX: ${{ github.run_id }}-${{ github.run_attempt }}
+      # The browser suite reloads and rotates sessions across several flows; keep
+      # the auth bucket out of the way so tests do not become rate-limit tests.
+      RATE_LIMIT_AUTH_PER_MINUTE: "100"
       COMPANY_NAME: Yasmina E2E GmbH
       COMPANY_STREET: Hauptstr. 1
       COMPANY_CITY: Berlin

@@ -49,6 +49,7 @@ def make_original() -> StoredInvoice:
             email="einkauf@musterstadt.de",
         ),
         buyer_reference="991-03730-19",
+        order_reference="E2E-REF-1",
         lines=[line],
         total_net=Decimal("100.00"),
         total_vat=Decimal("19.00"),
