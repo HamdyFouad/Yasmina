@@ -51,6 +51,10 @@ export async function uploadTender(
   const form = new FormData()
   form.append('file', file)
   const response = await api.post<UploadTenderResponse>('/tenders/upload', form, {
+    // The shared Axios instance defaults to application/json, which would make
+    // Axios serialize FormData to JSON. A multipart type keeps it as FormData;
+    // Axios then unsets it in the browser so the boundary is added correctly.
+    headers: { 'Content-Type': 'multipart/form-data' },
     onUploadProgress: (event) => {
       if (onProgress !== undefined && event.total !== undefined && event.total > 0) {
         onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)))
