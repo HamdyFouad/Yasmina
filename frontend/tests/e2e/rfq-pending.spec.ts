@@ -39,7 +39,7 @@ test('RFQ pending reservation returns 409 and recovers after the TTL', async ({ 
       await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('Pending Supplier')
       await dialog
         .getByRole('textbox', { name: 'E-mail', exact: true })
-        .fill('pending@example.test')
+        .fill('pending@supplier.de')
       await dialog.getByRole('button', { name: 'Dispatch RFQ' }).click()
     }
 

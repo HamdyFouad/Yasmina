@@ -65,7 +65,7 @@ test('tender to export: sales prices, approver signs, and .x84 downloads', async
     await rfqDialog.getByRole('textbox', { name: 'Name', exact: true }).fill('n8n Hygiene AG')
     await rfqDialog
       .getByRole('textbox', { name: 'E-mail', exact: true })
-      .fill('quotes@n8n.example')
+      .fill('quotes@hygiene-gross.de')
     await rfqDialog.getByRole('button', { name: 'Dispatch RFQ' }).click()
     await expect(rfqDialog.getByText('RFQ dispatched')).toBeVisible()
     await rfqDialog.getByRole('button', { name: 'Close', exact: true }).last().click()
