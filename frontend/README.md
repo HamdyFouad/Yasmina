@@ -1,8 +1,8 @@
 # Yasmina Day 2 Operations Dashboard
 
 Operations console for the Yasmina API: authentication, an overview with KPIs and
-the audit activity feed, the tender pipeline with matching/pricing detail, and
-invoice billing with compliant document downloads.
+the audit activity feed, tender intake with upload/review and server-priced offer
+creation, and invoice billing with compliant document downloads.
 
 ## Stack
 
@@ -45,10 +45,13 @@ approver login → pending offer → four-eyes approval with an e-invoice →
 admin login → invoice detail → partial credit note → payment → outbox retry.
 `tests/e2e/account-recovery.spec.ts` exercises the public forgot-password page,
 an admin-issued reset token, the `/reset-password` form and a login with the new
-password. `tests/e2e/admin-users.spec.ts`
-logs in as the seeded admin, creates an account in the Users console, locks it
-through the cancel-focused confirmation, and checks that an approver is
-redirected away from `/admin/users`. All use ARIA locators (`getByRole`,
+password. `tests/e2e/admin-users.spec.ts` logs in as the seeded admin, creates
+an account in the Users console, locks it through the cancel-focused
+confirmation, and checks that an approver is redirected away from
+`/admin/users`. `tests/e2e/tender-intake.spec.ts` uploads the checked-in
+`.x83` fixture, reviews parser warnings and positions, reassigns the owner,
+prices the positions with freight/pallet surcharges, verifies the server-preview
+totals and creates the draft offer. All use ARIA locators (`getByRole`,
 `getByLabel`) and a single worker, so the run is deterministic.
 
 Prerequisites: PostgreSQL/MinIO/ClamAV, Alembic migrations, an API on
@@ -66,8 +69,8 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 | `/forgot-password` | Public username form calling `POST /auth/password/reset/request`; always shows the same confirmation. |
 | `/reset-password` | Public token + new-password form calling `POST /auth/password/reset`, with inline validation and success state. |
 | `/` | Overview: owner-scoped KPI cards, gross invoiced/paid/outstanding, recent audit events (admin/viewer), ERPNext outbox counts (admin/viewer) and session details. |
-| `/tenders` | Paginated tender board with status filter. Rows open a detail sheet with metadata, the original GAEB/PDF download, hybrid catalogue matching and linked pricing offers with their line/VAT breakdown and totals. |
-| `/offers` | Paginated offer workspace with status and owner filters, a responsive table, a detail side panel (server VAT breakdown, signature state, line items) and the approver/admin four-eyes approval dialog with an optional “Generate e-invoice” section (buyer, Leitweg-ID, due date, IBAN, payment terms). `?offer=<id>` deep-links the side panel (used by the Outbox). |
+| `/tenders` | Paginated tender board with status filter. The header uploads GAEB `.x83`/`.d83` or PDF tenders, shows ClamAV/parse errors and structural warnings, reviews normalized positions and lets an admin reassign the owner. Rows open a detail sheet with metadata, source download, hybrid catalogue matching, linked offers and an offer-creation dialog: per-position supplier costs, margin, freight flat, pallet unit/count, live `/price` VAT/totals preview, then `/workflow` draft creation. |
+| `/offers` | Paginated offer workspace with status and owner filters, a responsive table, a detail side panel (server VAT breakdown, signature state, line items, approved `.x84` bid download) and the approver/admin four-eyes approval dialog with an optional “Generate e-invoice” section (buyer, Leitweg-ID, due date, IBAN, payment terms). `?offer=<id>` deep-links the side panel (used by the Outbox and offer-creation handoff). |
 | `/invoices` | Responsive invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, the admin-only "Mark as paid" dialog and an invoice detail sheet (authoritative totals, line items including freight/pallet surcharges, VAT breakdown, credit-note history with credit-note PDF/XML downloads, document downloads, verified GoBD event timeline, admin-only credit-note/cancel/email dialogs with inline validation). |
 | `/ops/outbox` | Operations console for quotation_sync_jobs: status filter, attempts/retry budget, next attempt, last ERPNext error, a Retry action for failed jobs (admin/approver) and a link to the linked offer. |
 | `/admin/catalog` | Admin-only catalogue override table with supplier/article filters, pin badges and a dialog to add, replace or clear pinned merge fields. |
@@ -103,10 +106,13 @@ Reports and traces land in `playwright-report/` and `test-results/`.
   `PATCH /auth/users/{username}/roles`,
   `POST /auth/users/{username}/lock|unlock`,
   `POST /auth/users/{username}/password/reset`
-- `GET /tenders`, `GET /tenders/{id}`, `GET /tenders/{id}/document`
-- `POST /tenders/{id}/match`
+- `POST /tenders/upload`, `PATCH /tenders/{id}/owner`,
+  `GET /tenders`, `GET /tenders/{id}`, `GET /tenders/{id}/document`
+- `POST /tenders/{id}/match`, `POST /tenders/{id}/price`,
+  `POST /tenders/{id}/workflow`
 - `GET /offers?tender_id={id}`, `GET /offers` (status/owner/limit/offset),
-  `GET /offers/{id}` (includes the server-computed `vat_breakdown`)
+  `GET /offers/{id}` (includes the server-computed `vat_breakdown`),
+  `POST /offers/{id}/x84`, `GET /offers/{id}/x84`
 - `POST /approvals/approve` (server signs the offer for the authenticated approver; optional `invoice` block generates the ZUGFeRD/XRechnung artifacts)
 - `GET /invoices`, `GET /invoices/{id}` (invoice + line items + events +
   `event_chain_valid`), `GET /invoices/{id}/documents/{zugferd|xrechnung}`,
@@ -132,6 +138,10 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 - [x] Cookie-based refresh sessions with in-memory access tokens
 - [x] Overview KPIs, billing totals, audit activity feed and ERPNext outbox widget
 - [x] Paginated tender board, status filter and detail sheet
+- [x] Tender upload with file validation, ClamAV/parse error states and structural warnings
+- [x] Parsed-position review, parser-warning display and admin owner assignment
+- [x] Offer creation with per-position supplier costs, margin/freight/pallet controls and server pricing preview
+- [x] Approved GAEB `.x84` bid download from offer and tender details
 - [x] Source-document download, catalogue matching scores and linked offer pricing
 - [x] Responsive invoice table with ZUGFeRD/XRechnung downloads
 - [x] Admin-only "Mark as paid" payment dialog

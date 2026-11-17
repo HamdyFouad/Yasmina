@@ -30,6 +30,7 @@ from src.api.deps import (
     get_offer_repository,
     get_session,
     get_tender_repository,
+    get_user_repository,
     get_workflow_checkpointer,
     require_roles,
 )
@@ -37,6 +38,7 @@ from src.api.metrics import observe_workflow
 from src.api.schemas import (
     MatchPayload,
     PricePayload,
+    TenderOwnerPayload,
     WorkflowPayload,
     parse_customer_offer,
     parse_supplier_quotes,
@@ -49,7 +51,12 @@ from src.integrations.minio_client import (
     ObjectStorageError,
     object_name_for_tender,
 )
-from src.models.enums import ProcurementProcedure, TenderSourceFormat, TenderStatus
+from src.models.enums import (
+    AuditEventType,
+    ProcurementProcedure,
+    TenderSourceFormat,
+    TenderStatus,
+)
 from src.models.schemas import CustomerOffer, Tender
 from src.parsers.gaeb_parser import GaebParseError, parse_gaeb
 from src.parsers.pdf_parser import PdfParseError, PdfParserUnavailable, parse_pdf
@@ -63,14 +70,14 @@ from src.repositories.tender_repository import (
     TenderRepository,
     TenderRepositoryError,
 )
+from src.repositories.user_repository import UserRepository
 from src.services.audit_service import AuditService, AuditServiceError
 from src.services.matching_service import HybridMatchingService, MatchingError, MatchResult
+from src.services.tender_documents import TenderDocumentError, load_tender_document
 
 __all__ = ["router"]
 
 router = APIRouter(prefix="/tenders", tags=["tenders"])
-
-_GAEB_SUFFIXES = {".x83", ".d83"}
 
 
 def _match_payload(result: MatchResult) -> dict[str, Any]:
@@ -85,48 +92,23 @@ def _match_payload(result: MatchResult) -> dict[str, Any]:
     }
 
 
-async def _stored_with_document(
-    stored: StoredTender,
-    storage: MinioObjectStorage,
-) -> StoredTender:
-    if stored.document is not None or not stored.source_object:
-        return stored
-    suffix = Path(stored.source_filename or stored.source_object).suffix.lower()
-    if suffix not in _GAEB_SUFFIXES:
-        return stored
-
-    try:
-        data = await storage.get_bytes(stored.source_object)
-    except ObjectStorageError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        ) from exc
-
-    tmp = Path(tempfile.gettempdir()) / f"{uuid4().hex}{suffix}"
-    tmp.write_bytes(data)
-    try:
-        parsed = await run_in_threadpool(parse_gaeb, tmp)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"cannot rehydrate GAEB source: {exc}",
-        ) from exc
-    finally:
-        tmp.unlink(missing_ok=True)
-    return StoredTender(
-        tender=stored.tender,
-        document=parsed.document,
-        source_filename=stored.source_filename,
-        source_path=stored.source_path,
-        source_object=stored.source_object,
-    )
-
-
 def _tender_or_404(tender_id: UUID, stored: StoredTender | None) -> StoredTender:
     if stored is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tender not found")
     return stored
+
+
+async def _stored_with_document(
+    stored: StoredTender,
+    storage: MinioObjectStorage,
+) -> StoredTender:
+    try:
+        return await load_tender_document(stored, storage)
+    except TenderDocumentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
 
 def _is_sales_only(principal: Principal) -> bool:
@@ -220,6 +202,61 @@ async def get_tender(
             "available": bool(stored.source_object),
         },
     }
+
+
+@router.patch("/{tender_id}/owner")
+async def assign_tender_owner(
+    tender_id: UUID,
+    payload: TenderOwnerPayload,
+    repository: TenderRepository = Depends(get_tender_repository),
+    users: UserRepository = Depends(get_user_repository),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, Any]:
+    """Reassign a tender to another active account (admin only).
+
+    Sales users create tenders that are owned by themselves; an admin can move a
+    tender to the salesperson who will actually quote it.
+    """
+
+    stored = _tender_or_404(tender_id, await repository.get(tender_id))
+    target = await users.get_by_username(payload.owner.strip())
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="owner account not found")
+    if not target.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="owner account is inactive",
+        )
+
+    previous_owner = stored.tender.owner
+    try:
+        updated = await repository.set_owner(tender_id, target.username)
+    except TenderRepositoryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    try:
+        await audit.append(
+            event_type=AuditEventType.TENDER_OWNER_ASSIGNED,
+            actor=principal.sub,
+            entity_type="tender",
+            entity_id=str(tender_id),
+            payload={
+                "previous_owner": previous_owner,
+                "owner": updated.tender.owner,
+                "tender_number": updated.tender.tender_number,
+            },
+        )
+    except AuditServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"audit log unavailable: {exc}",
+        ) from exc
+
+    return {"tender": updated.tender.model_dump(mode="json")}
 
 
 @router.get("/{tender_id}/document")
@@ -530,7 +567,12 @@ async def run_tender_workflow(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="four-eyes principle: the offer owner cannot approve their own offer",
                 )
-        result_offer = result_offer.model_copy(update={"owner": principal.sub})
+        result_offer = result_offer.model_copy(
+            update={
+                "owner": principal.sub,
+                "gaeb_export_path": result.get("exported_path") or result_offer.gaeb_export_path,
+            }
+        )
         try:
             await offer_repository.save(result_offer)
         except OfferRepositoryConflict as exc:

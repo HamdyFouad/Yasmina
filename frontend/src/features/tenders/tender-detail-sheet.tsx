@@ -5,6 +5,7 @@ import {
   Download,
   FileText,
   Loader2,
+  Plus,
   RefreshCw,
   Sparkles,
   Truck,
@@ -31,9 +32,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { useAuth } from '@/features/auth/auth-context'
 import { apiErrorMessage } from '@/lib/api-error'
 import { unitLabel } from '@/lib/labels'
-import { fetchOffers, matchTender } from '@/lib/offers-api'
+import { downloadX84Bid, fetchOffers, matchTender } from '@/lib/offers-api'
 import { downloadTenderDocument, fetchTender } from '@/lib/tenders-api'
 import {
   formatCurrency,
@@ -43,7 +45,7 @@ import {
   formatQuantity,
   titleCase,
 } from '@/lib/utils'
-import type { CustomerOffer, TenderItem } from '@/types/domain'
+import type { CustomerOffer, Tender, TenderItem } from '@/types/domain'
 
 function MetaItem({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -102,7 +104,27 @@ function sourceFormatLabel(value: string): string {
   return value.startsWith('GAEB_') ? value.replace('_', ' ') : titleCase(value)
 }
 
+const X84_EXPORT_STATUSES: ReadonlySet<CustomerOffer['status']> = new Set([
+  'APPROVED',
+  'SENT',
+  'ACCEPTED',
+])
+
 function OfferPricing({ offer }: { offer: CustomerOffer }) {
+  const [downloading, setDownloading] = React.useState(false)
+
+  const handleX84Download = async (): Promise<void> => {
+    setDownloading(true)
+    try {
+      await downloadX84Bid(offer.id, `${offer.offer_number}.x84`)
+      toast.success('GAEB .x84 bid downloaded')
+    } catch (error) {
+      toast.error('GAEB export failed', { description: apiErrorMessage(error) })
+    } finally {
+      setDownloading(false)
+    }
+  }
+
   return (
     <details className="group rounded-md border border-border bg-background">
       <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-3 p-3 [&::-webkit-details-marker]:hidden">
@@ -132,6 +154,20 @@ function OfferPricing({ offer }: { offer: CustomerOffer }) {
         </div>
       </summary>
       <div className="space-y-3 border-t border-border p-3">
+        {X84_EXPORT_STATUSES.has(offer.status) ? (
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={downloading}
+              onClick={() => void handleX84Download()}
+            >
+              {downloading ? <Loader2 className="animate-spin" /> : <Download />}
+              Download .x84 bid
+            </Button>
+          </div>
+        ) : null}
         <dl className="grid gap-2 text-sm sm:grid-cols-3">
           <MetaItem label="Net total">{formatCurrency(offer.total_net, offer.currency)}</MetaItem>
           <MetaItem label="VAT">{formatCurrency(offer.total_vat, offer.currency)}</MetaItem>
@@ -176,7 +212,14 @@ function OfferPricing({ offer }: { offer: CustomerOffer }) {
   )
 }
 
-function TenderDetailBody({ tenderId }: { tenderId: string }) {
+function TenderDetailBody({
+  tenderId,
+  onCreateOffer,
+}: {
+  tenderId: string
+  onCreateOffer: (tender: Tender) => void
+}) {
+  const { hasRole } = useAuth()
   const detail = useQuery({
     queryKey: ['tender', tenderId],
     queryFn: () => fetchTender(tenderId),
@@ -231,6 +274,7 @@ function TenderDetailBody({ tenderId }: { tenderId: string }) {
   const { tender, document } = detail.data
   const matchResults = match.data?.tender_id === tenderId ? match.data.matches : null
   const offerList = offers.data?.offers ?? []
+  const canCreateOffer = hasRole('sales', 'admin') && tender.items.length > 0
   const warningSource = tender.metadata['pdf_warnings']
   const warnings: string[] = Array.isArray(warningSource)
     ? warningSource.filter((value): value is string => typeof value === 'string')
@@ -440,6 +484,19 @@ function TenderDetailBody({ tenderId }: { tenderId: string }) {
       <Section
         title="Pricing & linked offers"
         description="Deterministic customer offers priced from this tender."
+        action={
+          canCreateOffer ? (
+            <Button
+              type="button"
+              size="sm"
+              disabled={offers.isLoading}
+              onClick={() => onCreateOffer(tender)}
+            >
+              <Plus />
+              Create offer
+            </Button>
+          ) : undefined
+        }
       >
         {offers.isLoading ? (
           <Skeleton className="h-20 w-full" />
@@ -459,8 +516,8 @@ function TenderDetailBody({ tenderId }: { tenderId: string }) {
         <div className="flex items-start gap-2 rounded-md bg-muted p-3 text-xs text-muted-foreground">
           <Truck className="mt-0.5 h-4 w-4 shrink-0" />
           <p>
-            Freight and pallet costs are not part of the deterministic pricing engine yet; the totals
-            above contain material cost, margin and VAT only.
+            Freight and pallet costs are deterministic zero-margin surcharge lines in the pricing
+            engine. The totals above include material cost, margin, surcharges and VAT.
           </p>
         </div>
       </Section>
@@ -475,6 +532,7 @@ function TenderDetailBody({ tenderId }: { tenderId: string }) {
           </MetaItem>
         </dl>
       </Section>
+
     </div>
   )
 }
@@ -482,9 +540,11 @@ function TenderDetailBody({ tenderId }: { tenderId: string }) {
 export function TenderDetailSheet({
   tenderId,
   onOpenChange,
+  onCreateOffer,
 }: {
   tenderId: string | null
   onOpenChange: (open: boolean) => void
+  onCreateOffer: (tender: Tender) => void
 }) {
   return (
     <Sheet open={tenderId !== null} onOpenChange={onOpenChange}>
@@ -499,7 +559,9 @@ export function TenderDetailSheet({
             Metadata, source document, catalogue matches and linked pricing offers.
           </SheetDescription>
         </SheetHeader>
-        {tenderId !== null ? <TenderDetailBody tenderId={tenderId} /> : null}
+        {tenderId !== null ? (
+          <TenderDetailBody tenderId={tenderId} onCreateOffer={onCreateOffer} />
+        ) : null}
       </SheetContent>
     </Sheet>
   )

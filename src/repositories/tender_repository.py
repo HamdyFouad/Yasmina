@@ -271,6 +271,32 @@ class TenderRepository:
             source_object=source_object,
         )
 
+    async def set_owner(
+        self,
+        tender_id: UUID,
+        owner: str,
+        *,
+        commit: bool = True,
+    ) -> StoredTender:
+        """Reassign a tender to another user without touching its positions."""
+
+        statement = select(TenderORM).where(TenderORM.id == tender_id).options(selectinload(TenderORM.items))
+        orm = (await self.session.execute(statement)).scalars().first()
+        if orm is None:
+            raise TenderRepositoryError(f"tender {tender_id} does not exist")
+
+        orm.owner = owner
+        orm.updated_at = datetime.now(UTC)
+        try:
+            if commit:
+                await self.session.commit()
+            else:
+                await self.session.flush()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            raise TenderRepositoryError(f"tender owner could not be updated: {exc}") from exc
+        return self._stored(orm)
+
     async def replace_items(
         self,
         tender_id: UUID,

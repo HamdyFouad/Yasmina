@@ -26,6 +26,7 @@ from src.api.deps import (
     get_offer_repository,
     get_session,
     get_tender_repository,
+    get_user_repository,
     get_workflow_checkpointer,
 )
 from src.api.security import Role, create_access_token
@@ -60,6 +61,11 @@ APPROVER_TOKEN = create_access_token(
     "approver-user",
     [Role.APPROVER],
 )
+ADMIN_TOKEN = create_access_token(
+    Settings(_env_file=None, database_url=None, jwt_secret_key=TEST_JWT_SECRET),
+    "admin-user",
+    [Role.ADMIN],
+)
 
 
 def build_x83(path: Path) -> Path:
@@ -78,23 +84,26 @@ def build_x83(path: Path) -> Path:
     return path
 
 
-def make_settings() -> Settings:
-    return Settings(
-        _env_file=None,
-        database_url=None,
-        jwt_secret_key=TEST_JWT_SECRET,
-        api_admin_password="test-admin-password",
-        ed25519_approval_public_key=PUBLIC_KEY_HEX,
-        ed25519_approval_private_key=PRIVATE_KEY_HEX,
-        company_name="Yasmina GmbH",
-        company_street="Hauptstr. 1",
-        company_city="Berlin",
-        company_postal_code="10115",
-        company_vat_id="DE123456789",
-        company_iban="DE89370400440532013000",
-        company_email="rechnung@bayerclean.de",
-        company_phone="+49 941 123456",
-    )
+def make_settings(*, export_dir: Path | None = None) -> Settings:
+    data: dict[str, Any] = {
+        "_env_file": None,
+        "database_url": None,
+        "jwt_secret_key": TEST_JWT_SECRET,
+        "api_admin_password": "test-admin-password",
+        "ed25519_approval_public_key": PUBLIC_KEY_HEX,
+        "ed25519_approval_private_key": PRIVATE_KEY_HEX,
+        "company_name": "Yasmina GmbH",
+        "company_street": "Hauptstr. 1",
+        "company_city": "Berlin",
+        "company_postal_code": "10115",
+        "company_vat_id": "DE123456789",
+        "company_iban": "DE89370400440532013000",
+        "company_email": "rechnung@bayerclean.de",
+        "company_phone": "+49 941 123456",
+    }
+    if export_dir is not None:
+        data["gaeb_export_dir"] = export_dir
+    return Settings(**data)  # type: ignore[arg-type]
 
 
 def auth(token: str) -> dict[str, str]:
@@ -207,6 +216,23 @@ class FakeTenderRepository:
     async def get(self, tender_id):  # type: ignore[no-untyped-def]
         return self.items.get(tender_id)
 
+    async def set_owner(self, tender_id, owner):  # type: ignore[no-untyped-def]
+        stored = self.items[tender_id]
+        updated = StoredTender(
+            tender=stored.tender.model_copy(update={"owner": owner}),
+            document=stored.document,
+            source_filename=stored.source_filename,
+            source_path=stored.source_path,
+            source_object=stored.source_object,
+        )
+        self.items[tender_id] = updated
+        return updated
+
+
+class FakeUserRepository:
+    async def get_by_username(self, username: str) -> SimpleNamespace:
+        return SimpleNamespace(username=username, is_active=True)
+
 
 class CleanScanner:
     async def scan_bytes(self, data: bytes) -> ClamAVResult:
@@ -276,7 +302,10 @@ class FakeOfferRepository:
 
 @pytest.fixture()
 def api(workspace_tmp):  # type: ignore[no-untyped-def]
-    app = create_app(make_settings(), run_startup_checks=False)
+    app = create_app(
+        make_settings(export_dir=workspace_tmp / "gaeb-exports"),
+        run_startup_checks=False,
+    )
     fake_session = FakeSession(make_candidate_rows())
     repository = FakeTenderRepository()
     storage = FakeStorage()
@@ -359,6 +388,36 @@ def test_end_to_end_langgraph_transition(api, workspace_tmp) -> None:  # type: i
     assert approved.status_code == 200, approved.text
     assert approved.json()["status"] == "approved"
     assert approved.json()["offer"]["status"] == "APPROVED"
+
+
+def test_admin_can_assign_tender_owner(api, workspace_tmp) -> None:  # type: ignore[no-untyped-def]
+    client, app, _ = api
+    app.dependency_overrides[get_user_repository] = lambda: FakeUserRepository()
+    uploaded = upload_gaeb(client, workspace_tmp)
+
+    response = client.patch(
+        f"/api/v1/tenders/{uploaded['tender_id']}/owner",
+        json={"owner": "sales-b"},
+        headers=auth(ADMIN_TOKEN),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["tender"]["owner"] == "sales-b"
+    assert app.state.test_audit.events[-1]["event_type"] == "TENDER_OWNER_ASSIGNED"
+    assert app.state.test_audit.events[-1]["payload"]["owner"] == "sales-b"
+
+
+def test_sales_cannot_assign_tender_owner(api, workspace_tmp) -> None:  # type: ignore[no-untyped-def]
+    client, _, _ = api
+    uploaded = upload_gaeb(client, workspace_tmp)
+
+    response = client.patch(
+        f"/api/v1/tenders/{uploaded['tender_id']}/owner",
+        json={"owner": "sales-b"},
+        headers=auth(SALES_TOKEN),
+    )
+
+    assert response.status_code == 403
 
 
 def test_sales_cannot_access_another_sales_tender(api, workspace_tmp) -> None:  # type: ignore[no-untyped-def]
@@ -484,6 +543,73 @@ def test_approval_rbac_and_verification(api, workspace_tmp) -> None:  # type: ig
     )
     assert pdf.status_code == 200
     assert pdf.content.startswith(b"%PDF-")
+
+
+def test_approved_offer_exports_and_downloads_x84(api, workspace_tmp) -> None:  # type: ignore[no-untyped-def]
+    client, app, _ = api
+    uploaded = upload_gaeb(client, workspace_tmp)
+    item_id = uploaded["tender"]["items"][0]["id"]
+    body = {
+        "supplier_quotes": [quote_payload(item_id)],
+        "offer_request": offer_request_payload(),
+    }
+    pending = client.post(
+        f"/api/v1/tenders/{uploaded['tender_id']}/workflow",
+        json=body,
+        headers=auth(SALES_TOKEN),
+    )
+    assert pending.status_code == 200, pending.text
+    offer = CustomerOffer.model_validate_json(json.dumps(pending.json()["offer"]))
+    signed = sign_offer(
+        offer,
+        PRIVATE_KEY_HEX,
+        approver="C. Mueller",
+        approved_at=datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
+    )
+
+    approved = client.post(
+        "/api/v1/approvals/approve",
+        json={"offer": signed.model_dump(mode="json")},
+        headers=auth(APPROVER_TOKEN),
+    )
+    assert approved.status_code == 200, approved.text
+    approved_offer = approved.json()["offer"]
+    offer_id = approved_offer["id"]
+
+    exported = client.post(f"/api/v1/offers/{offer_id}/x84", headers=auth(APPROVER_TOKEN))
+    assert exported.status_code == 200, exported.text
+    assert b"<GAEB" in exported.content
+    assert "attachment" in exported.headers["content-disposition"]
+
+    download = client.get(f"/api/v1/offers/{offer_id}/x84", headers=auth(APPROVER_TOKEN))
+    assert download.status_code == 200
+    assert download.content == exported.content
+
+    stored = app.state.test_offers.offers[offer.offer_number]
+    assert stored.gaeb_export_path is not None
+    assert Path(stored.gaeb_export_path).is_file()
+
+
+def test_unapproved_offer_cannot_export_x84(api, workspace_tmp) -> None:  # type: ignore[no-untyped-def]
+    client, _, _ = api
+    uploaded = upload_gaeb(client, workspace_tmp)
+    item_id = uploaded["tender"]["items"][0]["id"]
+    body = {
+        "supplier_quotes": [quote_payload(item_id)],
+        "offer_request": offer_request_payload(),
+    }
+    pending = client.post(
+        f"/api/v1/tenders/{uploaded['tender_id']}/workflow",
+        json=body,
+        headers=auth(SALES_TOKEN),
+    )
+    assert pending.status_code == 200, pending.text
+    offer_id = pending.json()["offer"]["id"]
+
+    exported = client.post(f"/api/v1/offers/{offer_id}/x84", headers=auth(APPROVER_TOKEN))
+
+    assert exported.status_code == 409
+    assert "approved" in exported.json()["detail"]
 
 
 def test_infected_upload_is_rejected(api, workspace_tmp) -> None:  # type: ignore[no-untyped-def]

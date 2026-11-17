@@ -5,11 +5,13 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Download,
   Loader2,
   RefreshCw,
   Tags,
 } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
+import { toast } from 'sonner'
 
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
@@ -41,7 +43,7 @@ import { ApprovalDialog } from '@/features/offers/approval-dialog'
 import { useAuth } from '@/features/auth/auth-context'
 import { apiErrorMessage } from '@/lib/api-error'
 import { unitLabel } from '@/lib/labels'
-import { fetchOffer, fetchOffers } from '@/lib/offers-api'
+import { downloadX84Bid, fetchOffer, fetchOffers } from '@/lib/offers-api'
 import { formatCurrency, formatDate, formatDateTime, formatPercent } from '@/lib/utils'
 import type { CustomerOffer, CustomerOfferStatus, UnitOfMeasure } from '@/types/domain'
 
@@ -76,12 +78,34 @@ function SummaryItem({ label, children }: { label: string; children: React.React
   )
 }
 
+const X84_EXPORT_STATUSES: ReadonlySet<CustomerOfferStatus> = new Set([
+  'APPROVED',
+  'SENT',
+  'ACCEPTED',
+])
+
 function OfferDetailSheet({ offerId, onClose }: { offerId: string; onClose: () => void }) {
   const detail = useQuery({
     queryKey: ['offer', offerId],
     queryFn: () => fetchOffer(offerId),
   })
+  const [downloading, setDownloading] = React.useState(false)
   const data = detail.data
+
+  const handleX84Download = async (): Promise<void> => {
+    if (data === undefined) {
+      return
+    }
+    setDownloading(true)
+    try {
+      await downloadX84Bid(data.offer.id, `${data.offer.offer_number}.x84`)
+      toast.success('GAEB .x84 bid downloaded')
+    } catch (error) {
+      toast.error('GAEB export failed', { description: apiErrorMessage(error) })
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   return (
     <Sheet open onOpenChange={(open) => (!open ? onClose() : undefined)}>
@@ -246,6 +270,21 @@ function OfferDetailSheet({ offerId, onClose }: { offerId: string; onClose: () =
                   {formatCurrency(data.offer.total_gross, data.offer.currency)}
                 </SummaryItem>
               </dl>
+
+              {X84_EXPORT_STATUSES.has(data.offer.status) ? (
+                <div className="flex justify-end border-t border-border pt-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={downloading}
+                    onClick={() => void handleX84Download()}
+                  >
+                    {downloading ? <Loader2 className="animate-spin" /> : <Download />}
+                    Download .x84 bid
+                  </Button>
+                </div>
+              ) : null}
             </>
           ) : null}
         </div>

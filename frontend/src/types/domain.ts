@@ -257,6 +257,26 @@ export interface TenderDetailResponse {
   document: TenderDocument
 }
 
+export interface UploadTenderResponse {
+  tender_id: string
+  tender: Tender
+  object_name: string
+  warnings: string[]
+}
+
+export interface TenderOwnerResponse {
+  tender: Tender
+}
+
+export interface TenderWorkflowResponse {
+  status: string
+  offer: CustomerOffer | null
+  triage: Record<string, unknown> | null
+  errors: string[]
+  warnings: string[]
+  exported_path: string | null
+}
+
 export interface ActivityEvent {
   id: number
   occurred_at: string

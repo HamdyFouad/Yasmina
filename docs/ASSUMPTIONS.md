@@ -1,4 +1,4 @@
-# P0–P4 Inference Notes — Domain & Service Assumptions
+# Inference Notes — Domain & Service Assumptions
 
 Sections 5–8 of `docs/DETAILED_SPEC.md` (field-by-field schemas and pricing
 rules) are not yet published. This file records the contract inferred for the
@@ -419,9 +419,9 @@ reconciled with the authoritative spec later.
   events / credit-note reads are owner-scoped for `sales` and global for
   `viewer`/`admin`; `POST /invoices/{id}/payments` and
   `POST /invoices/{id}/credits` are admin-only because they mutate legal
-  payment/credit state. Credit notes currently produce a persisted document
-  record and number; a dedicated ZUGFeRD credit-note PDF is out of scope for
-  P4.7.
+  payment/credit state. Credit notes have their own gapless `GS-` number and
+  receive a ZUGFeRD PDF/A-3 plus XRechnung UBL CreditNote, exposed through the
+  credit-note document route (implemented in P7.10).
 - The billing tests create records under the isolated year 2099, disable the
   append-only triggers only for teardown and re-enable them before returning, so
   a failed test cannot leave the compliance guard off.
@@ -1133,3 +1133,38 @@ for deterministic fixture and chain-verification tests.
   forgot-password page, obtains a token through the admin reset endpoint and
   completes the real `/reset-password` form. This still tests the browser flow
   and the single-use token semantics without a live mailbox.
+
+## Commercial intake & offer-creation assumptions (P8.1)
+
+- **Upload ownership.** `POST /tenders/upload` still assigns the authenticated
+  uploader as owner. An admin can reassign the tender afterwards through
+  `PATCH /tenders/{id}/owner`; the target must be an active account and the
+  change is recorded as `TENDER_OWNER_ASSIGNED`. Sales users cannot reassign
+  tenders they do not own.
+- **Upload feedback.** The dashboard exposes ClamAV rejections, parse errors,
+  unsupported/oversized files and structural parser warnings as separate
+  accessible states. A successful upload is not discarded: the review panel
+  shows every normalized position and keeps the dialog open for owner
+  assignment before the operator opens the tender detail.
+- **Manual supplier costs.** A parsed tender has no supplier quotation yet, so
+  the offer dialog requires one net supplier cost per position. Those inputs are
+  assembled into a single `SupplierQuote` whose lines carry the tender item IDs;
+  the workflow therefore exercises the real `price_offer` mapping and unit
+  conversion path rather than a client-side shortcut.
+- **Live preview.** Every valid form change is debounced and sent to
+  `POST /tenders/{id}/price`. The preview's totals and per-rate VAT split are the
+  API's authoritative values; the browser never computes the saved offer total
+  from floating-point arithmetic. Saving posts the same payload to
+  `POST /tenders/{id}/workflow`, which persists the draft through the existing
+  LangGraph/offer repository path.
+- **GAEB `.x84` export.** `POST /offers/{id}/x84` generates the bid from the
+  stored GAEB source and the approved offer's line prices, persists
+  `gaeb_export_path`, and streams the file. `GET /offers/{id}/x84` only serves a
+  previously generated file. Both require an approved offer; a PDF-only tender
+  or a draft returns `422`/`409`. The offer and tender detail views only show
+  the download action for `APPROVED`/`SENT`/`ACCEPTED` offers, preserving the
+  Ed25519 human-approval gate on GAEB export.
+- **CI fixture.** `frontend/tests/e2e/fixtures/tender-intake.x83` is a small
+  pyGAEB-generated GAEB file with one position. Its `award_no` is
+  `E2E-INTAKE`, so the intake spec can assert the created tender/offer without
+  depending on database-generated identifiers.

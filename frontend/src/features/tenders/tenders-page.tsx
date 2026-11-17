@@ -7,6 +7,7 @@ import {
   FileText,
   Loader2,
   RefreshCw,
+  Upload,
 } from 'lucide-react'
 
 import { EmptyState } from '@/components/empty-state'
@@ -30,11 +31,14 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { useAuth } from '@/features/auth/auth-context'
+import { OfferCreationDialog } from '@/features/tenders/offer-creation-dialog'
 import { TenderDetailSheet } from '@/features/tenders/tender-detail-sheet'
+import { UploadTenderDialog } from '@/features/tenders/upload-tender-dialog'
 import { apiErrorMessage } from '@/lib/api-error'
 import { fetchTenders } from '@/lib/tenders-api'
 import { formatDate } from '@/lib/utils'
-import type { TenderStatus } from '@/types/domain'
+import type { Tender, TenderStatus } from '@/types/domain'
 
 const PAGE_SIZE = 10
 
@@ -59,9 +63,13 @@ function isPastDeadline(value: string): boolean {
 }
 
 export function TendersPage() {
+  const { hasRole } = useAuth()
   const [status, setStatus] = React.useState<TenderStatus | null>(null)
   const [page, setPage] = React.useState(0)
   const [selectedId, setSelectedId] = React.useState<string | null>(null)
+  const [uploadOpen, setUploadOpen] = React.useState(false)
+  const [offerTender, setOfferTender] = React.useState<Tender | null>(null)
+  const canIntake = hasRole('sales', 'admin')
 
   const offset = page * PAGE_SIZE
   const tenders = useQuery({
@@ -91,16 +99,24 @@ export function TendersPage() {
         title="Tenders & pipeline"
         description="Discovered and published tenders, their deadlines, CPV codes and attached documents."
         actions={
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={tenders.isFetching}
-            onClick={() => void tenders.refetch()}
-          >
-            {tenders.isFetching ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-            Refresh
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {canIntake ? (
+              <Button type="button" size="sm" onClick={() => setUploadOpen(true)}>
+                <Upload />
+                Upload tender
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={tenders.isFetching}
+              onClick={() => void tenders.refetch()}
+            >
+              {tenders.isFetching ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+              Refresh
+            </Button>
+          </div>
         }
       />
 
@@ -264,7 +280,27 @@ export function TendersPage() {
             setSelectedId(null)
           }
         }}
+        onCreateOffer={(tender) => {
+          setSelectedId(null)
+          setOfferTender(tender)
+        }}
       />
+
+      {offerTender !== null ? (
+        <OfferCreationDialog tender={offerTender} onClose={() => setOfferTender(null)} />
+      ) : null}
+
+      {uploadOpen ? (
+        <UploadTenderDialog
+          onClose={() => setUploadOpen(false)}
+          onOpenTender={(tenderId) => {
+            setUploadOpen(false)
+            setSelectedId(tenderId)
+            setPage(0)
+            void tenders.refetch()
+          }}
+        />
+      ) : null}
     </div>
   )
 }

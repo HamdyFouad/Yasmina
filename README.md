@@ -35,7 +35,10 @@ waste bags across all thicknesses, volumes and colour standards.
 > matching/pricing detail, and the invoice table with ZUGFeRD/XRechnung
 > downloads and admin payment recording. P6.5 adds the admin catalogue-override
 > workspace, ERPNext outbox observability, and a Caddy-based local HTTPS edge
-> that serves the SPA and proxies the API with strict security headers.
+> that serves the SPA and proxies the API with strict security headers. P8.1 adds
+> dashboard tender intake (GAEB/PDF upload with ClamAV feedback and parser
+> warnings), owner assignment, server-previewed offer creation with supplier
+> costs and freight/pallet assumptions, and approved GAEB `.x84` bid downloads.
 
 ---
 
@@ -307,11 +310,12 @@ Open <http://localhost:5173> and sign in with the admin credentials from your
 `.env` (or a database user). MFA-enabled accounts get the TOTP step
 automatically. The dashboard ships the branded login, protected shell,
 cookie-based JWT/refresh interceptor, a live overview with KPIs and the audit
-activity feed, the tender board with a detail sheet (source download, catalogue
-matching and linked offer pricing), the paginated invoice table with
-ZUGFeRD/XRechnung downloads plus the admin-only payment dialog, an invoice
-detail sheet with authoritative totals, VAT breakdown, credit notes, document
-downloads and the verified GoBD event timeline, the admin-only credit-note
+activity feed, the tender board with a detail sheet (source upload/download,
+catalogue matching, linked offer pricing and an offer-creation workflow with
+live server pricing), the paginated invoice table with ZUGFeRD/XRechnung
+downloads plus the admin-only payment dialog, an invoice detail sheet with
+authoritative totals, VAT breakdown, credit notes, document downloads and the
+verified GoBD event timeline, the admin-only credit-note
 dialog, the Operations → Outbox console where admins/approvers retry failed ERPNext
 quotation jobs and jump to the linked offer, the Offers workspace with
 status/owner filters, VAT and line-item detail, and the four-eyes approval
@@ -350,9 +354,10 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | POST | `/auth/mfa/setup` | authenticated user; returns secret + otpauth URI |
 | POST | `/auth/mfa/verify` | authenticated user; enables MFA with a live code |
 | POST | `/auth/mfa/disable` | authenticated user; password + live code required |
-| POST | `/tenders/upload` | sales/admin; sets tender owner |
+| POST | `/tenders/upload` | sales/admin; scans, parses and stores a GAEB/PDF tender |
 | GET | `/tenders` | sales (own), viewer/admin (all); paginated + status filter |
 | GET | `/tenders/{id}` | sales (own), viewer/admin (all); tender + document metadata |
+| PATCH | `/tenders/{id}/owner` | admin only; reassign to another active account |
 | GET | `/tenders/{id}/document` | sales (own), viewer/admin (all); original GAEB/PDF stream |
 | POST | `/tenders/{id}/match` | sales (own), admin |
 | POST | `/tenders/{id}/price` | sales (own), admin |
@@ -362,6 +367,8 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | GET | `/approvals/{offer_number}/documents/{format}` | viewer/approver/admin |
 | GET | `/offers` | sales (own subject only), approver/viewer/admin (all); supports `tender_id`, `status` and `owner` |
 | GET | `/offers/{id}` | sales (own subject only), approver/viewer/admin (all); includes a server-computed `vat_breakdown` |
+| GET | `/offers/{id}/x84` | sales (own), viewer/approver/admin; download an exported `.x84` bid |
+| POST | `/offers/{id}/x84` | sales (own), approver/admin; generate (or reuse) and download the approved `.x84` bid |
 | GET | `/invoices` | sales (own), viewer/admin (all) |
 | GET | `/invoices/{id}` | sales (own), viewer/admin (all); includes line items and buyer e-mail |
 | GET | `/invoices/{id}/documents/{zugferd\|xrechnung}` | sales (own), viewer/admin (all) |
@@ -1063,10 +1070,12 @@ GitHub Actions (`.github/workflows/ci.yml`) has six gates:
   MinIO and ClamAV services, Alembic migrations, `scripts/seed_e2e.py` fixtures
   (approver + admin users, tender, pending offer, failed outbox job), a
   throwaway Ed25519 custody key, uvicorn on `127.0.0.1:8000` and Vite on
-  `127.0.0.1:5173`. The test logs in as the approver, approves the offer with
-  an e-invoice, then as the admin verifies the invoice, records a payment and
-  retries the failed outbox job. Traces, screenshots and the Playwright HTML
-  report are uploaded on failure.
+  `127.0.0.1:5173`. The suite covers the four-eyes approval with an e-invoice,
+  invoice payment/credit note, outbox retry, account recovery, admin users, and
+  a full tender intake: upload a GAEB `.x83`, review parser warnings and
+  positions, assign an owner, enter supplier costs and surcharges, inspect the
+  server-priced totals, and create the draft offer. Traces, screenshots and the
+  Playwright HTML report are uploaded on failure.
 
 CI uses `.[dev,e-invoicing]`; local installations may also add
 `.[catalogue]` for local BGE-M3 embeddings.
@@ -1092,9 +1101,10 @@ The API needs `ED25519_APPROVAL_PRIVATE_KEY` (a throwaway key is fine) and the
 `COMPANY_*` invoice-seller values; `python -m src.admin generate-approval-key`
 prints a pair. The seed script only writes PostgreSQL rows; it never calls the
 API, MinIO or the outbox worker. Fixtures and Playwright reports are git-ignored.
-The suite also covers the admin-only Users console: it creates an account,
-asserts its role/status badges, locks it through the confirmation dialog and
-checks that approvers are redirected away from `/admin/users`.
+The suite also covers the admin-only Users console (create, role/status badges,
+cancel-focused lock confirmation and the approver RBAC redirect) and the
+commercial intake path (`tender-intake.spec.ts`) using the checked-in
+`frontend/tests/e2e/fixtures/tender-intake.x83` GAEB file.
 
 ---
 
@@ -1487,8 +1497,9 @@ secrets in production, and verifies that Argon2id password hashing is available.
   tenders and offers they own; admins and viewers retain the documented wider
   read access.
 - Rate limits protect `/auth` (brute force), `/tenders/upload` and the wider
-  business API. The limiter is in-memory per process; horizontally scaled
-  deployments should switch the bucket store to Redis.
+  business API. The token bucket is held in Redis when `REDIS_URL` is set, so
+  replicas share the same budget; without Redis it falls back to an in-process
+  bucket for local development.
 - Rotate all `change-me` values before any non-local deployment.
 - `audit_logs` entries are chained with SHA-256 over canonical JSON; changing a
   historical row requires rewriting the entire chain.
@@ -1535,6 +1546,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P7.8 — billing completion UI: responsive container-query invoice table with an invoice detail sheet (authoritative totals, VAT split, paid/credited/outstanding, ZUGFeRD/XRechnung downloads, `GS-` credit-note history), an admin credit-note dialog with amount/reason validation, cancel-first focus and in-place status refresh, a verified GoBD hash-chain event timeline, and a Playwright credit-note → payment flow with the credit-note reason included in the API response
 - [x] P7.9 — business logic & schema finalization: all six assumption questions decided (canonical source formats, dual supplier-quote modes, header/per-line margin semantics, millimetre thickness, approver/four-eyes rules, BGE-M3 at 1024 dimensions), strict margin/thickness validation and migration `0015`, deterministic freight/pallet surcharge lines in the offer, VAT and invoice views, SMTP password-reset delivery with Telegram fallback and `SMTP_*` settings, plus automatic n8n pending-dispatch TTL reclaim and the `reclaim-dispatch-reservations` admin command
 - [x] P7.10 — account & billing operations completion: forgot-password and `/reset-password` pages, self-service password change and sign-out-everywhere, daily overdue transition in the worker schedule plus `worker overdue`, invoice cancellation, ZUGFeRD/XRechnung credit-note documents with download buttons, SMTP invoice delivery with an `EMAIL_SENT` GoBD event, and Playwright forgot/reset coverage
+- [x] P8.1 — commercial workflow intake: dashboard GAEB/PDF tender upload with ClamAV/parse error and structural-warning feedback, parsed-position review and admin owner assignment, manual supplier-cost entry with deterministic `/tenders/{id}/price` previews, margin/freight/pallet controls, draft offer creation through `/tenders/{id}/workflow`, approved GAEB `.x84` export/download routes, and Playwright upload → pricing → offer intake coverage
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

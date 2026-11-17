@@ -1,4 +1,5 @@
 import { api } from '@/lib/api-client'
+import { filenameFromDisposition, saveBlob } from '@/lib/download'
 import type {
   ApproveOfferPayload,
   ApproveOfferResponse,
@@ -7,6 +8,7 @@ import type {
   OfferDetailResponse,
   OfferListResponse,
   PricingResponse,
+  TenderWorkflowResponse,
 } from '@/types/domain'
 
 export async function fetchOffers(
@@ -57,4 +59,29 @@ export async function priceTender(
 ): Promise<PricingResponse> {
   const response = await api.post<PricingResponse>(`/tenders/${tenderId}/price`, payload)
   return response.data
+}
+
+export async function runTenderWorkflow(
+  tenderId: string,
+  payload: {
+    supplier_quotes: Record<string, unknown>[]
+    offer_request: Record<string, unknown>
+  },
+): Promise<TenderWorkflowResponse> {
+  const response = await api.post<TenderWorkflowResponse>(
+    `/tenders/${tenderId}/workflow`,
+    payload,
+  )
+  return response.data
+}
+
+export async function downloadX84Bid(offerId: string, fallbackFilename: string): Promise<void> {
+  const response = await api.post<Blob>(`/offers/${offerId}/x84`, null, {
+    responseType: 'blob',
+  })
+  const filename = filenameFromDisposition(
+    response.headers['content-disposition'],
+    fallbackFilename || 'bid.x84',
+  )
+  saveBlob(response.data, filename)
 }

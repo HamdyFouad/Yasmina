@@ -36,6 +36,7 @@ __all__ = [
     "RFQSupplier",
     "RefreshTokenRequest",
     "SupplierQuoteCallbackPayload",
+    "TenderOwnerPayload",
     "TokenRequest",
     "UserCreatePayload",
     "UserRolesPayload",
@@ -134,6 +135,12 @@ class OfferRequestPayload(BaseModel):
             pallet_unit_net=self.pallet_unit_net,
             pallet_count=self.pallet_count,
         )
+
+
+class TenderOwnerPayload(BaseModel):
+    """Admin-only reassignment of a tender to another active user."""
+
+    owner: str = Field(min_length=1, max_length=128)
 
 
 class MatchPayload(BaseModel):
