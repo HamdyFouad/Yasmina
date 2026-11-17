@@ -48,6 +48,19 @@ class IngestionJobView:
         return self.status == "failed" and bool((self.last_error or "").startswith("SECURITY:"))
 
 
+def _loaded(row: TenderIngestionJob, name: str) -> Any:
+    """Read a column only when SQLAlchemy already loaded it.
+
+    Mutating helpers commit before building their response view. Commit with
+    ``expire_on_commit=False`` keeps most columns loaded, but ``onupdate`` /
+    server-default columns can still be expired. Touching those from a sync view
+    builder inside async code raises ``MissingGreenlet``; a missing value is
+    preferable to an implicit database round-trip.
+    """
+
+    return row.__dict__.get(name)
+
+
 def _job_view(
     row: TenderIngestionJob,
     *,
@@ -63,11 +76,11 @@ def _job_view(
         max_attempts=row.max_attempts,
         attachments=tuple(dict(item) for item in (row.attachments or [])),
         raw_object=row.raw_object,
-        available_at=row.available_at,
-        locked_at=row.locked_at,
-        last_error=row.last_error,
-        created_at=row.created_at,
-        updated_at=row.updated_at,
+        available_at=_loaded(row, "available_at"),
+        locked_at=_loaded(row, "locked_at"),
+        last_error=_loaded(row, "last_error"),
+        created_at=_loaded(row, "created_at"),
+        updated_at=_loaded(row, "updated_at"),
         tender_number=tender_number,
         tender_title=tender_title,
     )
