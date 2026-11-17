@@ -7,7 +7,7 @@ import { expect, test } from '@playwright/test'
 import { fixtures, login } from './fixtures'
 
 const fixtureDir = path.dirname(fileURLToPath(import.meta.url))
-const tenderFile = path.join(fixtureDir, 'fixtures', 'tender-intake.x83')
+const tenderFile = path.join(fixtureDir, 'fixtures', 'tender-export.x83')
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -41,7 +41,7 @@ test('tender to export: sales prices, approver signs, and .x84 downloads', async
 
     const tenderSheet = salesPage.getByRole('dialog', { name: 'Tender workspace' })
     await expect(tenderSheet).toBeVisible()
-    await expect(tenderSheet.getByText('E2E-INTAKE')).toBeVisible()
+    await expect(tenderSheet.getByText('E2E-EXPORT')).toBeVisible()
 
     // Add a dashboard supplier quote, then use it to price the offer.
     await tenderSheet.getByRole('button', { name: 'Add supplier quote' }).click()
@@ -56,7 +56,7 @@ test('tender to export: sales prices, approver signs, and .x84 downloads', async
     await expect(sourcingSheet.getByText('Hygiene Gross GmbH')).toBeVisible()
 
     await sourcingSheet.getByRole('button', { name: 'Create offer' }).click()
-    const offerDialog = salesPage.getByRole('dialog', { name: /Create offer for E2E-INTAKE/ })
+    const offerDialog = salesPage.getByRole('dialog', { name: /Create offer for E2E-EXPORT/ })
     await expect(offerDialog).toBeVisible()
 
     await offerDialog.getByRole('combobox', { name: 'Supplier quote', exact: true }).click()
@@ -84,7 +84,7 @@ test('tender to export: sales prices, approver signs, and .x84 downloads', async
     const offerNumber = workflowBody.offer?.offer_number
     expect(offerId).toBeTruthy()
     expect(offerNumber).toBeTruthy()
-    await expect(offerDialog.getByText(/Offer AN-E2E-INTAKE-/)).toBeVisible()
+    await expect(offerDialog.getByText(/Offer AN-E2E-EXPORT-/)).toBeVisible()
 
     await login(approverPage, fixtures.approver)
     await approverPage.goto('/offers')
