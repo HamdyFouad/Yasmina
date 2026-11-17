@@ -148,6 +148,35 @@ class WorkerRunRepository:
         )
         return [_view(row) for row in rows]
 
+    async def list_runs(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        run_type: str | None = None,
+        run_status: str | None = None,
+    ) -> list[WorkerRunView]:
+        statement = select(WorkerRun).order_by(desc(WorkerRun.started_at)).offset(offset).limit(limit)
+        if run_type is not None:
+            statement = statement.where(WorkerRun.run_type == run_type)
+        if run_status is not None:
+            statement = statement.where(WorkerRun.status == run_status)
+        rows = (await self.session.execute(statement)).scalars().all()
+        return [_view(row) for row in rows]
+
+    async def count_runs(
+        self,
+        *,
+        run_type: str | None = None,
+        run_status: str | None = None,
+    ) -> int:
+        statement = select(func.count()).select_from(WorkerRun)
+        if run_type is not None:
+            statement = statement.where(WorkerRun.run_type == run_type)
+        if run_status is not None:
+            statement = statement.where(WorkerRun.status == run_status)
+        return int((await self.session.execute(statement)).scalar_one())
+
     async def latest_by_type(self) -> dict[str, WorkerRunView]:
         latest: dict[str, WorkerRunView] = {}
         for run_type in ("scrape", "ingestion"):

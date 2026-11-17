@@ -44,6 +44,7 @@ __all__ = [
     "get_clamav_scanner",
     "get_credit_note_repository",
     "get_erpnext_client",
+    "get_ingestion_job_repository",
     "get_integration_repository",
     "get_invoice_repository",
     "get_n8n_client",
@@ -61,6 +62,7 @@ __all__ = [
     "get_token_blocklist_repository",
     "get_user_repository",
     "get_worker_health_service",
+    "get_worker_run_repository",
     "get_workflow_checkpointer",
     "require_roles",
 ]
@@ -222,6 +224,18 @@ def get_ops_repository(
     session: AsyncSession = Depends(get_session),
 ) -> OpsRepository:
     return OpsRepository(session)
+
+
+def get_ingestion_job_repository(
+    session: AsyncSession = Depends(get_session),
+) -> TenderIngestionJobRepository:
+    return TenderIngestionJobRepository(session)
+
+
+def get_worker_run_repository(
+    session: AsyncSession = Depends(get_session),
+) -> WorkerRunRepository:
+    return WorkerRunRepository(session)
 
 
 def get_credit_note_repository(

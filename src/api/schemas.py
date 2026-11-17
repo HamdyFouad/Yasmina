@@ -24,6 +24,7 @@ __all__ = [
     "InvoiceEmailPayload",
     "InvoicePaymentPayload",
     "InvoiceRequestPayload",
+    "IngestionDiscardPayload",
     "LogoutRequest",
     "ManualSupplierQuoteLinePayload",
     "ManualSupplierQuotePayload",
@@ -144,6 +145,12 @@ class TenderOwnerPayload(BaseModel):
     """Admin-only reassignment of a tender to another active user."""
 
     owner: str = Field(min_length=1, max_length=128)
+
+
+class IngestionDiscardPayload(BaseModel):
+    """Admin reason recorded when a failed ingestion job is discarded."""
+
+    reason: str = Field(default="discarded by operator", min_length=3, max_length=512)
 
 
 class MatchPayload(BaseModel):

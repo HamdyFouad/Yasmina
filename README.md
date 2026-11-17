@@ -324,7 +324,10 @@ downloads plus the admin-only payment dialog, an invoice detail sheet with
 authoritative totals, VAT breakdown, credit notes, document downloads and the
 verified GoBD event timeline, the admin-only credit-note
 dialog, the Operations → Outbox console where admins/approvers retry failed ERPNext
-quotation jobs and jump to the linked offer, the Offers workspace with
+quotation jobs and jump to the linked offer, and the admin-only Operations →
+Workers & Ingestion console with worker-run history, ingestion queue health,
+quarantine/dead-letter tables, retry/discard confirmations and a read-only portal
+probe. The Offers workspace with
 status/owner filters, VAT and line-item detail, and the four-eyes approval
 dialog that can optionally issue the ZUGFeRD/XRechnung invoice in the same
 step. Security → Settings enrols or disables TOTP MFA with a QR/manual key and
@@ -390,6 +393,12 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | GET | `/ops/outbox-status` | admin/viewer only; ERPNext quotation outbox counts |
 | GET | `/ops/outbox` | admin/approver/viewer; paginated jobs with `last_error` and status filter |
 | POST | `/ops/outbox/{job_id}/retry` | admin/approver; reset a failed job to pending with 0 attempts |
+| GET | `/ops/worker-runs` | admin only; recent scrape/ingestion run history |
+| GET | `/ops/ingestion` | admin only; ingestion queue, counts, quarantine and DLQ rows |
+| POST | `/ops/ingestion/{job_id}/retry` | admin only; requeue a failed/quarantined job |
+| POST | `/ops/ingestion/{job_id}/discard` | admin only; terminally skip a failed/quarantined job |
+| GET | `/ops/portals` | admin only; configured portal targets for the read-only probe |
+| POST | `/ops/portals/{portal_id}/probe` | admin only; read-only P7.3 portal diagnostic |
 | GET | `/admin/catalog/overrides` | admin only; list pinned catalogue fields |
 | POST | `/admin/catalog/overrides` | admin only; add/replace/clear pins |
 | POST | `/invoices/{id}/payments` | admin only |
@@ -1089,9 +1098,13 @@ GitHub Actions (`.github/workflows/ci.yml`) has six gates:
   outbound HMAC and tender/supplier envelope, then signs the callback.
   `rfq-pending.spec.ts` holds the relay to prove the `409` pending state and
   recovery after a 2-second TTL; `upload-errors.spec.ts` covers malformed GAEB
-  parsing and a mocked ClamAV rejection. The production equivalent is
-  `deploy/n8n/rfq-supplier-workflow.json`. Traces, screenshots and the
-  Playwright HTML report are uploaded on failure.
+  parsing and a mocked ClamAV rejection. The operations page is covered by
+  `operations.spec.ts`: an admin sees a seeded worker run, the quarantine and
+  dead-letter rows, renders a mocked read-only portal-probe report, and confirms
+  retry/discard with cancel-first focus; a sales user and an approver get no nav
+  link and are redirected away from `/ops/workers`. The n8n production
+  equivalent is `deploy/n8n/rfq-supplier-workflow.json`. Traces, screenshots and
+  the Playwright HTML report are uploaded on failure.
 
 CI uses `.[dev,e-invoicing]`; local installations may also add
 `.[catalogue]` for local BGE-M3 embeddings.
@@ -1124,9 +1137,10 @@ and `N8N_DISPATCH_PENDING_TTL_SECONDS=2`. Playwright starts the mock relay from
 rows; it never calls the API, MinIO or the outbox worker. Fixtures and Playwright
 reports are git-ignored. The suite covers the admin-only Users console, the
 manual-cost intake path (`tender-intake.spec.ts`), the supplier-quote → RFQ →
-approval → `.x84` path (`tender-to-export.spec.ts`), and the pending-TTL path
-(`rfq-pending.spec.ts`). `upload-errors.spec.ts` uses `invalid-tender.x83` plus
-a Playwright-mocked ClamAV rejection.
+approval → `.x84` path (`tender-to-export.spec.ts`), the pending-TTL path
+(`rfq-pending.spec.ts`), and the admin-only Workers & Ingestion console
+(`operations.spec.ts`, including Sales/Approver denial). `upload-errors.spec.ts` uses
+`invalid-tender.x83` plus a Playwright-mocked ClamAV rejection.
 
 ---
 
@@ -1571,6 +1585,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P8.1 — commercial workflow intake: dashboard GAEB/PDF tender upload with ClamAV/parse error and structural-warning feedback, parsed-position review and admin owner assignment, manual supplier-cost entry with deterministic `/tenders/{id}/price` previews, margin/freight/pallet controls, draft offer creation through `/tenders/{id}/workflow`, approved GAEB `.x84` export/download routes, and Playwright upload → pricing → offer intake coverage
 - [x] P8.2 — sourcing and approval loop: supplier-quote list/detail/manual-create APIs, a tender comparison panel (price/validity/delivery/source), RFQ dispatch with idempotency/TTL error handling, persisted-quote offer pricing with manual fallback and coverage warnings, a sales → approver → `.x84` Playwright flow, and malformed-upload/ClamAV-rejection UI coverage
 - [x] P8.2b — RFQ relay verification: deterministic signed mock n8n relay in the E2E stack, outbound HMAC + envelope assertions, signed supplier-quote callback into the comparison panel, stable idempotency keys with a 2-second pending-TTL recovery test, and a deployable `deploy/n8n/rfq-supplier-workflow.json` template
+- [x] P8.3 — operations & ingestion console: admin-only Workers & Ingestion page with worker-run history, ingestion queue health, responsive quarantine/dead-letter tables, retry/discard confirmations with cancel-first focus and audit events, a read-only portal probe with parsed positions, warnings/errors and zero-result diagnostics, and Playwright admin plus Sales/Approver coverage
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

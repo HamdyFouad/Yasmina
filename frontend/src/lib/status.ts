@@ -10,6 +10,7 @@ const WARNING = new Set([
   'PUBLISHED',
   'PENDING',
   'PROCESSING',
+  'RUNNING',
 ])
 const DESTRUCTIVE = new Set(['OVERDUE', 'REJECTED', 'CANCELLED', 'EXPIRED', 'FAILED'])
 const MUTED = new Set(['DRAFT', 'ARCHIVED', 'CLOSED', 'CREDITED', 'SKIPPED'])

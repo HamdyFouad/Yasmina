@@ -1,12 +1,20 @@
 import { api } from '@/lib/api-client'
 import type {
   ActivityResponse,
+  IngestionJob,
+  IngestionJobsResponse,
+  IngestionJobStatus,
   OpsSummary,
   OutboxJobsResponse,
   OutboxRetryResponse,
   OutboxStatus,
+  PortalsResponse,
+  ProbeReport,
   QuotationSyncJob,
   QuotationSyncStatus,
+  WorkerRunsResponse,
+  WorkerRunStatus,
+  WorkerRunType,
 } from '@/types/domain'
 
 export async function fetchOpsSummary(): Promise<OpsSummary> {
@@ -50,4 +58,68 @@ export async function retryOutboxJob(jobId: string): Promise<QuotationSyncJob> {
     `/ops/outbox/${encodeURIComponent(jobId)}/retry`,
   )
   return response.data.job
+}
+
+export async function fetchWorkerRuns(
+  params: {
+    limit?: number
+    offset?: number
+    runType?: WorkerRunType
+    status?: WorkerRunStatus
+  } = {},
+): Promise<WorkerRunsResponse> {
+  const response = await api.get<WorkerRunsResponse>('/ops/worker-runs', {
+    params: {
+      limit: params.limit ?? 50,
+      offset: params.offset ?? 0,
+      ...(params.runType !== undefined ? { run_type: params.runType } : {}),
+      ...(params.status !== undefined ? { status: params.status } : {}),
+    },
+  })
+  return response.data
+}
+
+export async function fetchIngestionJobs(
+  params: { limit?: number; offset?: number; status?: IngestionJobStatus } = {},
+): Promise<IngestionJobsResponse> {
+  const response = await api.get<IngestionJobsResponse>('/ops/ingestion', {
+    params: {
+      limit: params.limit ?? 200,
+      offset: params.offset ?? 0,
+      ...(params.status !== undefined ? { status: params.status } : {}),
+    },
+  })
+  return response.data
+}
+
+export async function retryIngestionJob(jobId: string): Promise<IngestionJob> {
+  const response = await api.post<{ job: IngestionJobsResponse['jobs'][number] }>(
+    `/ops/ingestion/${encodeURIComponent(jobId)}/retry`,
+  )
+  return response.data.job
+}
+
+export async function discardIngestionJob(
+  jobId: string,
+  reason: string,
+): Promise<IngestionJob> {
+  const response = await api.post<{ job: IngestionJobsResponse['jobs'][number] }>(
+    `/ops/ingestion/${encodeURIComponent(jobId)}/discard`,
+    { reason },
+  )
+  return response.data.job
+}
+
+export async function fetchPortalTargets(): Promise<PortalsResponse> {
+  const response = await api.get<PortalsResponse>('/ops/portals')
+  return response.data
+}
+
+export async function probePortalTarget(portalId: string, maxPages = 1): Promise<ProbeReport> {
+  const response = await api.post<ProbeReport>(
+    `/ops/portals/${encodeURIComponent(portalId)}/probe`,
+    null,
+    { params: { max_pages: maxPages } },
+  )
+  return response.data
 }

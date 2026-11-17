@@ -10,20 +10,33 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
 from src.api.deps import (
+    get_app_settings,
     get_audit_service,
+    get_ingestion_job_repository,
     get_ops_repository,
     get_quotation_sync_repository,
     get_worker_health_service,
+    get_worker_run_repository,
     require_roles,
 )
+from src.api.schemas import IngestionDiscardPayload
 from src.api.security import Principal, Role
+from src.config import Settings
 from src.models.enums import AuditEventType
+from src.repositories.ingestion_repository import (
+    IngestionJobView,
+    IngestionRepositoryError,
+    TenderIngestionJobRepository,
+)
 from src.repositories.ops_repository import OpsRepository
 from src.repositories.quotation_sync_repository import (
     QuotationSyncJobRepository,
     QuotationSyncJobView,
     QuotationSyncRepositoryError,
 )
+from src.repositories.worker_run_repository import WorkerRunRepository
+from src.scrapers.portal_config import PortalConfigError, load_portal_targets
+from src.scrapers.probe import probe_portal
 from src.services.audit_service import AuditService
 from src.services.worker_metrics import WorkerHealthService
 
@@ -35,6 +48,9 @@ router = APIRouter(tags=["ops"])
 api_router = APIRouter(prefix="/ops", tags=["ops"])
 
 OutboxJobStatus = Literal["pending", "processing", "succeeded", "failed", "skipped"]
+IngestionJobStatus = Literal["pending", "processing", "completed", "failed", "skipped"]
+WorkerRunType = Literal["scrape", "ingestion"]
+WorkerRunStatus = Literal["running", "succeeded", "failed", "skipped", "cancelled"]
 
 
 def _job_payload(job: QuotationSyncJobView) -> dict[str, object]:
@@ -50,6 +66,26 @@ def _job_payload(job: QuotationSyncJobView) -> dict[str, object]:
         "last_error": job.last_error,
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
+    }
+
+
+def _ingestion_payload(job: IngestionJobView) -> dict[str, object]:
+    return {
+        "id": str(job.id),
+        "tender_id": str(job.tender_id),
+        "tender_number": job.tender_number,
+        "tender_title": job.tender_title,
+        "portal_name": job.portal_name,
+        "status": job.status,
+        "attempts": job.attempts,
+        "max_attempts": job.max_attempts,
+        "quarantined": job.quarantined,
+        "last_error": job.last_error,
+        "attachment_count": len(job.attachments),
+        "available_at": job.available_at.isoformat() if job.available_at is not None else None,
+        "locked_at": job.locked_at.isoformat() if job.locked_at is not None else None,
+        "created_at": job.created_at.isoformat() if job.created_at is not None else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at is not None else None,
     }
 
 
@@ -76,6 +112,199 @@ async def worker_health(
             content={"status": "unavailable", "detail": "worker metrics are unavailable"},
         )
     return JSONResponse(status_code=200, content=snapshot)
+
+
+@api_router.get("/worker-runs")
+async def list_worker_runs(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0, le=100_000),
+    run_type: WorkerRunType | None = Query(default=None),
+    run_status: WorkerRunStatus | None = Query(default=None, alias="status"),
+    runs: WorkerRunRepository = Depends(get_worker_run_repository),
+    _: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, object]:
+    """Admin view of recent scrape/ingestion worker runs."""
+
+    rows = await runs.list_runs(
+        limit=limit,
+        offset=offset,
+        run_type=run_type,
+        run_status=run_status,
+    )
+    total = await runs.count_runs(run_type=run_type, run_status=run_status)
+    return {
+        "runs": [run.as_dict() for run in rows],
+        "count": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@api_router.get("/ingestion")
+async def list_ingestion_jobs(
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0, le=100_000),
+    status_filter: IngestionJobStatus | None = Query(default=None, alias="status"),
+    quarantined: bool | None = Query(default=None),
+    repository: TenderIngestionJobRepository = Depends(get_ingestion_job_repository),
+    _: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, object]:
+    """Admin queue, quarantine and dead-letter view for ingestion jobs."""
+
+    jobs = await repository.list_jobs(
+        status_filter=status_filter,
+        quarantined=quarantined,
+        limit=limit,
+        offset=offset,
+    )
+    total = await repository.count_jobs(
+        status_filter=status_filter,
+        quarantined=quarantined,
+    )
+    return {
+        "jobs": [_ingestion_payload(job) for job in jobs],
+        "count": total,
+        "limit": limit,
+        "offset": offset,
+        "status_counts": await repository.status_counts(),
+        "quarantine_count": await repository.quarantine_count(),
+    }
+
+
+@api_router.post("/ingestion/{job_id}/retry")
+async def retry_ingestion_job(
+    job_id: UUID,
+    repository: TenderIngestionJobRepository = Depends(get_ingestion_job_repository),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, object]:
+    """Requeue a failed/dead-letter ingestion job with a fresh attempt budget."""
+
+    try:
+        job = await repository.retry_failed(job_id)
+    except IngestionRepositoryError as exc:
+        message = str(exc)
+        code = status.HTTP_404_NOT_FOUND if "does not exist" in message else status.HTTP_409_CONFLICT
+        raise HTTPException(status_code=code, detail=message) from exc
+
+    await audit.append(
+        event_type=AuditEventType.SYSTEM_INGESTION_RETRIED,
+        actor=principal.sub,
+        entity_type="tender_ingestion_job",
+        entity_id=str(job.id),
+        payload={
+            "tender_id": str(job.tender_id),
+            "portal_name": job.portal_name,
+        },
+    )
+    return {"job": _ingestion_payload(job)}
+
+
+@api_router.post("/ingestion/{job_id}/discard")
+async def discard_ingestion_job(
+    job_id: UUID,
+    payload: IngestionDiscardPayload,
+    repository: TenderIngestionJobRepository = Depends(get_ingestion_job_repository),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, object]:
+    """Terminally skip a failed/quarantined ingestion job without retrying."""
+
+    try:
+        job = await repository.discard(job_id, payload.reason)
+    except IngestionRepositoryError as exc:
+        message = str(exc)
+        code = status.HTTP_404_NOT_FOUND if "does not exist" in message else status.HTTP_409_CONFLICT
+        raise HTTPException(status_code=code, detail=message) from exc
+
+    await audit.append(
+        event_type=AuditEventType.SYSTEM_INGESTION_DISCARDED,
+        actor=principal.sub,
+        entity_type="tender_ingestion_job",
+        entity_id=str(job.id),
+        payload={
+            "tender_id": str(job.tender_id),
+            "portal_name": job.portal_name,
+            "reason": payload.reason,
+        },
+    )
+    return {"job": _ingestion_payload(job)}
+
+
+@api_router.get("/portals")
+async def list_portals(
+    settings: Settings = Depends(get_app_settings),
+    _: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, object]:
+    """Configured portal targets available to the read-only probe dialog."""
+
+    try:
+        targets = load_portal_targets(settings.portal_config_file, enabled_only=False)
+    except PortalConfigError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    return {
+        "portals": [
+            {
+                "id": target.id,
+                "name": target.name,
+                "engine": target.engine,
+                "enabled": target.enabled,
+                "api_feed": target.api is not None,
+            }
+            for target in targets
+        ],
+        "count": len(targets),
+    }
+
+
+@api_router.post("/portals/{portal_id}/probe")
+async def probe_portal_target(
+    portal_id: str,
+    max_pages: int = Query(default=1, ge=1, le=5),
+    settings: Settings = Depends(get_app_settings),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, object]:
+    """Run the read-only P7.3 probe for one configured portal."""
+
+    try:
+        targets = load_portal_targets(settings.portal_config_file, enabled_only=False)
+    except PortalConfigError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    target = next((item for item in targets if item.id == portal_id), None)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="portal not found")
+
+    try:
+        report = await probe_portal(target, settings, max_pages=max_pages)
+    except Exception as exc:
+        logger.exception("portal probe failed portal=%s", portal_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"portal probe failed: {exc}",
+        ) from exc
+
+    payload = report.as_dict()
+    await audit.append(
+        event_type=AuditEventType.SYSTEM_PORTAL_PROBED,
+        actor=principal.sub,
+        entity_type="portal",
+        entity_id=portal_id,
+        payload={
+            "notices_discovered": report.notices_discovered,
+            "notices_parsed": report.notices_parsed,
+            "zero_results": report.zero_results,
+            "errors": len(report.errors),
+            "warnings": len(report.warnings),
+        },
+    )
+    return payload
 
 
 @api_router.get("/activity")

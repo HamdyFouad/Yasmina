@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm import ScraperState, TenderIngestionJob
+from src.models.orm import Tender as TenderORM
 
 __all__ = [
     "IngestionJobView",
@@ -34,9 +35,25 @@ class IngestionJobView:
     max_attempts: int
     attachments: tuple[dict[str, Any], ...]
     raw_object: str | None
+    available_at: datetime | None = None
+    locked_at: datetime | None = None
+    last_error: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    tender_number: str | None = None
+    tender_title: str | None = None
+
+    @property
+    def quarantined(self) -> bool:
+        return self.status == "failed" and bool((self.last_error or "").startswith("SECURITY:"))
 
 
-def _job_view(row: TenderIngestionJob) -> IngestionJobView:
+def _job_view(
+    row: TenderIngestionJob,
+    *,
+    tender_number: str | None = None,
+    tender_title: str | None = None,
+) -> IngestionJobView:
     return IngestionJobView(
         id=row.id,
         tender_id=row.tender_id,
@@ -46,6 +63,13 @@ def _job_view(row: TenderIngestionJob) -> IngestionJobView:
         max_attempts=row.max_attempts,
         attachments=tuple(dict(item) for item in (row.attachments or [])),
         raw_object=row.raw_object,
+        available_at=row.available_at,
+        locked_at=row.locked_at,
+        last_error=row.last_error,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        tender_number=tender_number,
+        tender_title=tender_title,
     )
 
 
@@ -233,6 +257,101 @@ class TenderIngestionJobRepository:
         for status, count in rows:
             counts[str(status)] = int(count)
         return counts
+
+    async def list_jobs(
+        self,
+        *,
+        status_filter: str | None = None,
+        quarantined: bool | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[IngestionJobView]:
+        """List ingestion jobs with the linked tender for operations consoles."""
+
+        statement = (
+            select(TenderIngestionJob, TenderORM.tender_number, TenderORM.title)
+            .join(TenderORM, TenderORM.id == TenderIngestionJob.tender_id)
+            .order_by(TenderIngestionJob.updated_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        if status_filter is not None:
+            statement = statement.where(TenderIngestionJob.status == status_filter)
+        if quarantined is True:
+            statement = statement.where(
+                TenderIngestionJob.status == "failed",
+                TenderIngestionJob.last_error.like("SECURITY:%"),
+            )
+        elif quarantined is False:
+            statement = statement.where(
+                or_(
+                    TenderIngestionJob.last_error.is_(None),
+                    TenderIngestionJob.last_error.not_like("SECURITY:%"),
+                )
+            )
+        rows = (await self.session.execute(statement)).all()
+        return [
+            _job_view(job, tender_number=tender_number, tender_title=title)
+            for job, tender_number, title in rows
+        ]
+
+    async def count_jobs(
+        self,
+        *,
+        status_filter: str | None = None,
+        quarantined: bool | None = None,
+    ) -> int:
+        statement = select(func.count()).select_from(TenderIngestionJob)
+        if status_filter is not None:
+            statement = statement.where(TenderIngestionJob.status == status_filter)
+        if quarantined is True:
+            statement = statement.where(
+                TenderIngestionJob.status == "failed",
+                TenderIngestionJob.last_error.like("SECURITY:%"),
+            )
+        elif quarantined is False:
+            statement = statement.where(
+                or_(
+                    TenderIngestionJob.last_error.is_(None),
+                    TenderIngestionJob.last_error.not_like("SECURITY:%"),
+                )
+            )
+        return int((await self.session.execute(statement)).scalar_one())
+
+    async def quarantine_count(self) -> int:
+        return await self.count_jobs(status_filter="failed", quarantined=True)
+
+    async def retry_failed(self, job_id: UUID) -> IngestionJobView:
+        """Requeue a terminal failed job for a fresh attempt."""
+
+        row = await self.session.get(TenderIngestionJob, job_id)
+        if row is None:
+            raise IngestionRepositoryError(f"ingestion job {job_id} does not exist")
+        if row.status != "failed":
+            raise IngestionRepositoryError("only failed ingestion jobs can be retried")
+        row.status = "pending"
+        row.attempts = 0
+        row.available_at = datetime.now(UTC)
+        row.locked_at = None
+        row.locked_by = None
+        row.last_error = None
+        await self.session.commit()
+        return _job_view(row)
+
+    async def discard(self, job_id: UUID, reason: str) -> IngestionJobView:
+        """Terminally skip a failed job without retrying it."""
+
+        row = await self.session.get(TenderIngestionJob, job_id)
+        if row is None:
+            raise IngestionRepositoryError(f"ingestion job {job_id} does not exist")
+        if row.status != "failed":
+            raise IngestionRepositoryError("only failed ingestion jobs can be discarded")
+        row.status = "skipped"
+        row.locked_at = None
+        row.locked_by = None
+        row.last_error = reason[:8000]
+        await self.session.commit()
+        return _job_view(row)
 
 
 class ScraperStateRepository:

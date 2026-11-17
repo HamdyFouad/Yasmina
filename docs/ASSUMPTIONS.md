@@ -1240,3 +1240,52 @@ for deterministic fixture and chain-verification tests.
   quote mapping → signed HTTP callback → Respond to Webhook. Operators must set
   `YASMINA_N8N_HMAC_SECRET` to the API's shared secret and replace the fixed
   sample unit price with their extraction/pricing logic.
+
+## Operations & ingestion console assumptions (P8.3)
+
+- **Worker-run source.** `GET /healthz/worker` remains the public, degraded-safe
+  snapshot. The admin console reads the paginated
+  `GET /ops/worker-runs?limit&offset&run_type&status` endpoint instead, so full
+  run rows (resource, counters, error text) stay behind the `admin` role. Runs
+  are newest-first; the page refreshes every 60 seconds and offers a manual
+  Refresh. The worker-run table reuses the container-query `.stacked-table`
+  pattern, so it becomes labelled cards inside a narrow container.
+- **Ingestion state model.** The console requests the newest 200 jobs from
+  `GET /ops/ingestion` (the endpoint default is 100) joined to their tender plus
+  global `status_counts`, `count` and `quarantine_count`. Quarantine is derived
+  from terminal state (`status = "failed"` **and** `last_error` starts with
+  `SECURITY:`), matching `TenderIngestionJobRepository.security_fail`. The
+  console splits the returned rows into pending/processing, quarantined and
+  dead-letter groups; the dead-letter KPI is
+  `status_counts.failed - quarantine_count` so it is not limited by the page
+  size.
+- **Retry semantics.** `POST /ops/ingestion/{job_id}/retry` accepts only a
+  terminal `failed` job. It sets `pending`, `attempts = 0`, `available_at = now`,
+  clears both lock fields and clears `last_error`, then audits
+  `SYSTEM_INGESTION_RETRIED`. Retrying a malware quarantine deliberately
+  downloads and rescans the attachment again; operators who do not want that
+  must discard instead. Non-failed jobs return `409` and unknown IDs `404`.
+- **Discard semantics.** `POST /ops/ingestion/{job_id}/discard` accepts the same
+  terminal `failed` state, requires a 3–512 character reason (default
+  “discarded by operator”), stores it in `last_error`, moves the job to
+  `skipped`, clears locks and audits `SYSTEM_INGESTION_DISCARDED` with the
+  reason. Both confirmation dialogs focus Cancel first and expose inline API
+  errors; on success the console refreshes the queue immediately.
+- **Read-only probe.** `GET /ops/portals` lists enabled **and disabled**
+  configured targets (disabled ones are labelled) without exposing secrets. The
+  probe dialog sends the selected ID and 1–5 pages to
+  `POST /ops/portals/{portal_id}/probe`, which calls the existing P7.3
+  `probe_portal` with `enabled_only=False`. It never writes tender rows, MinIO
+  objects or ingestion jobs; it returns discovered/parsed/page/detail counts,
+  CPV/invalid/stale skips, extraction issues, warnings, errors and
+  `zero_results`. The call is audited as `SYSTEM_PORTAL_PROBED`; a fetch failure
+  returns `502` and an unknown portal `404`.
+- **Seed fixtures and E2E.** `scripts/seed_e2e.py` adds a quarantine-only tender
+  (`E2E-QTN-<suffix>`), a failed malware job with
+  `SECURITY: Eicar-Test-Signature`, a dead-letter failed job for the existing
+  tender (`E2E seeded dead-letter: parser failed`) and a succeeded `bayern`
+  worker run. `operations.spec.ts` asserts the admin page, the run row,
+  quarantine/DLQ rows, cancel-first focus, the retry → queue and discard →
+  closed-out transitions, and the probe dialog (including Escape close). It then
+  logs in as the seeded sales user and approver, asserts the nav link is absent
+  and that `/ops/workers` redirects to `/` Overview in both contexts.

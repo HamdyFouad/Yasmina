@@ -13,6 +13,7 @@ import { OutboxPage } from '@/features/outbox/outbox-page'
 import { SettingsPage } from '@/features/settings/settings-page'
 import { TendersPage } from '@/features/tenders/tenders-page'
 import { UsersPage } from '@/features/admin/users-page'
+import { WorkersPage } from '@/features/workers/workers-page'
 
 export const router = createBrowserRouter([
   {
@@ -45,6 +46,14 @@ export const router = createBrowserRouter([
               <RequireRoles roles={['admin', 'approver', 'viewer']}>
                 <OutboxPage />
               </RequireRoles>
+            ),
+          },
+          {
+            path: 'ops/workers',
+            element: (
+              <RequireAdmin>
+                <WorkersPage />
+              </RequireAdmin>
             ),
           },
           {

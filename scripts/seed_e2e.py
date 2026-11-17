@@ -46,7 +46,7 @@ from src.models.enums import (
     TenderStatus,
     UnitOfMeasure,
 )
-from src.models.orm import QuotationSyncJob
+from src.models.orm import QuotationSyncJob, TenderIngestionJob, WorkerRun
 from src.models.schemas import CustomerOffer, CustomerOfferLine, Tender, q2, q4
 from src.repositories.offer_repository import OfferRepository
 from src.repositories.tender_repository import TenderRepository
@@ -144,6 +144,7 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
     offer_number = f"E2E-{suffix}"
     outbox_offer_number = f"E2E-OBX-{suffix}"
     tender_number = f"E2E-TND-{suffix}"
+    quarantine_tender_number = f"E2E-QTN-{suffix}"
 
     factory = get_session_factory(settings)
     try:
@@ -212,6 +213,52 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
                     last_error="E2E seeded ERPNext failure",
                 )
             )
+
+            quarantine_tender = Tender(
+                tender_number=quarantine_tender_number[:64],
+                title=f"E2E Quarantined Hygiene {suffix}",
+                client_name=CUSTOMER_NAME,
+                procedure=ProcurementProcedure.OPEN_PROCEDURE,
+                source_format=TenderSourceFormat.PORTAL,
+                submission_deadline=datetime.now(UTC) + timedelta(days=30),
+                status=TenderStatus.PUBLISHED,
+                owner=sales_username,
+            )
+            await TenderRepository(session).save(quarantine_tender)
+            session.add_all(
+                [
+                    TenderIngestionJob(
+                        tender_id=tender.id,
+                        portal_name="bayern",
+                        status="failed",
+                        attempts=5,
+                        max_attempts=5,
+                        available_at=datetime.now(UTC),
+                        last_error="E2E seeded dead-letter: parser failed",
+                    ),
+                    TenderIngestionJob(
+                        tender_id=quarantine_tender.id,
+                        portal_name="bund",
+                        status="failed",
+                        attempts=5,
+                        max_attempts=5,
+                        available_at=datetime.now(UTC),
+                        last_error="SECURITY: Eicar-Test-Signature",
+                    ),
+                    WorkerRun(
+                        run_type="scrape",
+                        resource="bayern",
+                        status="succeeded",
+                        worker_id="e2e-worker",
+                        started_at=datetime.now(UTC) - timedelta(minutes=5),
+                        finished_at=datetime.now(UTC) - timedelta(minutes=4),
+                        duration_ms=60_000,
+                        items_processed=3,
+                        errors_count=0,
+                        details={"pages_fetched": 1, "source": "e2e-seed"},
+                    ),
+                ]
+            )
             await session.commit()
     finally:
         await dispose_engine()
@@ -223,6 +270,7 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
         "offer_number": offer_number,
         "outbox_offer_number": outbox_offer_number,
         "tender_number": tender_number,
+        "quarantine_tender_number": quarantine_tender_number,
         "customer_name": CUSTOMER_NAME,
         "buyer_reference": BUYER_REFERENCE,
         "invoice_net": str(offer.total_net),

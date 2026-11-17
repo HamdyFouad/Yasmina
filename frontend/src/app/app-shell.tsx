@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import {
+  Activity,
   FileText,
   Inbox,
   LayoutDashboard,
@@ -62,6 +63,13 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Operations',
     items: [
+      {
+        to: '/ops/workers',
+        label: 'Workers & Ingestion',
+        icon: Activity,
+        end: false,
+        roles: ['admin'],
+      },
       {
         to: '/ops/outbox',
         label: 'Outbox',

@@ -613,6 +613,109 @@ export interface OutboxJobsResponse {
 export interface OutboxRetryResponse {
   job: QuotationSyncJob
 }
+
+export type WorkerRunType = 'scrape' | 'ingestion'
+export type WorkerRunStatus = 'running' | 'succeeded' | 'failed' | 'skipped' | 'cancelled'
+
+export interface WorkerRun {
+  id: string
+  run_type: WorkerRunType
+  resource: string
+  status: WorkerRunStatus
+  worker_id: string
+  started_at: string
+  finished_at: string | null
+  duration_ms: number | null
+  items_processed: number
+  errors_count: number
+  error: string | null
+  details: Record<string, unknown>
+}
+
+export interface WorkerRunsResponse {
+  runs: WorkerRun[]
+  count: number
+  limit: number
+  offset: number
+}
+
+export type IngestionJobStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'skipped'
+
+export interface IngestionJob {
+  id: string
+  tender_id: string
+  tender_number: string | null
+  tender_title: string | null
+  portal_name: string
+  status: IngestionJobStatus
+  attempts: number
+  max_attempts: number
+  quarantined: boolean
+  last_error: string | null
+  attachment_count: number
+  available_at: string | null
+  locked_at: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface IngestionJobsResponse {
+  jobs: IngestionJob[]
+  count: number
+  limit: number
+  offset: number
+  status_counts: Record<IngestionJobStatus, number>
+  quarantine_count: number
+}
+
+export interface PortalTargetSummary {
+  id: string
+  name: string
+  engine: string
+  enabled: boolean
+  api_feed: boolean
+}
+
+export interface PortalsResponse {
+  portals: PortalTargetSummary[]
+  count: number
+}
+
+export interface ProbeIssue {
+  url: string
+  code: string
+  message: string
+}
+
+export interface ProbeReport {
+  read_only: boolean
+  probed_at: string
+  elapsed_seconds: number
+  portal: {
+    id: string
+    name: string
+    engine: string
+    start_url: string
+    enabled: boolean
+    api_feed: boolean
+  }
+  max_pages: number
+  pages_fetched: number
+  notices_discovered: number
+  notices_parsed: number
+  skipped: {
+    cpv: number
+    invalid: number
+    stale: number
+  }
+  details_fetched: number
+  errors: string[]
+  issues: ProbeIssue[]
+  issues_truncated: number
+  warnings: string[]
+  zero_results: boolean
+}
+
 export interface OfferVatSplit {
   rate: string
   taxable_amount: string
