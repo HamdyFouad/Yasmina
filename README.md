@@ -41,7 +41,9 @@ waste bags across all thicknesses, volumes and colour standards.
 > costs and freight/pallet assumptions, and approved GAEB `.x84` bid downloads.
 > P8.2 closes the sourcing loop with supplier-quote APIs and comparison,
 > dashboard quote entry, RFQ dispatch, persisted-quote offer pricing, and a
-> sales → approver → `.x84` browser flow.
+> sales → approver → `.x84` browser flow. P8.2b verifies the cryptographic n8n
+> handshake in CI with a signed mock relay, covers pending-TTL recovery, and
+> ships the deployable n8n RFQ → supplier-quote workflow template.
 
 ---
 
@@ -180,6 +182,7 @@ docs/
   DETAILED_SPEC.md       # authoritative engineering specification
   ASSUMPTIONS.md         # inferred fields / open spec questions
 .github/workflows/       # CI gates + staging deploy (GHCR build, SSH rollout)
+deploy/n8n/              # importable RFQ → supplier-quote relay workflow + setup notes
 scripts/
   generate_sample_invoice.py # representative invoice PDF for the veraPDF CI gate
   deploy_staging.sh      # VPS rollout: GHCR pull, pg_dump, migrate, smoke, rollback
@@ -1076,14 +1079,18 @@ GitHub Actions (`.github/workflows/ci.yml`) has six gates:
 - **e2e** — a Playwright golden-path run against a live stack: PostgreSQL,
   MinIO and ClamAV services, Alembic migrations, `scripts/seed_e2e.py` fixtures
   (approver, admin and sales users; tender; pending offer; failed outbox job), a
-  throwaway Ed25519 custody key, uvicorn on `127.0.0.1:8000` and Vite on
-  `127.0.0.1:5173`. The suite covers the four-eyes approval with an e-invoice,
-  invoice payment/credit note, outbox retry, account recovery, admin users, and
-  the commercial loop: sales uploads a GAEB `.x83`, records a supplier quote,
-  prices the offer from that quote, and hands it off; an approver signs it and
-  downloads the generated `.x84`. Separate specs cover malformed GAEB parsing
-  and a mocked ClamAV rejection, while the original tender-intake spec covers
-  manual-cost fallback and offer creation. Traces, screenshots and the
+  throwaway Ed25519 custody key, uvicorn on `127.0.0.1:8000`, Vite on
+  `127.0.0.1:5173` and a signed mock n8n relay on `127.0.0.1:5678`. The suite
+  covers the four-eyes approval with an e-invoice, invoice payment/credit note,
+  outbox retry, account recovery, admin users, and the commercial loop: sales
+  uploads a GAEB `.x83`, records a manual supplier quote, dispatches an RFQ,
+  prices the offer from the returned n8n quote, and hands it off; an approver
+  signs it and downloads the generated `.x84`. The mock relay verifies the
+  outbound HMAC and tender/supplier envelope, then signs the callback.
+  `rfq-pending.spec.ts` holds the relay to prove the `409` pending state and
+  recovery after a 2-second TTL; `upload-errors.spec.ts` covers malformed GAEB
+  parsing and a mocked ClamAV rejection. The production equivalent is
+  `deploy/n8n/rfq-supplier-workflow.json`. Traces, screenshots and the
   Playwright HTML report are uploaded on failure.
 
 CI uses `.[dev,e-invoicing]`; local installations may also add
@@ -1108,14 +1115,18 @@ npm run test:e2e
 
 The API needs `ED25519_APPROVAL_PRIVATE_KEY` (a throwaway key is fine) and the
 `COMPANY_*` invoice-seller values; `python -m src.admin generate-approval-key`
-prints a pair. The seed script only writes PostgreSQL rows; it never calls the
-API, MinIO or the outbox worker. Fixtures and Playwright reports are git-ignored.
-The suite also covers the admin-only Users console (create, role/status badges,
-cancel-focused lock confirmation and the approver RBAC redirect), the
-manual-cost intake path (`tender-intake.spec.ts`), and the persisted-quote →
-approval → `.x84` path (`tender-to-export.spec.ts`) using the checked-in
-`frontend/tests/e2e/fixtures/tender-intake.x83` GAEB file. `upload-errors.spec.ts`
-uses `invalid-tender.x83` plus a Playwright-mocked ClamAV rejection.
+prints a pair. For the RFQ specs, start the API with
+`N8N_WEBHOOK_BASE_URL=http://127.0.0.1:5678`,
+`N8N_WEBHOOK_HMAC_SECRET=e2e-n8n-secret`,
+`N8N_CALLBACK_URL=http://127.0.0.1:8000/api/v1/integrations/n8n/supplier-quotes`
+and `N8N_DISPATCH_PENDING_TTL_SECONDS=2`. Playwright starts the mock relay from
+`frontend/tests/e2e/mock-n8n-server.mjs`. The seed script only writes PostgreSQL
+rows; it never calls the API, MinIO or the outbox worker. Fixtures and Playwright
+reports are git-ignored. The suite covers the admin-only Users console, the
+manual-cost intake path (`tender-intake.spec.ts`), the supplier-quote → RFQ →
+approval → `.x84` path (`tender-to-export.spec.ts`), and the pending-TTL path
+(`rfq-pending.spec.ts`). `upload-errors.spec.ts` uses `invalid-tender.x83` plus
+a Playwright-mocked ClamAV rejection.
 
 ---
 
@@ -1559,6 +1570,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P7.10 — account & billing operations completion: forgot-password and `/reset-password` pages, self-service password change and sign-out-everywhere, daily overdue transition in the worker schedule plus `worker overdue`, invoice cancellation, ZUGFeRD/XRechnung credit-note documents with download buttons, SMTP invoice delivery with an `EMAIL_SENT` GoBD event, and Playwright forgot/reset coverage
 - [x] P8.1 — commercial workflow intake: dashboard GAEB/PDF tender upload with ClamAV/parse error and structural-warning feedback, parsed-position review and admin owner assignment, manual supplier-cost entry with deterministic `/tenders/{id}/price` previews, margin/freight/pallet controls, draft offer creation through `/tenders/{id}/workflow`, approved GAEB `.x84` export/download routes, and Playwright upload → pricing → offer intake coverage
 - [x] P8.2 — sourcing and approval loop: supplier-quote list/detail/manual-create APIs, a tender comparison panel (price/validity/delivery/source), RFQ dispatch with idempotency/TTL error handling, persisted-quote offer pricing with manual fallback and coverage warnings, a sales → approver → `.x84` Playwright flow, and malformed-upload/ClamAV-rejection UI coverage
+- [x] P8.2b — RFQ relay verification: deterministic signed mock n8n relay in the E2E stack, outbound HMAC + envelope assertions, signed supplier-quote callback into the comparison panel, stable idempotency keys with a 2-second pending-TTL recovery test, and a deployable `deploy/n8n/rfq-supplier-workflow.json` template
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

@@ -32,6 +32,15 @@ function randomId(): string {
   return `rfq-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+function stableHash(value: string): string {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
 function newSupplier(): SupplierDraft {
   return {
     key: randomId(),
@@ -110,8 +119,23 @@ export function DispatchRfqDialog({
   const [notes, setNotes] = React.useState('')
   const [attempted, setAttempted] = React.useState(false)
   const [result, setResult] = React.useState<RfqDispatchResponse | null>(null)
-  const [idempotencyKey] = React.useState(() => randomId())
   const firstSupplierRef = React.useRef<HTMLInputElement>(null)
+
+  // Reopening the dialog with the same supplier/deadline/notes content must
+  // reuse the idempotency key so a pending dispatch can be retried after TTL.
+  const idempotencyKey = React.useMemo(() => {
+    const canonical = JSON.stringify({
+      tender_id: tender.id,
+      suppliers: suppliers.map((supplier) => ({
+        name: supplier.name.trim(),
+        email: supplier.email.trim(),
+        contact_name: (supplier.contact_name ?? '').trim(),
+      })),
+      response_deadline: responseDeadline,
+      notes: notes.trim(),
+    })
+    return `rfq-${tender.id.slice(0, 8)}-${stableHash(canonical)}`
+  }, [tender.id, suppliers, responseDeadline, notes])
 
   const dispatch = useMutation({
     mutationFn: (payload: RfqDispatchRequest) => dispatchRfq(payload, idempotencyKey),

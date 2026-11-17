@@ -24,10 +24,23 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
-  webServer: {
-    command: 'npm run dev -- --host 127.0.0.1 --port 5173 --strictPort',
-    url: 'http://127.0.0.1:5173',
-    reuseExistingServer: !isCI,
-    timeout: 120_000,
-  },
+  webServer: [
+    {
+      command: 'npm run dev -- --host 127.0.0.1 --port 5173 --strictPort',
+      url: 'http://127.0.0.1:5173',
+      reuseExistingServer: !isCI,
+      timeout: 120_000,
+    },
+    {
+      command: 'node tests/e2e/mock-n8n-server.mjs',
+      url: 'http://127.0.0.1:5678/health',
+      reuseExistingServer: !isCI,
+      timeout: 15_000,
+      env: {
+        MOCK_N8N_PORT: '5678',
+        N8N_WEBHOOK_HMAC_SECRET:
+          process.env.N8N_WEBHOOK_HMAC_SECRET ?? 'e2e-n8n-secret',
+      },
+    },
+  ],
 })

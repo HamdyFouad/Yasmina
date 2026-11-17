@@ -55,8 +55,12 @@ the draft offer. `tests/e2e/tender-to-export.spec.ts` runs the full commercial
 loop across a sales context and an approver context: manual supplier quote,
 persisted-quote offer pricing, four-eyes approval and the downloaded `.x84`.
 `tests/e2e/upload-errors.spec.ts` covers malformed GAEB parsing and a mocked
-ClamAV rejection. All use ARIA locators (`getByRole`, `getByLabel`) and a single
-worker, so the run is deterministic.
+ClamAV rejection. `tests/e2e/rfq-pending.spec.ts` holds the signed mock relay,
+asserts the `409` pending guidance, then recovers after the 2-second dispatch
+TTL. The mock relay (`mock-n8n-server.mjs`) verifies the outbound HMAC and
+returns a signed supplier-quote callback; the deployable production equivalent
+is `deploy/n8n/rfq-supplier-workflow.json`. All use ARIA locators (`getByRole`,
+`getByLabel`) and a single worker, so the run is deterministic.
 
 Prerequisites: PostgreSQL/MinIO/ClamAV, Alembic migrations, an API on
 `127.0.0.1:8000` with `ED25519_APPROVAL_PRIVATE_KEY` and `COMPANY_*` values, and

@@ -330,6 +330,13 @@ jobs:
       # The browser suite reloads and rotates sessions across several flows; keep
       # the auth bucket out of the way so tests do not become rate-limit tests.
       RATE_LIMIT_AUTH_PER_MINUTE: "100"
+      # The Playwright mock relay verifies the outbound signature and returns a
+      # signed supplier-quote callback. The 2s TTL keeps pending-state tests
+      # deterministic without a wall-clock wait.
+      N8N_WEBHOOK_BASE_URL: http://127.0.0.1:5678
+      N8N_WEBHOOK_HMAC_SECRET: e2e-n8n-secret
+      N8N_CALLBACK_URL: http://127.0.0.1:8000/api/v1/integrations/n8n/supplier-quotes
+      N8N_DISPATCH_PENDING_TTL_SECONDS: "2"
       COMPANY_NAME: Yasmina E2E GmbH
       COMPANY_STREET: Hauptstr. 1
       COMPANY_CITY: Berlin

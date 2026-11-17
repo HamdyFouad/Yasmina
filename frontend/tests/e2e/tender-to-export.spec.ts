@@ -55,12 +55,30 @@ test('tender to export: sales prices, approver signs, and .x84 downloads', async
     const sourcingSheet = salesPage.getByRole('dialog', { name: 'Tender workspace' })
     await expect(sourcingSheet.getByText('Hygiene Gross GmbH')).toBeVisible()
 
-    await sourcingSheet.getByRole('button', { name: 'Create offer' }).click()
+    // The mock n8n relay verifies the outbound HMAC and immediately posts a
+    // signed supplier-quote callback; the quote must appear with source n8n.
+    await sourcingSheet.getByRole('button', { name: 'Dispatch RFQ' }).click()
+    const rfqDialog = salesPage.getByRole('dialog', {
+      name: 'Dispatch RFQ for E2E-EXPORT',
+    })
+    await expect(rfqDialog).toBeVisible()
+    await rfqDialog.getByRole('textbox', { name: 'Name', exact: true }).fill('n8n Hygiene AG')
+    await rfqDialog
+      .getByRole('textbox', { name: 'E-mail', exact: true })
+      .fill('quotes@n8n.example')
+    await rfqDialog.getByRole('button', { name: 'Dispatch RFQ' }).click()
+    await expect(rfqDialog.getByText('RFQ dispatched')).toBeVisible()
+    await rfqDialog.getByRole('button', { name: 'Close', exact: true }).last().click()
+
+    const n8nSheet = salesPage.getByRole('dialog', { name: 'Tender workspace' })
+    await expect(n8nSheet.getByText(/N8N-/)).toBeVisible()
+    await expect(n8nSheet.getByText('n8n', { exact: true })).toBeVisible()
+    await n8nSheet.getByRole('button', { name: 'Create offer' }).click()
     const offerDialog = salesPage.getByRole('dialog', { name: /Create offer for E2E-EXPORT/ })
     await expect(offerDialog).toBeVisible()
 
     await offerDialog.getByRole('combobox', { name: 'Supplier quote', exact: true }).click()
-    await salesPage.getByRole('option', { name: /Hygiene Gross GmbH/ }).click()
+    await salesPage.getByRole('option', { name: /n8n Hygiene AG/ }).click()
     await expect(offerDialog.getByText(/covers 1 of 1 position/)).toBeVisible()
     await expect(offerDialog.getByLabel(/Supplier cost net for position/)).toHaveCount(0)
 

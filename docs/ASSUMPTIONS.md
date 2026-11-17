@@ -1207,3 +1207,36 @@ for deterministic fixture and chain-verification tests.
   syntactically valid XML document without usable GAEB positions, which exercises
   the real parse-error path. The ClamAV rejection is mocked at the network layer
   so CI does not need to ship or handle a malware sample.
+
+## RFQ relay verification assumptions (P8.2b)
+
+- **Deterministic mock relay.** CI starts
+  `frontend/tests/e2e/mock-n8n-server.mjs` on `127.0.0.1:5678` via the Playwright
+  `webServer` array. The API is configured with
+  `N8N_WEBHOOK_BASE_URL=http://127.0.0.1:5678` and the shared
+  `N8N_WEBHOOK_HMAC_SECRET=e2e-n8n-secret`. The relay verifies
+  `HMAC-SHA256(secret, "<timestamp>." + raw_body)` against
+  `X-Yasmina-Signature`, validates the RFQ envelope, signs the callback with the
+  same secret, and POSTs a complete `SupplierQuote` to the envelope's
+  `callback_url`.
+- **Callback result.** The signed callback is delivered before the relay returns
+  to the API, so the dispatch response and the quote panel observe the resulting
+  quote in the same request/test step. The quote is tagged
+  `raw_extraction.source = "n8n"` and appears with source `n8n`; the offer
+  dialog can select it and maps its existing quote-line IDs into the offer.
+- **Stable idempotency key.** The RFQ dialog derives its dispatch key from a
+  normalized hash of tender + supplier contact rows + response deadline + notes.
+  Reopening the dialog and entering the same payload reuses the key, which is
+  what makes a pending retry meaningful. Changing any field creates a new
+  dispatch identity.
+- **Pending TTL.** CI sets `N8N_DISPATCH_PENDING_TTL_SECONDS=2` (the setting
+  accepts a minimum of 1 for tests; production defaults to 900). The mock relay
+  holds the first request for a key; `rfq-pending.spec.ts` closes the pending
+  dialog, reopens it with the same payload, asserts the API `409` guidance,
+  waits out the TTL, and retries to a successful dispatch. The held response is
+  released in test teardown.
+- **Production template.** `deploy/n8n/rfq-supplier-workflow.json` is the
+  deployable n8n equivalent: Webhook (raw body) → Code HMAC verification and
+  quote mapping → signed HTTP callback → Respond to Webhook. Operators must set
+  `YASMINA_N8N_HMAC_SECRET` to the API's shared secret and replace the fixed
+  sample unit price with their extraction/pricing logic.

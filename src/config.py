@@ -157,7 +157,9 @@ class Settings(BaseSettings):
     n8n_max_retries: int = Field(default=2, ge=0, le=5)
     n8n_retry_backoff_seconds: float = Field(default=0.5, ge=0, le=10)
     n8n_callback_max_age_seconds: int = Field(default=300, ge=30, le=3600)
-    n8n_dispatch_pending_ttl_seconds: int = Field(default=900, ge=60, le=86400)
+    # The lower bound is intentionally permissive for local/E2E TTL recovery
+    # tests; production keeps the default of 900 seconds.
+    n8n_dispatch_pending_ttl_seconds: int = Field(default=900, ge=1, le=86400)
 
     # --- ERPNext -----------------------------------------------------------
     erpnext_base_url: str = "http://localhost:8080"
