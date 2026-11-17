@@ -39,6 +39,9 @@ waste bags across all thicknesses, volumes and colour standards.
 > dashboard tender intake (GAEB/PDF upload with ClamAV feedback and parser
 > warnings), owner assignment, server-previewed offer creation with supplier
 > costs and freight/pallet assumptions, and approved GAEB `.x84` bid downloads.
+> P8.2 closes the sourcing loop with supplier-quote APIs and comparison,
+> dashboard quote entry, RFQ dispatch, persisted-quote offer pricing, and a
+> sales → approver → `.x84` browser flow.
 
 ---
 
@@ -311,8 +314,9 @@ Open <http://localhost:5173> and sign in with the admin credentials from your
 automatically. The dashboard ships the branded login, protected shell,
 cookie-based JWT/refresh interceptor, a live overview with KPIs and the audit
 activity feed, the tender board with a detail sheet (source upload/download,
-catalogue matching, linked offer pricing and an offer-creation workflow with
-live server pricing), the paginated invoice table with ZUGFeRD/XRechnung
+supplier-quote comparison and manual entry, RFQ dispatch, catalogue matching,
+linked offer pricing and an offer-creation workflow with live server pricing),
+the paginated invoice table with ZUGFeRD/XRechnung
 downloads plus the admin-only payment dialog, an invoice detail sheet with
 authoritative totals, VAT breakdown, credit notes, document downloads and the
 verified GoBD event timeline, the admin-only credit-note
@@ -362,6 +366,9 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | POST | `/tenders/{id}/match` | sales (own), admin |
 | POST | `/tenders/{id}/price` | sales (own), admin |
 | POST | `/tenders/{id}/workflow` | sales (own), admin |
+| GET | `/supplier-quotes?tender_id={id}` | sales (own tender), viewer/approver/admin |
+| GET | `/supplier-quotes/{id}` | sales (own tender), viewer/approver/admin |
+| POST | `/supplier-quotes` | sales (own tender), admin; dashboard-entered manual quote |
 | POST | `/approvals/verify` | viewer/approver/admin |
 | POST | `/approvals/approve` | approver/admin, four-eyes enforced; optional `invoice` block issues ZUGFeRD/XRechnung artifacts |
 | GET | `/approvals/{offer_number}/documents/{format}` | viewer/approver/admin |
@@ -1068,13 +1075,15 @@ GitHub Actions (`.github/workflows/ci.yml`) has six gates:
   build of the operations dashboard.
 - **e2e** — a Playwright golden-path run against a live stack: PostgreSQL,
   MinIO and ClamAV services, Alembic migrations, `scripts/seed_e2e.py` fixtures
-  (approver + admin users, tender, pending offer, failed outbox job), a
+  (approver, admin and sales users; tender; pending offer; failed outbox job), a
   throwaway Ed25519 custody key, uvicorn on `127.0.0.1:8000` and Vite on
   `127.0.0.1:5173`. The suite covers the four-eyes approval with an e-invoice,
   invoice payment/credit note, outbox retry, account recovery, admin users, and
-  a full tender intake: upload a GAEB `.x83`, review parser warnings and
-  positions, assign an owner, enter supplier costs and surcharges, inspect the
-  server-priced totals, and create the draft offer. Traces, screenshots and the
+  the commercial loop: sales uploads a GAEB `.x83`, records a supplier quote,
+  prices the offer from that quote, and hands it off; an approver signs it and
+  downloads the generated `.x84`. Separate specs cover malformed GAEB parsing
+  and a mocked ClamAV rejection, while the original tender-intake spec covers
+  manual-cost fallback and offer creation. Traces, screenshots and the
   Playwright HTML report are uploaded on failure.
 
 CI uses `.[dev,e-invoicing]`; local installations may also add
@@ -1102,9 +1111,11 @@ The API needs `ED25519_APPROVAL_PRIVATE_KEY` (a throwaway key is fine) and the
 prints a pair. The seed script only writes PostgreSQL rows; it never calls the
 API, MinIO or the outbox worker. Fixtures and Playwright reports are git-ignored.
 The suite also covers the admin-only Users console (create, role/status badges,
-cancel-focused lock confirmation and the approver RBAC redirect) and the
-commercial intake path (`tender-intake.spec.ts`) using the checked-in
-`frontend/tests/e2e/fixtures/tender-intake.x83` GAEB file.
+cancel-focused lock confirmation and the approver RBAC redirect), the
+manual-cost intake path (`tender-intake.spec.ts`), and the persisted-quote →
+approval → `.x84` path (`tender-to-export.spec.ts`) using the checked-in
+`frontend/tests/e2e/fixtures/tender-intake.x83` GAEB file. `upload-errors.spec.ts`
+uses `invalid-tender.x83` plus a Playwright-mocked ClamAV rejection.
 
 ---
 
@@ -1547,6 +1558,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P7.9 — business logic & schema finalization: all six assumption questions decided (canonical source formats, dual supplier-quote modes, header/per-line margin semantics, millimetre thickness, approver/four-eyes rules, BGE-M3 at 1024 dimensions), strict margin/thickness validation and migration `0015`, deterministic freight/pallet surcharge lines in the offer, VAT and invoice views, SMTP password-reset delivery with Telegram fallback and `SMTP_*` settings, plus automatic n8n pending-dispatch TTL reclaim and the `reclaim-dispatch-reservations` admin command
 - [x] P7.10 — account & billing operations completion: forgot-password and `/reset-password` pages, self-service password change and sign-out-everywhere, daily overdue transition in the worker schedule plus `worker overdue`, invoice cancellation, ZUGFeRD/XRechnung credit-note documents with download buttons, SMTP invoice delivery with an `EMAIL_SENT` GoBD event, and Playwright forgot/reset coverage
 - [x] P8.1 — commercial workflow intake: dashboard GAEB/PDF tender upload with ClamAV/parse error and structural-warning feedback, parsed-position review and admin owner assignment, manual supplier-cost entry with deterministic `/tenders/{id}/price` previews, margin/freight/pallet controls, draft offer creation through `/tenders/{id}/workflow`, approved GAEB `.x84` export/download routes, and Playwright upload → pricing → offer intake coverage
+- [x] P8.2 — sourcing and approval loop: supplier-quote list/detail/manual-create APIs, a tender comparison panel (price/validity/delivery/source), RFQ dispatch with idempotency/TTL error handling, persisted-quote offer pricing with manual fallback and coverage warnings, a sales → approver → `.x84` Playwright flow, and malformed-upload/ClamAV-rejection UI coverage
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

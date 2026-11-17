@@ -162,6 +162,12 @@ class FakeSession:
     async def get(self, model: Any, key: Any) -> None:
         return None
 
+    async def commit(self) -> None:
+        return None
+
+    async def rollback(self) -> None:
+        return None
+
 
 class FakeInvoiceRepository:
     def __init__(self) -> None:
@@ -242,6 +248,16 @@ class FakeSupplierQuoteRepository:
     async def save(self, quote):  # type: ignore[no-untyped-def]
         self.quotes.append(quote)
         return SimpleNamespace(quote_id=quote.id, created=True)
+
+    async def get(self, quote_id):  # type: ignore[no-untyped-def]
+        return next((quote for quote in self.quotes if quote.id == quote_id), None)
+
+    async def list_for_tender(self, tender_id, *, limit=50, offset=0):  # type: ignore[no-untyped-def]
+        rows = [quote for quote in self.quotes if quote.tender_id == tender_id]
+        return rows[offset : offset + limit]
+
+    async def count_for_tender(self, tender_id) -> int:  # type: ignore[no-untyped-def]
+        return len([quote for quote in self.quotes if quote.tender_id == tender_id])
 
 
 class CleanScanner:
@@ -419,6 +435,59 @@ def test_admin_can_assign_tender_owner(api, workspace_tmp) -> None:  # type: ign
     assert response.json()["tender"]["owner"] == "sales-b"
     assert app.state.test_audit.events[-1]["event_type"] == "TENDER_OWNER_ASSIGNED"
     assert app.state.test_audit.events[-1]["payload"]["owner"] == "sales-b"
+
+
+def test_manual_supplier_quote_is_listed_and_scoped(api, workspace_tmp) -> None:  # type: ignore[no-untyped-def]
+    client, _, _ = api
+    uploaded = upload_gaeb(client, workspace_tmp)
+    item = uploaded["tender"]["items"][0]
+    payload = {
+        "tender_id": uploaded["tender_id"],
+        "supplier_name": "Hygiene Gross GmbH",
+        "quote_reference": "ANG-MANUAL-1",
+        "valid_until": "2026-12-31",
+        "delivery_days": 3,
+        "incoterms": "DAP",
+        "lines": [
+            {
+                "line_number": 1,
+                "description": item["short_text"],
+                "tender_item_id": item["id"],
+                "quantity": item["quantity"],
+                "unit": item["unit"],
+                "unit_price_net": "10.0000",
+            }
+        ],
+    }
+
+    created = client.post(
+        "/api/v1/supplier-quotes",
+        json=payload,
+        headers=auth(SALES_TOKEN),
+    )
+    assert created.status_code == 201, created.text
+    quote = created.json()["quote"]
+    assert quote["source"] == "DASHBOARD"
+    assert quote["line_count"] == 1
+    assert quote["total_net"] == "100.00"
+
+    listed = client.get(
+        f"/api/v1/supplier-quotes?tender_id={uploaded['tender_id']}",
+        headers=auth(SALES_TOKEN),
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["count"] == 1
+    assert listed.json()["quotes"][0]["quote_reference"] == "ANG-MANUAL-1"
+
+    detail = client.get(f"/api/v1/supplier-quotes/{quote['id']}", headers=auth(APPROVER_TOKEN))
+    assert detail.status_code == 200
+    assert detail.json()["quote"]["supplier_name"] == "Hygiene Gross GmbH"
+
+    forbidden = client.get(
+        f"/api/v1/supplier-quotes?tender_id={uploaded['tender_id']}",
+        headers=auth(SALES_B_TOKEN),
+    )
+    assert forbidden.status_code == 403
 
 
 def test_sales_cannot_assign_tender_owner(api, workspace_tmp) -> None:  # type: ignore[no-untyped-def]

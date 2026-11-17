@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.models.orm import Supplier as SupplierORM
 from src.models.orm import SupplierQuote as SupplierQuoteORM
@@ -15,12 +16,13 @@ from src.models.orm import SupplierQuoteLine as SupplierQuoteLineORM
 from src.models.orm import SupplierQuoteTier as SupplierQuoteTierORM
 from src.models.orm import Tender as TenderORM
 from src.models.orm import TenderItem as TenderItemORM
-from src.models.schemas import SupplierQuote
+from src.models.schemas import PriceTier, SupplierQuote, SupplierQuoteLine
 
 __all__ = [
     "StoredSupplierQuote",
     "SupplierQuoteRepository",
     "SupplierQuoteRepositoryError",
+    "quote_to_schema",
 ]
 
 
@@ -32,6 +34,56 @@ class SupplierQuoteRepositoryError(ValueError):
 class StoredSupplierQuote:
     quote_id: UUID
     created: bool
+
+
+def quote_to_schema(orm: SupplierQuoteORM) -> SupplierQuote:
+    """Map a loaded quote graph back to the strict domain schema."""
+
+    return SupplierQuote(
+        id=orm.id,
+        supplier_id=orm.supplier_id,
+        supplier_name=orm.supplier_name,
+        supplier_contact_email=orm.supplier_contact_email,
+        quote_reference=orm.quote_reference,
+        tender_id=orm.tender_id,
+        status=orm.status,
+        currency=orm.currency,
+        valid_until=orm.valid_until,
+        payment_terms=orm.payment_terms,
+        incoterms=orm.incoterms,
+        delivery_days=orm.delivery_days,
+        lines=[
+            SupplierQuoteLine(
+                id=line.id,
+                supplier_quote_id=line.supplier_quote_id,
+                line_number=line.line_number,
+                description=line.description,
+                tender_item_id=line.tender_item_id,
+                material=line.material,
+                color=line.color,
+                glove_size=line.glove_size,
+                quantity=line.quantity,
+                unit=line.unit,
+                unit_price_net=line.unit_price_net,
+                moq=line.moq,
+                tiers=[
+                    PriceTier(min_quantity=tier.min_quantity, unit_price_net=tier.unit_price_net)
+                    for tier in line.tiers
+                ],
+                pack_size=line.pack_size,
+                gtin=line.gtin,
+                delivery_days=line.delivery_days,
+                notes=line.notes,
+                attributes=dict(line.attributes or {}),
+            )
+            for line in orm.lines
+        ],
+        total_net=orm.total_net,
+        source_document=orm.source_document,
+        raw_extraction=dict(orm.raw_extraction or {}),
+        created_at=orm.created_at,
+        updated_at=orm.updated_at,
+    )
 
 
 class SupplierQuoteRepository:
@@ -134,6 +186,39 @@ class SupplierQuoteRepository:
             )
             orm.lines.append(line_orm)
         return orm
+
+    async def get(self, quote_id: UUID) -> SupplierQuote | None:
+        statement = (
+            select(SupplierQuoteORM)
+            .where(SupplierQuoteORM.id == quote_id)
+            .options(selectinload(SupplierQuoteORM.lines).selectinload(SupplierQuoteLineORM.tiers))
+        )
+        orm = (await self.session.execute(statement)).scalars().first()
+        return quote_to_schema(orm) if orm is not None else None
+
+    async def list_for_tender(
+        self,
+        tender_id: UUID,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[SupplierQuote]:
+        statement = (
+            select(SupplierQuoteORM)
+            .where(SupplierQuoteORM.tender_id == tender_id)
+            .options(selectinload(SupplierQuoteORM.lines).selectinload(SupplierQuoteLineORM.tiers))
+            .order_by(SupplierQuoteORM.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        rows = (await self.session.execute(statement)).scalars().all()
+        return [quote_to_schema(row) for row in rows]
+
+    async def count_for_tender(self, tender_id: UUID) -> int:
+        statement = (
+            select(func.count()).select_from(SupplierQuoteORM).where(SupplierQuoteORM.tender_id == tender_id)
+        )
+        return int((await self.session.execute(statement)).scalar_one())
 
     async def save(self, quote: SupplierQuote) -> StoredSupplierQuote:
         """Persist a quote, returning the existing row for a repeated reference."""

@@ -32,6 +32,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { useAuth } from '@/features/auth/auth-context'
+import { DispatchRfqDialog } from '@/features/tenders/dispatch-rfq-dialog'
+import { ManualSupplierQuoteDialog } from '@/features/tenders/manual-supplier-quote-dialog'
 import { OfferCreationDialog } from '@/features/tenders/offer-creation-dialog'
 import { TenderDetailSheet } from '@/features/tenders/tender-detail-sheet'
 import { UploadTenderDialog } from '@/features/tenders/upload-tender-dialog'
@@ -69,6 +71,8 @@ export function TendersPage() {
   const [selectedId, setSelectedId] = React.useState<string | null>(null)
   const [uploadOpen, setUploadOpen] = React.useState(false)
   const [offerTender, setOfferTender] = React.useState<Tender | null>(null)
+  const [quoteTender, setQuoteTender] = React.useState<Tender | null>(null)
+  const [rfqTender, setRfqTender] = React.useState<Tender | null>(null)
   const canIntake = hasRole('sales', 'admin')
 
   const offset = page * PAGE_SIZE
@@ -284,10 +288,40 @@ export function TendersPage() {
           setSelectedId(null)
           setOfferTender(tender)
         }}
+        onAddQuote={(tender) => {
+          setSelectedId(null)
+          setQuoteTender(tender)
+        }}
+        onDispatchRfq={(tender) => {
+          setSelectedId(null)
+          setRfqTender(tender)
+        }}
       />
 
       {offerTender !== null ? (
         <OfferCreationDialog tender={offerTender} onClose={() => setOfferTender(null)} />
+      ) : null}
+
+      {quoteTender !== null ? (
+        <ManualSupplierQuoteDialog
+          tender={quoteTender}
+          onClose={() => {
+            const tenderId = quoteTender.id
+            setQuoteTender(null)
+            setSelectedId(tenderId)
+          }}
+        />
+      ) : null}
+
+      {rfqTender !== null ? (
+        <DispatchRfqDialog
+          tender={rfqTender}
+          onClose={() => {
+            const tenderId = rfqTender.id
+            setRfqTender(null)
+            setSelectedId(tenderId)
+          }}
+        />
       ) : null}
 
       {uploadOpen ? (

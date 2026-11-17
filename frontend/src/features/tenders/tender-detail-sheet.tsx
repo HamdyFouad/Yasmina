@@ -33,6 +33,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { useAuth } from '@/features/auth/auth-context'
+import { SupplierQuotePanel } from '@/features/tenders/supplier-quote-panel'
 import { apiErrorMessage } from '@/lib/api-error'
 import { unitLabel } from '@/lib/labels'
 import { downloadX84Bid, fetchOffers, matchTender } from '@/lib/offers-api'
@@ -215,9 +216,13 @@ function OfferPricing({ offer }: { offer: CustomerOffer }) {
 function TenderDetailBody({
   tenderId,
   onCreateOffer,
+  onAddQuote,
+  onDispatchRfq,
 }: {
   tenderId: string
   onCreateOffer: (tender: Tender) => void
+  onAddQuote: (tender: Tender) => void
+  onDispatchRfq: (tender: Tender) => void
 }) {
   const { hasRole } = useAuth()
   const detail = useQuery({
@@ -275,6 +280,7 @@ function TenderDetailBody({
   const matchResults = match.data?.tender_id === tenderId ? match.data.matches : null
   const offerList = offers.data?.offers ?? []
   const canCreateOffer = hasRole('sales', 'admin') && tender.items.length > 0
+  const canEditSourcing = hasRole('sales', 'admin')
   const warningSource = tender.metadata['pdf_warnings']
   const warnings: string[] = Array.isArray(warningSource)
     ? warningSource.filter((value): value is string => typeof value === 'string')
@@ -398,6 +404,18 @@ function TenderDetailBody({
             </Table>
           </div>
         )}
+      </Section>
+
+      <Section
+        title="Supplier quotes"
+        description="Sourcing responses with price, validity, delivery terms and line coverage."
+      >
+        <SupplierQuotePanel
+          tender={tender}
+          canEdit={canEditSourcing}
+          onAddQuote={() => onAddQuote(tender)}
+          onDispatchRfq={() => onDispatchRfq(tender)}
+        />
       </Section>
 
       <Section
@@ -541,10 +559,14 @@ export function TenderDetailSheet({
   tenderId,
   onOpenChange,
   onCreateOffer,
+  onAddQuote,
+  onDispatchRfq,
 }: {
   tenderId: string | null
   onOpenChange: (open: boolean) => void
   onCreateOffer: (tender: Tender) => void
+  onAddQuote: (tender: Tender) => void
+  onDispatchRfq: (tender: Tender) => void
 }) {
   return (
     <Sheet open={tenderId !== null} onOpenChange={onOpenChange}>
@@ -560,7 +582,12 @@ export function TenderDetailSheet({
           </SheetDescription>
         </SheetHeader>
         {tenderId !== null ? (
-          <TenderDetailBody tenderId={tenderId} onCreateOffer={onCreateOffer} />
+          <TenderDetailBody
+            tenderId={tenderId}
+            onCreateOffer={onCreateOffer}
+            onAddQuote={onAddQuote}
+            onDispatchRfq={onDispatchRfq}
+          />
         ) : null}
       </SheetContent>
     </Sheet>

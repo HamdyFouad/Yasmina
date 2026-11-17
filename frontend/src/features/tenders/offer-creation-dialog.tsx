@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowRight, Calculator, Loader2 } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Calculator, Loader2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
@@ -25,10 +25,13 @@ import {
 import { apiErrorMessage } from '@/lib/api-error'
 import { unitLabel } from '@/lib/labels'
 import { priceTender, runTenderWorkflow } from '@/lib/offers-api'
+import { fetchSupplierQuotes } from '@/lib/sourcing-api'
 import { formatCurrency, formatPercent, formatQuantity } from '@/lib/utils'
 import type {
   CustomerOffer,
   OfferVatSplit,
+  SupplierQuote,
+  SupplierQuoteLine,
   Tender,
   TenderWorkflowResponse,
 } from '@/types/domain'
@@ -136,6 +139,83 @@ function formatVatBreakdown(offer: CustomerOffer): OfferVatSplit[] {
       taxable_amount: base.toFixed(2),
       tax_amount: (base * Number.parseFloat(rate)).toFixed(2),
     }))
+}
+
+function bestQuoteLine(
+  lines: SupplierQuoteLine[] | undefined,
+): SupplierQuoteLine | undefined {
+  if (lines === undefined || lines.length === 0) {
+    return undefined
+  }
+  return [...lines].sort(
+    (left, right) => Number.parseFloat(left.unit_price_net) - Number.parseFloat(right.unit_price_net),
+  )[0]
+}
+
+function quoteLineMap(quote: SupplierQuote | undefined): Map<string, SupplierQuoteLine> {
+  const result = new Map<string, SupplierQuoteLine>()
+  if (quote === undefined) {
+    return result
+  }
+  const grouped = new Map<string, SupplierQuoteLine[]>()
+  for (const line of quote.lines) {
+    if (line.tender_item_id === null) {
+      continue
+    }
+    grouped.set(line.tender_item_id, [...(grouped.get(line.tender_item_id) ?? []), line])
+  }
+  for (const [itemId, lines] of grouped) {
+    const best = bestQuoteLine(lines)
+    if (best !== undefined) {
+      result.set(itemId, best)
+    }
+  }
+  return result
+}
+
+function quoteToPayload(quote: SupplierQuote): Record<string, unknown> {
+  return {
+    id: quote.id,
+    supplier_id: quote.supplier_id,
+    supplier_name: quote.supplier_name,
+    supplier_contact_email: quote.supplier_contact_email,
+    quote_reference: quote.quote_reference,
+    tender_id: quote.tender_id,
+    status: quote.status,
+    currency: quote.currency,
+    valid_until: quote.valid_until,
+    payment_terms: quote.payment_terms,
+    incoterms: quote.incoterms,
+    delivery_days: quote.delivery_days,
+    lines: quote.lines.map((line) => ({
+      id: line.id,
+      supplier_quote_id: line.supplier_quote_id,
+      line_number: line.line_number,
+      description: line.description,
+      tender_item_id: line.tender_item_id,
+      material: line.material,
+      color: line.color,
+      glove_size: line.glove_size,
+      quantity: line.quantity,
+      unit: line.unit,
+      unit_price_net: line.unit_price_net,
+      moq: line.moq,
+      tiers: line.tiers.map((tier) => ({
+        min_quantity: tier.min_quantity,
+        unit_price_net: tier.unit_price_net,
+      })),
+      pack_size: line.pack_size,
+      gtin: line.gtin,
+      delivery_days: line.delivery_days,
+      notes: line.notes,
+      attributes: line.attributes,
+    })),
+    total_net: quote.total_net,
+    source_document: quote.source_document,
+    raw_extraction: quote.raw_extraction,
+    created_at: quote.created_at,
+    updated_at: quote.updated_at,
+  }
 }
 
 function FieldShell({
@@ -255,20 +335,34 @@ export function OfferCreationDialog({
   const [costs, setCosts] = React.useState<Record<string, string>>(() =>
     Object.fromEntries(tender.items.map((item) => [item.id, ''])),
   )
+  const [selectedQuoteId, setSelectedQuoteId] = React.useState('manual')
+  const quotes = useQuery({
+    queryKey: ['supplier-quotes', tender.id],
+    queryFn: () => fetchSupplierQuotes(tender.id, { limit: 50 }),
+  })
+  const selectedQuote = quotes.data?.quotes.find((quote) => quote.id === selectedQuoteId)
+  const quoteLines = React.useMemo(() => quoteLineMap(selectedQuote), [selectedQuote])
+  const missingItems = tender.items.filter((item) => !quoteLines.has(item.id))
+  const coveredCount = tender.items.length - missingItems.length
 
   const parsedCosts = React.useMemo(() => {
     const result: Record<string, ParsedCost> = {}
     const errors: Record<string, string> = {}
     for (const item of tender.items) {
-      const parsed = parseDecimal(costs[item.id] ?? '', 4, { allowZero: false })
+      const quoteLine = quoteLines.get(item.id)
+      const parsed = quoteLine
+        ? parseDecimal(quoteLine.unit_price_net, 4, { allowZero: true })
+        : parseDecimal(costs[item.id] ?? '', 4, { allowZero: false })
       if (parsed === null) {
-        errors[item.id] = 'Enter a positive supplier cost with up to four decimals.'
+        errors[item.id] = quoteLine
+          ? 'The quote line has an invalid unit price.'
+          : 'Enter a positive supplier cost with up to four decimals.'
       } else {
         result[item.id] = parsed
       }
     }
     return { result, errors }
-  }, [costs, tender.items])
+  }, [costs, quoteLines, tender.items])
 
   const margin = parseDecimal(form.marginPercent, 2, { allowZero: true })
   const freight = parseDecimal(form.freight, 2, { allowZero: true })
@@ -317,30 +411,49 @@ export function OfferCreationDialog({
     ) {
       return null
     }
-    const lines = tender.items.map((item, index) => {
-      const cost = parsedCosts.result[item.id]
-      if (cost === undefined) {
-        throw new Error('cost missing')
-      }
-      return {
-        line_number: index + 1,
-        description: item.short_text,
-        tender_item_id: item.id,
-        quantity: item.quantity,
-        unit: item.unit,
-        unit_price_net: cost.value,
-      }
-    })
-    return {
-      supplier_quotes: [
-        {
-          supplier_name: 'Manual supplier quote',
-          quote_reference: `MAN-${tender.tender_number}`.slice(0, 128),
+    const manualLines = (items: Tender['items']): Record<string, unknown>[] =>
+      items.map((item, index) => {
+        const cost = parsedCosts.result[item.id]
+        if (cost === undefined) {
+          throw new Error('validated cost missing')
+        }
+        return {
+          line_number: index + 1,
+          description: item.short_text,
+          tender_item_id: item.id,
+          quantity: item.quantity,
+          unit: item.unit,
+          unit_price_net: cost.value,
+        }
+      })
+
+    const supplierQuotes: Record<string, unknown>[] = []
+    if (selectedQuote !== undefined) {
+      supplierQuotes.push(quoteToPayload(selectedQuote))
+      const missing = tender.items.filter((item) => !quoteLines.has(item.id))
+      if (missing.length > 0) {
+        supplierQuotes.push({
+          supplier_name: 'Manual fallback quote',
+          quote_reference: `FALLBACK-${form.offerNumber}`.slice(0, 128),
           tender_id: tender.id,
           currency: tender.currency,
-          lines,
-        },
-      ],
+          raw_extraction: { source: 'dashboard' },
+          lines: manualLines(missing),
+        })
+      }
+    } else {
+      supplierQuotes.push({
+        supplier_name: 'Manual supplier quote',
+        quote_reference: `MAN-${form.offerNumber}`.slice(0, 128),
+        tender_id: tender.id,
+        currency: tender.currency,
+        raw_extraction: { source: 'dashboard' },
+        lines: manualLines(tender.items),
+      })
+    }
+
+    return {
+      supplier_quotes: supplierQuotes,
       offer_request: {
         customer_name: form.customerName.trim(),
         offer_number: form.offerNumber.trim(),
@@ -366,11 +479,12 @@ export function OfferCreationDialog({
     palletUnitValue,
     palletCount,
     parsedCosts.result,
+    quoteLines,
+    selectedQuote,
     tender.client_contact_email,
     tender.currency,
     tender.id,
     tender.items,
-    tender.tender_number,
   ])
 
   const debouncedPayload = useDebouncedValue(payload, 350)
@@ -442,7 +556,10 @@ export function OfferCreationDialog({
     }
     const firstCost = tender.items.find((item) => errors.costs[item.id] !== undefined)
     if (firstCost !== undefined) {
-      formRef.current?.querySelector<HTMLElement>(`#offer-cost-${firstCost.id}`)?.focus()
+      const target = quoteLines.has(firstCost.id)
+        ? formRef.current?.querySelector<HTMLElement>('#offer-quote')
+        : formRef.current?.querySelector<HTMLElement>(`#offer-cost-${firstCost.id}`)
+      target?.focus()
     }
   }
 
@@ -596,6 +713,76 @@ export function OfferCreationDialog({
               </div>
             </section>
 
+            <section className="space-y-3" aria-labelledby="offer-sourcing-heading">
+              <h3 id="offer-sourcing-heading" className="text-sm font-semibold">
+                Sourcing
+              </h3>
+              <div className="grid gap-3 lg:grid-cols-2">
+                <FieldShell
+                  id="offer-quote"
+                  label="Supplier quote"
+                  hint="Use a persisted quote where it covers positions; manual costs fill the gaps."
+                >
+                  {({ describedBy }) => (
+                    <Select
+                      value={selectedQuoteId}
+                      onValueChange={setSelectedQuoteId}
+                      disabled={create.isPending}
+                    >
+                      <SelectTrigger id="offer-quote" aria-describedby={describedBy}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="manual">Manual entry</SelectItem>
+                        {(quotes.data?.quotes ?? []).map((quote) => (
+                          <SelectItem key={quote.id} value={quote.id}>
+                            {quote.supplier_name} · {quote.quote_reference}
+                            {quote.total_net !== null
+                              ? ` · ${formatCurrency(quote.total_net, quote.currency)}`
+                              : ''}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </FieldShell>
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">Line coverage</p>
+                  {quotes.isLoading ? (
+                    <p role="status" className="text-xs text-muted-foreground">
+                      Loading supplier quotes…
+                    </p>
+                  ) : selectedQuote === undefined ? (
+                    <p className="text-xs text-muted-foreground">
+                      Manual entry is used for every position.
+                    </p>
+                  ) : (
+                    <div
+                      role="status"
+                      className="rounded-md border border-border bg-muted/30 p-2 text-xs"
+                    >
+                      <p>
+                        {selectedQuote.supplier_name} covers {coveredCount} of{' '}
+                        {tender.items.length} position(s).
+                      </p>
+                      {missingItems.length > 0 ? (
+                        <p className="mt-1 flex items-start gap-1 text-warning">
+                          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                          Enter manual costs for{' '}
+                          {missingItems.map((item) => item.position_number).join(', ')}.
+                        </p>
+                      ) : null}
+                    </div>
+                  )}
+                  {quotes.isError ? (
+                    <p role="alert" className="text-xs text-destructive">
+                      Supplier quotes could not be loaded; manual entry remains available.
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            </section>
+
             <fieldset className="space-y-3">
               <legend className="text-sm font-semibold">Supplier costs</legend>
               <p className="text-xs text-muted-foreground">
@@ -625,10 +812,18 @@ export function OfferCreationDialog({
                   </thead>
                   <tbody>
                     {tender.items.map((item) => {
+                      const quoteLine = quoteLines.get(item.id)
                       const error = costError(item.id)
                       const inputId = `offer-cost-${item.id}`
                       return (
-                        <tr key={item.id} className="border-b border-border last:border-0">
+                        <tr
+                          key={item.id}
+                          className={
+                            selectedQuote !== undefined && quoteLine === undefined
+                              ? 'border-b border-border bg-warning/5 last:border-0'
+                              : 'border-b border-border last:border-0'
+                          }
+                        >
                           <td className="px-3 py-2 align-top font-mono text-xs">
                             {item.position_number}
                           </td>
@@ -639,39 +834,52 @@ export function OfferCreationDialog({
                             {formatQuantity(item.quantity)} {unitLabel(item.unit)}
                           </td>
                           <td className="px-3 py-2 align-top">
-                            <Label htmlFor={inputId} className="sr-only">
-                              Supplier cost net for position {item.position_number}
-                            </Label>
-                            <Input
-                              id={inputId}
-                              name={`cost-${item.id}`}
-                              className="w-32"
-                              inputMode="decimal"
-                              autoComplete="off"
-                              placeholder="0.0000"
-                              value={costs[item.id] ?? ''}
-                              onChange={(event) =>
-                                setCosts((current) => ({
-                                  ...current,
-                                  [item.id]: event.target.value,
-                                }))
-                              }
-                              onBlur={() => markTouched(item.id)}
-                              aria-invalid={error !== undefined ? true : undefined}
-                              aria-describedby={
-                                error !== undefined ? `${inputId}-error` : undefined
-                              }
-                              disabled={create.isPending}
-                            />
-                            {error !== undefined ? (
-                              <p
-                                id={`${inputId}-error`}
-                                role="alert"
-                                className="mt-1 text-xs text-destructive"
-                              >
-                                {error}
-                              </p>
-                            ) : null}
+                            {quoteLine !== undefined ? (
+                              <div>
+                                <p className="text-sm font-medium">
+                                  {formatCurrency(quoteLine.unit_price_net, tender.currency)}
+                                </p>
+                                <p className="text-[11px] text-muted-foreground">
+                                  From {selectedQuote?.quote_reference ?? 'quote'}
+                                </p>
+                              </div>
+                            ) : (
+                              <>
+                                <Label htmlFor={inputId} className="sr-only">
+                                  Supplier cost net for position {item.position_number}
+                                </Label>
+                                <Input
+                                  id={inputId}
+                                  name={`cost-${item.id}`}
+                                  className="w-32"
+                                  inputMode="decimal"
+                                  autoComplete="off"
+                                  placeholder="0.0000"
+                                  value={costs[item.id] ?? ''}
+                                  onChange={(event) =>
+                                    setCosts((current) => ({
+                                      ...current,
+                                      [item.id]: event.target.value,
+                                    }))
+                                  }
+                                  onBlur={() => markTouched(item.id)}
+                                  aria-invalid={error !== undefined ? true : undefined}
+                                  aria-describedby={
+                                    error !== undefined ? `${inputId}-error` : undefined
+                                  }
+                                  disabled={create.isPending}
+                                />
+                                {error !== undefined ? (
+                                  <p
+                                    id={`${inputId}-error`}
+                                    role="alert"
+                                    className="mt-1 text-xs text-destructive"
+                                  >
+                                    {error}
+                                  </p>
+                                ) : null}
+                              </>
+                            )}
                           </td>
                         </tr>
                       )

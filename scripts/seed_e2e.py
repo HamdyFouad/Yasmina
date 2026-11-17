@@ -4,9 +4,10 @@ Creates (per invocation, under a unique suffix):
 
 * an ``approver`` user for the four-eyes approval,
 * an ``admin`` user for the invoice/payment and outbox screens,
-* a mock published ``Tender`` owned by ``e2e-sales``,
-* a ``PENDING_APPROVAL`` customer offer owned by ``e2e-sales`` (so the approver
-  is a different person), and
+* a ``sales`` user for the tender-to-export workflow,
+* a mock published ``Tender`` owned by that sales user,
+* a ``PENDING_APPROVAL`` customer offer owned by that sales user (so the
+  approver is a different person), and
 * a second offer with a terminal ``FAILED`` quotation-sync job for the retry
   flow.
 
@@ -55,6 +56,7 @@ __all__ = ["main", "seed"]
 
 APPROVER_PASSWORD = "E2E-Approver-2026!"
 ADMIN_PASSWORD = "E2E-Admin-2026!"
+SALES_PASSWORD = "E2E-Sales-2026!"
 BUYER_REFERENCE = "991-03730-19"
 CUSTOMER_NAME = "E2E Stadt Muster"
 
@@ -108,7 +110,13 @@ def _pallet_line() -> CustomerOfferLine:
     )
 
 
-def _offer(*, offer_number: str, tender_id: UUID, status: CustomerOfferStatus) -> CustomerOffer:
+def _offer(
+    *,
+    offer_number: str,
+    tender_id: UUID,
+    status: CustomerOfferStatus,
+    owner: str,
+) -> CustomerOffer:
     line = _line()
     lines = [line, _freight_line(), _pallet_line()]
     net = q2(sum((offer_line.total_net for offer_line in lines), start=Decimal("0.00")))
@@ -125,13 +133,14 @@ def _offer(*, offer_number: str, tender_id: UUID, status: CustomerOfferStatus) -
         total_vat=vat,
         total_gross=q2(net + vat),
         valid_until=date.today() + timedelta(days=30),
-        owner="e2e-sales",
+        owner=owner,
     )
 
 
 async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
     approver_username = f"e2e-approver-{suffix}"
     admin_username = f"e2e-admin-{suffix}"
+    sales_username = f"e2e-sales-{suffix}"
     offer_number = f"E2E-{suffix}"
     outbox_offer_number = f"E2E-OBX-{suffix}"
     tender_number = f"E2E-TND-{suffix}"
@@ -152,6 +161,12 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
                 [Role.ADMIN],
                 email="e2e-admin@example.test",
             )
+            await users.create(
+                sales_username,
+                SALES_PASSWORD,
+                [Role.SALES],
+                email="e2e-sales@example.test",
+            )
 
             tender = Tender(
                 tender_number=tender_number[:64],
@@ -161,7 +176,7 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
                 source_format=TenderSourceFormat.PORTAL,
                 submission_deadline=datetime.now(UTC) + timedelta(days=30),
                 status=TenderStatus.PUBLISHED,
-                owner="e2e-sales",
+                owner=sales_username,
             )
             await TenderRepository(session).save(tender)
 
@@ -171,6 +186,7 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
                         offer_number=offer_number,
                         tender_id=tender.id,
                         status=CustomerOfferStatus.PENDING_APPROVAL,
+                        owner=sales_username,
                     )
                 )
             ).offer
@@ -180,6 +196,7 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
                         offer_number=outbox_offer_number,
                         tender_id=tender.id,
                         status=CustomerOfferStatus.DRAFT,
+                        owner=sales_username,
                     )
                 )
             ).offer
@@ -202,6 +219,7 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
     return {
         "approver": {"username": approver_username, "password": APPROVER_PASSWORD},
         "admin": {"username": admin_username, "password": ADMIN_PASSWORD},
+        "sales": {"username": sales_username, "password": SALES_PASSWORD},
         "offer_number": offer_number,
         "outbox_offer_number": outbox_offer_number,
         "tender_number": tender_number,

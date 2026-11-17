@@ -48,11 +48,15 @@ an admin-issued reset token, the `/reset-password` form and a login with the new
 password. `tests/e2e/admin-users.spec.ts` logs in as the seeded admin, creates
 an account in the Users console, locks it through the cancel-focused
 confirmation, and checks that an approver is redirected away from
-`/admin/users`. `tests/e2e/tender-intake.spec.ts` uploads the checked-in
-`.x83` fixture, reviews parser warnings and positions, reassigns the owner,
-prices the positions with freight/pallet surcharges, verifies the server-preview
-totals and creates the draft offer. All use ARIA locators (`getByRole`,
-`getByLabel`) and a single worker, so the run is deterministic.
+`/admin/users`. `tests/e2e/tender-intake.spec.ts` uploads the checked-in `.x83` fixture,
+reviews parser warnings and positions, reassigns the owner, prices the positions
+with freight/pallet surcharges, verifies the server-preview totals and creates
+the draft offer. `tests/e2e/tender-to-export.spec.ts` runs the full commercial
+loop across a sales context and an approver context: manual supplier quote,
+persisted-quote offer pricing, four-eyes approval and the downloaded `.x84`.
+`tests/e2e/upload-errors.spec.ts` covers malformed GAEB parsing and a mocked
+ClamAV rejection. All use ARIA locators (`getByRole`, `getByLabel`) and a single
+worker, so the run is deterministic.
 
 Prerequisites: PostgreSQL/MinIO/ClamAV, Alembic migrations, an API on
 `127.0.0.1:8000` with `ED25519_APPROVAL_PRIVATE_KEY` and `COMPANY_*` values, and
@@ -69,7 +73,7 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 | `/forgot-password` | Public username form calling `POST /auth/password/reset/request`; always shows the same confirmation. |
 | `/reset-password` | Public token + new-password form calling `POST /auth/password/reset`, with inline validation and success state. |
 | `/` | Overview: owner-scoped KPI cards, gross invoiced/paid/outstanding, recent audit events (admin/viewer), ERPNext outbox counts (admin/viewer) and session details. |
-| `/tenders` | Paginated tender board with status filter. The header uploads GAEB `.x83`/`.d83` or PDF tenders, shows ClamAV/parse errors and structural warnings, reviews normalized positions and lets an admin reassign the owner. Rows open a detail sheet with metadata, source download, hybrid catalogue matching, linked offers and an offer-creation dialog: per-position supplier costs, margin, freight flat, pallet unit/count, live `/price` VAT/totals preview, then `/workflow` draft creation. |
+| `/tenders` | Paginated tender board with status filter. The header uploads GAEB `.x83`/`.d83` or PDF tenders, shows ClamAV/parse errors and structural warnings, reviews normalized positions and lets an admin reassign the owner. Rows open a detail sheet with metadata, source download, supplier-quote comparison (price, validity, delivery, n8n/dashboard source), manual quote entry, RFQ dispatch, hybrid catalogue matching, linked offers and an offer-creation dialog: choose a persisted quote or manual costs, margin, freight flat, pallet unit/count, live `/price` VAT/totals preview, then `/workflow` draft creation. |
 | `/offers` | Paginated offer workspace with status and owner filters, a responsive table, a detail side panel (server VAT breakdown, signature state, line items, approved `.x84` bid download) and the approver/admin four-eyes approval dialog with an optional “Generate e-invoice” section (buyer, Leitweg-ID, due date, IBAN, payment terms). `?offer=<id>` deep-links the side panel (used by the Outbox and offer-creation handoff). |
 | `/invoices` | Responsive invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, the admin-only "Mark as paid" dialog and an invoice detail sheet (authoritative totals, line items including freight/pallet surcharges, VAT breakdown, credit-note history with credit-note PDF/XML downloads, document downloads, verified GoBD event timeline, admin-only credit-note/cancel/email dialogs with inline validation). |
 | `/ops/outbox` | Operations console for quotation_sync_jobs: status filter, attempts/retry budget, next attempt, last ERPNext error, a Retry action for failed jobs (admin/approver) and a link to the linked offer. |
@@ -110,6 +114,9 @@ Reports and traces land in `playwright-report/` and `test-results/`.
   `GET /tenders`, `GET /tenders/{id}`, `GET /tenders/{id}/document`
 - `POST /tenders/{id}/match`, `POST /tenders/{id}/price`,
   `POST /tenders/{id}/workflow`
+- `GET /supplier-quotes?tender_id={id}`, `GET /supplier-quotes/{id}`,
+  `POST /supplier-quotes`
+- `POST /integrations/rfq/dispatch` with an `Idempotency-Key`
 - `GET /offers?tender_id={id}`, `GET /offers` (status/owner/limit/offset),
   `GET /offers/{id}` (includes the server-computed `vat_breakdown`),
   `POST /offers/{id}/x84`, `GET /offers/{id}/x84`
@@ -141,6 +148,9 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 - [x] Tender upload with file validation, ClamAV/parse error states and structural warnings
 - [x] Parsed-position review, parser-warning display and admin owner assignment
 - [x] Offer creation with per-position supplier costs, margin/freight/pallet controls and server pricing preview
+- [x] Persisted supplier-quote selection with coverage warnings and manual fallback costs
+- [x] Supplier-quote comparison and dashboard manual quote entry
+- [x] RFQ dispatch with idempotency, pending-TTL and n8n error states
 - [x] Approved GAEB `.x84` bid download from offer and tender details
 - [x] Source-document download, catalogue matching scores and linked offer pricing
 - [x] Responsive invoice table with ZUGFeRD/XRechnung downloads

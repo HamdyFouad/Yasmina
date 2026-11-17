@@ -1170,3 +1170,40 @@ for deterministic fixture and chain-verification tests.
   pyGAEB-generated GAEB file with one position. Its `award_no` is
   `E2E-INTAKE`, so the intake spec can assert the created tender/offer without
   depending on database-generated identifiers.
+
+## Sourcing & approval loop assumptions (P8.2)
+
+- **Supplier-quote reads.** `GET /supplier-quotes` requires a `tender_id` and is
+  owner-scoped for pure sales users; approvers, viewers and admins can read all
+  quotes. `GET /supplier-quotes/{id}` applies the same ownership rule by loading
+  the linked tender. Quotes without a tender remain readable only by the wider
+  roles.
+- **Dashboard quotes.** `POST /supplier-quotes` creates a manual quote with a
+  server-generated UUID, the tender currency, one line per submitted position
+  and `raw_extraction.source = "dashboard"`. The response exposes a computed
+  `source` (`DASHBOARD`/`N8N`) and `line_count`; n8n-created quotes keep their
+  original source. A repeated supplier/reference pair returns `409` rather than
+  silently replacing priced lines.
+- **RFQ dispatch.** The dashboard sends the existing signed
+  `POST /integrations/rfq/dispatch` envelope with a stable `Idempotency-Key`
+  generated when the dialog opens. A `409` means the reservation is still inside
+  `N8N_DISPATCH_PENDING_TTL_SECONDS`; retrying the same dialog after the TTL
+  reclaims it. `503` means n8n is not configured and `502` is a relay failure.
+  Event IDs and dispatch keys are shown after success; incoming quotes are
+  surfaced by reference in the Supplier quotes panel once the callback lands.
+- **Offer pricing.** The offer dialog can select a persisted quote; positions
+  covered by one of its lines use that quote's unit price and existing line ID,
+  so `price_offer`/the workflow can set `supplier_quote_line_id` without a
+  synthetic quote. Uncovered positions require manual costs and are sent as a
+  separate dashboard fallback quote. Coverage is shown before the debounced
+  `/tenders/{id}/price` preview and missing positions are highlighted.
+- **Approval-to-export E2E.** The seed now includes a sales user. The
+  `tender-to-export` spec runs sales and approver in separate browser contexts:
+  sales uploads/prices/submits, the approver signs, and the offer detail
+  downloads the `.x84`. The download is asserted by filename and GAEB content;
+  `write_x84` emits a valid DA84 document even when pyGAEB warns about optional
+  source fields.
+- **Upload error spec.** `frontend/tests/e2e/fixtures/invalid-tender.x83` is a
+  syntactically valid XML document without usable GAEB positions, which exercises
+  the real parse-error path. The ClamAV rejection is mocked at the network layer
+  so CI does not need to ship or handle a malware sample.

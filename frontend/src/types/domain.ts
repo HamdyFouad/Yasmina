@@ -277,6 +277,124 @@ export interface TenderWorkflowResponse {
   exported_path: string | null
 }
 
+export type SupplierQuoteSource = 'DASHBOARD' | 'N8N'
+
+export type SupplierQuoteStatus =
+  | 'RECEIVED'
+  | 'NORMALIZED'
+  | 'VALIDATED'
+  | 'REJECTED'
+  | 'EXPIRED'
+
+export interface SupplierQuoteTier {
+  min_quantity: string
+  unit_price_net: string
+}
+
+export interface SupplierQuoteLine {
+  id: string
+  supplier_quote_id: string | null
+  line_number: number
+  description: string
+  tender_item_id: string | null
+  material: MaterialType | null
+  color: StandardizedColor | null
+  glove_size: GloveSize
+  quantity: string
+  unit: UnitOfMeasure
+  unit_price_net: string
+  moq: string | null
+  tiers: SupplierQuoteTier[]
+  pack_size: number | null
+  gtin: string | null
+  delivery_days: number | null
+  notes: string | null
+  attributes: Record<string, unknown>
+}
+
+export interface SupplierQuote {
+  id: string
+  supplier_id: string | null
+  supplier_name: string
+  supplier_contact_email: string | null
+  quote_reference: string
+  tender_id: string | null
+  status: SupplierQuoteStatus
+  currency: Currency
+  valid_until: string | null
+  payment_terms: string | null
+  incoterms: string | null
+  delivery_days: number | null
+  lines: SupplierQuoteLine[]
+  total_net: string | null
+  source_document: string | null
+  raw_extraction: Record<string, unknown>
+  created_at: string
+  updated_at: string
+  source: SupplierQuoteSource
+  line_count: number
+}
+
+export interface SupplierQuoteListResponse {
+  quotes: SupplierQuote[]
+  count: number
+  limit: number
+  offset: number
+}
+
+export interface SupplierQuoteResponse {
+  quote: SupplierQuote
+}
+
+export interface ManualSupplierQuoteLineRequest {
+  line_number: number
+  description: string
+  tender_item_id: string
+  quantity: string
+  unit: UnitOfMeasure
+  unit_price_net: string
+  moq?: string | null
+  pack_size?: number | null
+  delivery_days?: number | null
+  notes?: string | null
+}
+
+export interface ManualSupplierQuoteRequest {
+  tender_id: string
+  supplier_name: string
+  supplier_contact_email?: string | null
+  quote_reference: string
+  valid_until?: string | null
+  payment_terms?: string | null
+  incoterms?: string | null
+  delivery_days?: number | null
+  lines: ManualSupplierQuoteLineRequest[]
+}
+
+export interface RfqSupplier {
+  supplier_id?: string | null
+  name: string
+  email: string
+  contact_name?: string | null
+}
+
+export interface RfqDispatchRequest {
+  tender_id: string
+  suppliers: RfqSupplier[]
+  response_deadline?: string | null
+  notes?: string | null
+}
+
+export interface RfqDispatchResponse {
+  status: string
+  event_id: string
+  idempotency_key: string
+  webhook_status: number
+  n8n_response: Record<string, unknown> | string | null
+  replayed: boolean
+  audit_recorded?: boolean
+}
+
 export interface ActivityEvent {
   id: number
   occurred_at: string

@@ -12,6 +12,7 @@ from pydantic import AwareDatetime, BaseModel, EmailStr, Field, model_validator
 
 from src.agents.state import OfferRequest
 from src.api.security import Role
+from src.models.enums import UnitOfMeasure
 from src.models.schemas import CustomerOffer, SupplierQuote
 
 __all__ = [
@@ -24,6 +25,8 @@ __all__ = [
     "InvoicePaymentPayload",
     "InvoiceRequestPayload",
     "LogoutRequest",
+    "ManualSupplierQuoteLinePayload",
+    "ManualSupplierQuotePayload",
     "MatchPayload",
     "MfaCodePayload",
     "MfaDisablePayload",
@@ -179,6 +182,40 @@ class SupplierQuoteCallbackPayload(BaseModel):
 
     event_id: str | None = Field(default=None, min_length=1, max_length=128)
     quotes: list[dict[str, Any]] = Field(min_length=1, max_length=500)
+
+
+class ManualSupplierQuoteLinePayload(BaseModel):
+    line_number: int = Field(ge=1)
+    description: str = Field(min_length=1, max_length=512)
+    tender_item_id: UUID
+    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
+    unit: UnitOfMeasure
+    unit_price_net: Decimal = Field(ge=0, max_digits=18, decimal_places=4)
+    moq: Decimal | None = Field(default=None, gt=0, max_digits=18, decimal_places=4)
+    pack_size: int | None = Field(default=None, gt=0, le=1_000_000)
+    delivery_days: int | None = Field(default=None, ge=0, le=365)
+    notes: str | None = Field(default=None, max_length=4000)
+
+
+class ManualSupplierQuotePayload(BaseModel):
+    """Dashboard-created supplier quote bound to a tender."""
+
+    tender_id: UUID
+    supplier_name: str = Field(min_length=1, max_length=256)
+    supplier_contact_email: EmailStr | None = None
+    quote_reference: str = Field(min_length=1, max_length=128)
+    valid_until: date | None = None
+    payment_terms: str | None = Field(default=None, max_length=256)
+    incoterms: str | None = Field(default=None, max_length=32)
+    delivery_days: int | None = Field(default=None, ge=0, le=365)
+    lines: list[ManualSupplierQuoteLinePayload] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def _validate_line_numbers(self) -> ManualSupplierQuotePayload:
+        numbers = [line.line_number for line in self.lines]
+        if len(numbers) != len(set(numbers)):
+            raise ValueError("line_number values must be unique")
+        return self
 
 
 class InvoiceBuyerPayload(BaseModel):

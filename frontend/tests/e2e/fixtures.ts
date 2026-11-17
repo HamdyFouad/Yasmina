@@ -13,6 +13,7 @@ export interface Credentials {
 export interface Fixtures {
   approver: Credentials
   admin: Credentials
+  sales: Credentials
   offer_number: string
   outbox_offer_number: string
   customer_name: string
