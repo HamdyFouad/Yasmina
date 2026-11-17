@@ -29,6 +29,7 @@ from src.api.deps import (
     get_object_storage,
     get_offer_repository,
     get_session,
+    get_supplier_quote_repository,
     get_tender_repository,
     get_user_repository,
     get_workflow_checkpointer,
@@ -64,6 +65,10 @@ from src.repositories.offer_repository import (
     OfferRepository,
     OfferRepositoryConflict,
     OfferRepositoryError,
+)
+from src.repositories.supplier_quote_repository import (
+    SupplierQuoteRepository,
+    SupplierQuoteRepositoryError,
 )
 from src.repositories.tender_repository import (
     StoredTender,
@@ -522,6 +527,7 @@ async def run_tender_workflow(
     payload: WorkflowPayload,
     repository: TenderRepository = Depends(get_tender_repository),
     offer_repository: OfferRepository = Depends(get_offer_repository),
+    supplier_quote_repository: SupplierQuoteRepository = Depends(get_supplier_quote_repository),
     storage: MinioObjectStorage = Depends(get_object_storage),
     settings: Settings = Depends(get_app_settings),
     checkpointer: SqlAlchemyCheckpointSaver = Depends(get_workflow_checkpointer),
@@ -573,6 +579,17 @@ async def run_tender_workflow(
                 "gaeb_export_path": result.get("exported_path") or result_offer.gaeb_export_path,
             }
         )
+        # Offer lines reference supplier-quote lines by id, so the quotes used
+        # for pricing must exist before the offer row is inserted. This also
+        # makes dashboard-created manual quotes visible to the sourcing APIs.
+        try:
+            for quote in quotes:
+                await supplier_quote_repository.save(quote)
+        except SupplierQuoteRepositoryError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"supplier quote persistence failed: {exc}",
+            ) from exc
         try:
             await offer_repository.save(result_offer)
         except OfferRepositoryConflict as exc:

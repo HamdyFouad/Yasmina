@@ -25,6 +25,7 @@ from src.api.deps import (
     get_object_storage,
     get_offer_repository,
     get_session,
+    get_supplier_quote_repository,
     get_tender_repository,
     get_user_repository,
     get_workflow_checkpointer,
@@ -234,6 +235,15 @@ class FakeUserRepository:
         return SimpleNamespace(username=username, is_active=True)
 
 
+class FakeSupplierQuoteRepository:
+    def __init__(self) -> None:
+        self.quotes: list[Any] = []
+
+    async def save(self, quote):  # type: ignore[no-untyped-def]
+        self.quotes.append(quote)
+        return SimpleNamespace(quote_id=quote.id, created=True)
+
+
 class CleanScanner:
     async def scan_bytes(self, data: bytes) -> ClamAVResult:
         return ClamAVResult(clean=True, signature=None, raw="stream: OK")
@@ -311,6 +321,7 @@ def api(workspace_tmp):  # type: ignore[no-untyped-def]
     storage = FakeStorage()
     audit = FakeAudit()
     offers = FakeOfferRepository()
+    quotes = FakeSupplierQuoteRepository()
 
     async def fake_get_session():
         yield fake_session
@@ -321,10 +332,12 @@ def api(workspace_tmp):  # type: ignore[no-untyped-def]
     app.dependency_overrides[get_object_storage] = lambda: storage
     app.dependency_overrides[get_audit_service] = lambda: audit
     app.dependency_overrides[get_offer_repository] = lambda: offers
+    app.dependency_overrides[get_supplier_quote_repository] = lambda: quotes
     app.dependency_overrides[get_invoice_repository] = lambda: FakeInvoiceRepository()
     app.dependency_overrides[get_workflow_checkpointer] = lambda: None
     app.state.test_audit = audit
     app.state.test_offers = offers
+    app.state.test_supplier_quotes = quotes
     with TestClient(app) as client:
         yield client, app, fake_session
 
@@ -367,6 +380,7 @@ def test_end_to_end_langgraph_transition(api, workspace_tmp) -> None:  # type: i
     pending_payload = pending.json()
     assert pending_payload["status"] == "pending_approval"
     assert pending_payload["offer"]["status"] == "DRAFT"
+    assert len(app.state.test_supplier_quotes.quotes) == 1
 
     offer = CustomerOffer.model_validate_json(json.dumps(pending_payload["offer"]))
     signed = sign_offer(

@@ -1150,7 +1150,9 @@ for deterministic fixture and chain-verification tests.
   the offer dialog requires one net supplier cost per position. Those inputs are
   assembled into a single `SupplierQuote` whose lines carry the tender item IDs;
   the workflow therefore exercises the real `price_offer` mapping and unit
-  conversion path rather than a client-side shortcut.
+  conversion path rather than a client-side shortcut. Before inserting the
+  offer, the workflow persists the supplier quote because every offer line
+  keeps a foreign key to its `supplier_quote_lines` row.
 - **Live preview.** Every valid form change is debounced and sent to
   `POST /tenders/{id}/price`. The preview's totals and per-rate VAT split are the
   API's authoritative values; the browser never computes the saved offer total
