@@ -72,6 +72,7 @@ export function ManualWorkerDialog({
       onClose()
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['ops', 'worker-runs'] }),
+        queryClient.invalidateQueries({ queryKey: ['ops', 'worker-commands'] }),
         queryClient.invalidateQueries({ queryKey: ['ops', 'ingestion'] }),
       ])
     },

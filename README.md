@@ -48,7 +48,11 @@ waste bags across all thicknesses, volumes and colour standards.
 > retry/discard and a read-only portal probe); P8.4 hardens it with a dedicated
 > quarantine state, HTML position counts, server-side pagination/filtering, run
 > detail drawers, manual worker triggers, stale-lock recovery, the
-> `/healthz/worker_runs` alias and worker-run retention.
+> `/healthz/worker_runs` alias and worker-run retention. P8.5 makes manual
+> worker commands durable with a concurrency guard and cancellation, clamps
+> pagination after row removal, and runs retention from the daily scheduler.
+> P9.1 adds supplier/customer master data with contacts, CRUD APIs, a Master Data
+> workspace, RFQ address-book selection and customer-prefilled e-invoices.
 
 ---
 
@@ -117,6 +121,7 @@ src/
       invoices.py        # invoice list/detail, payments, credit notes, event chain
       integrations.py    # n8n RFQ dispatch + signed quote callback
       ops.py             # worker/ingestion operations, health snapshot + outbox metrics
+      master_data.py     # supplier/customer CRUD and contact master data
   repositories/
     tender_repository.py # PostgreSQL tender/position persistence + owner
     offer_repository.py  # offer lines, artifacts and ERPNext names
@@ -332,8 +337,12 @@ dialog, the Operations → Outbox console where admins/approvers retry failed ER
 quotation jobs and jump to the linked offer, and the admin-only Operations →
 Workers & Ingestion console with paginated/filterable worker-run history,
 ingestion queue health, server-side quarantine/dead-letter tables, retry/discard
-confirmations, run-detail drawers, manual scrape/ingestion triggers, stale-lock
-release and a read-only portal probe with HTML position diagnostics. The Offers workspace with
+confirmations, run-detail drawers, durable worker-command history with
+cancel-run, manual scrape/ingestion triggers, stale-lock release and a read-only
+portal probe with HTML position diagnostics. Admin → Master Data provides
+responsive supplier/customer directories with contacts and billing defaults; the
+RFQ dialog selects saved suppliers and the e-invoice approval selects saved
+customers. The Offers workspace with
 status/owner filters, VAT and line-item detail, and the four-eyes approval
 dialog that can optionally issue the ZUGFeRD/XRechnung invoice in the same
 step. Security → Settings enrols or disables TOTP MFA with a QR/manual key and
@@ -401,12 +410,20 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | POST | `/ops/outbox/{job_id}/retry` | admin/approver; reset a failed job to pending with 0 attempts |
 | GET | `/ops/worker-runs` | admin only; paginated scrape/ingestion run history with type/status filters |
 | GET | `/healthz/worker_runs` | admin-only compatibility alias for `/ops/worker-runs` |
-| POST | `/ops/worker-runs/scrape` | admin only; launch a detached scrape worker (`portal`, `max_pages`) |
-| POST | `/ops/worker-runs/ingestion` | admin only; launch a detached ingestion batch (`limit`) |
+| POST | `/ops/worker-runs/scrape` | admin only; queue a durable scrape command and launch its worker |
+| POST | `/ops/worker-runs/ingestion` | admin only; queue a durable ingestion command and launch its worker |
+| GET | `/ops/worker-commands` | admin only; queued/running/terminal command history with PID and errors |
+| POST | `/ops/worker-commands/{id}/cancel` | admin only; cancel a queued/running command and signal its process |
 | GET | `/ops/ingestion` | admin only; paginated queue, counts, quarantine and DLQ rows (`status`, `queue`, `quarantined`) |
 | POST | `/ops/ingestion/{job_id}/retry` | admin only; requeue a failed/quarantined job |
 | POST | `/ops/ingestion/{job_id}/discard` | admin only; terminally skip a failed/quarantined job |
 | POST | `/ops/ingestion/release-stale` | admin only; reset processing jobs older than the lock threshold |
+| GET | `/suppliers` | authenticated; paginated/searchable supplier address book with contacts |
+| POST | `/suppliers` | admin only; create a supplier and contacts |
+| GET/PUT/DELETE | `/suppliers/{id}` | authenticated read; admin update/soft-deactivate |
+| GET | `/customers` | authenticated; paginated/searchable customer billing directory |
+| POST | `/customers` | admin only; create a customer |
+| GET/PUT/DELETE | `/customers/{id}` | authenticated read; admin update/soft-deactivate |
 | GET | `/ops/portals` | admin only; configured portal targets for the read-only probe |
 | POST | `/ops/portals/{portal_id}/probe` | admin only; read-only P7.3 portal diagnostic with position counts |
 | GET | `/admin/catalog/overrides` | admin only; list pinned catalogue fields |
@@ -817,8 +834,12 @@ does not block the remaining targets or the ingestion pass.
 - **Manual operations:** admins can launch a detached scrape or ingestion worker
   from the Workers & Ingestion console (or `POST /ops/worker-runs/{scrape,ingestion}`)
   and reset stale `processing` jobs with `POST /ops/ingestion/release-stale`.
-  Portal/domain advisory locks still prevent overlapping runs; every action is
-  audited.
+  Every trigger creates a durable `worker_commands` row (`queued` → `running` →
+  `succeeded`/`failed`) with PID/timestamps; a partial unique index prevents
+  duplicate active commands of the same type, and admin cancellation marks the
+  row `cancelled` and sends SIGTERM to the process. Portal/domain advisory locks
+  still prevent overlapping runs; every action is audited. The daily scheduler
+  also runs worker-run retention before overdue maintenance.
 - **Telegram alerts:** set `TELEGRAM_BOT_TOKEN` and
   `TELEGRAM_APPROVAL_CHAT_ID` to receive alerts after a scheduled scrape
   exception or when an ingestion job exhausts `max_attempts` and reaches the
@@ -1126,9 +1147,10 @@ GitHub Actions (`.github/workflows/ci.yml`) has six gates:
   portal-probe report with position counts, triggers scrape/ingestion/release
   actions against mocked endpoints, and confirms retry/discard with cancel-first
   focus; a sales user and an approver get no nav link and are redirected away
-  from `/ops/workers`. The n8n production equivalent is
-  `deploy/n8n/rfq-supplier-workflow.json`. Traces, screenshots and the Playwright
-  HTML report are uploaded on failure.
+  from `/ops/workers`. `master-data.spec.ts` creates/deactivates suppliers and
+  customers and verifies saved-supplier RFQ prefill. The n8n production
+  equivalent is `deploy/n8n/rfq-supplier-workflow.json`. Traces, screenshots and
+  the Playwright HTML report are uploaded on failure.
 
 CI uses `.[dev,e-invoicing]`; local installations may also add
 `.[catalogue]` for local BGE-M3 embeddings.
@@ -1164,8 +1186,11 @@ manual-cost intake path (`tender-intake.spec.ts`), the supplier-quote → RFQ �
 approval → `.x84` path (`tender-to-export.spec.ts`), the pending-TTL path
 (`rfq-pending.spec.ts`), and the admin-only Workers & Ingestion console
 (`operations.spec.ts`, including server filters, the run-detail drawer, mocked
-manual-trigger actions and Sales/Approver denial). `upload-errors.spec.ts` uses
-`invalid-tender.x83` plus a Playwright-mocked ClamAV rejection.
+manual-trigger actions and Sales/Approver denial). `master-data.spec.ts` covers
+supplier/customer creation, deactivation and RFQ address-book prefill; the
+golden path selects the seeded customer to prefill the e-invoice.
+`upload-errors.spec.ts` uses `invalid-tender.x83` plus a Playwright-mocked
+ClamAV rejection.
 
 ---
 
@@ -1613,6 +1638,8 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P8.2b — RFQ relay verification: deterministic signed mock n8n relay in the E2E stack, outbound HMAC + envelope assertions, signed supplier-quote callback into the comparison panel, stable idempotency keys with a 2-second pending-TTL recovery test, and a deployable `deploy/n8n/rfq-supplier-workflow.json` template
 - [x] P8.3 — operations & ingestion console: admin-only Workers & Ingestion page with worker-run history, ingestion queue health, responsive quarantine/dead-letter tables, retry/discard confirmations with cancel-first focus and audit events, a read-only portal probe with parsed positions, warnings/errors and zero-result diagnostics, and Playwright admin plus Sales/Approver coverage
 - [x] P8.4 — operations hardening: dedicated `quarantined`/`quarantine_reason` columns and migration `0017`, HTML position counts in probes, server-side pagination/filtering for runs and queue/DLQ tables, worker-run detail drawer, manual scrape/ingestion triggers, stale-lock release, `/healthz/worker_runs` alias, worker-run retention CLI and live PostgreSQL retry/discard/release tests
+- [x] P8.5 — local reliability hardening: durable `worker_commands` lifecycle with concurrency guard and cancel-run, pagination clamping after row removal, scheduler-driven worker-run retention, migration `0018`
+- [x] P9.1 — supplier & customer master data: extended supplier contacts and customer billing schema (migration `0019`), authenticated CRUD APIs, admin Master Data directories with responsive tables/dialogs, RFQ address-book selection and customer-prefilled e-invoice approval
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

@@ -21,6 +21,7 @@ from src.repositories.credit_note_repository import CreditNoteRepository
 from src.repositories.ingestion_repository import TenderIngestionJobRepository
 from src.repositories.integration_repository import IntegrationRepository
 from src.repositories.invoice_repository import InvoiceRepository
+from src.repositories.master_data_repository import CustomerRepository, SupplierRepository
 from src.repositories.offer_repository import OfferRepository
 from src.repositories.ops_repository import OpsRepository
 from src.repositories.quotation_sync_repository import QuotationSyncJobRepository
@@ -32,6 +33,7 @@ from src.repositories.user_repository import (
     TokenBlocklistRepository,
     UserRepository,
 )
+from src.repositories.worker_command_repository import WorkerCommandRepository
 from src.repositories.worker_run_repository import WorkerRunRepository
 from src.services.audit_service import AuditService
 from src.services.worker_command import WorkerCommandLauncher
@@ -44,6 +46,7 @@ __all__ = [
     "get_catalog_repository",
     "get_clamav_scanner",
     "get_credit_note_repository",
+    "get_customer_repository",
     "get_erpnext_client",
     "get_ingestion_job_repository",
     "get_integration_repository",
@@ -59,11 +62,13 @@ __all__ = [
     "get_refresh_token_repository",
     "get_session",
     "get_supplier_quote_repository",
+    "get_supplier_repository",
     "get_tender_repository",
     "get_token_blocklist_repository",
     "get_user_repository",
     "get_worker_health_service",
     "get_worker_command_launcher",
+    "get_worker_command_repository",
     "get_worker_run_repository",
     "get_workflow_checkpointer",
     "require_roles",
@@ -244,6 +249,24 @@ def get_worker_command_launcher(
     settings: Settings = Depends(get_app_settings),
 ) -> WorkerCommandLauncher:
     return WorkerCommandLauncher(settings)
+
+
+def get_worker_command_repository(
+    session: AsyncSession = Depends(get_session),
+) -> WorkerCommandRepository:
+    return WorkerCommandRepository(session)
+
+
+def get_supplier_repository(
+    session: AsyncSession = Depends(get_session),
+) -> SupplierRepository:
+    return SupplierRepository(session)
+
+
+def get_customer_repository(
+    session: AsyncSession = Depends(get_session),
+) -> CustomerRepository:
+    return CustomerRepository(session)
 
 
 def get_credit_note_repository(

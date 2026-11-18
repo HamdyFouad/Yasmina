@@ -8,7 +8,14 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, EmailStr, Field, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from src.agents.state import OfferRequest
 from src.api.security import Role
@@ -18,6 +25,7 @@ from src.models.schemas import CustomerOffer, SupplierQuote
 __all__ = [
     "ApprovalPayload",
     "CatalogOverridePayload",
+    "CustomerPayload",
     "InvoiceBuyerPayload",
     "InvoiceCancelPayload",
     "InvoiceCreditPayload",
@@ -41,9 +49,12 @@ __all__ = [
     "RefreshTokenRequest",
     "ReleaseStaleLocksPayload",
     "SupplierQuoteCallbackPayload",
+    "SupplierContactPayload",
+    "SupplierPayload",
     "TenderOwnerPayload",
     "TokenRequest",
     "UserCreatePayload",
+    "WorkerCommandCancelPayload",
     "WorkerIngestionTriggerPayload",
     "WorkerScrapeTriggerPayload",
     "UserRolesPayload",
@@ -160,6 +171,81 @@ class ReleaseStaleLocksPayload(BaseModel):
     """Age threshold for resetting ingestion jobs stuck in ``processing``."""
 
     older_than_seconds: int = Field(default=900, ge=60, le=86_400)
+
+
+class WorkerCommandCancelPayload(BaseModel):
+    """Operator reason recorded when a running worker command is cancelled."""
+
+    reason: str = Field(default="cancelled by operator", min_length=3, max_length=512)
+
+
+class SupplierContactPayload(BaseModel):
+    id: UUID | None = None
+    name: str = Field(min_length=1, max_length=256)
+    role: str | None = Field(default=None, max_length=128)
+    email: EmailStr | None = None
+    phone: str | None = Field(default=None, max_length=64)
+    is_primary: bool = False
+
+
+class SupplierPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=256)
+    legal_name: str | None = Field(default=None, max_length=256)
+    email: EmailStr | None = None
+    phone: str | None = Field(default=None, max_length=64)
+    street: str | None = Field(default=None, max_length=256)
+    postal_code: str | None = Field(default=None, max_length=32)
+    city: str | None = Field(default=None, max_length=128)
+    country_code: str = Field(default="DE", min_length=2, max_length=2)
+    payment_terms: str | None = Field(default=None, max_length=512)
+    delivery_days: int | None = Field(default=None, ge=0, le=365)
+    notes: str | None = Field(default=None, max_length=4000)
+    is_active: bool = True
+    contacts: list[SupplierContactPayload] = Field(default_factory=list)
+
+    @field_validator("country_code")
+    @classmethod
+    def _upper_country(cls, value: str) -> str:
+        return value.upper()
+
+    @model_validator(mode="after")
+    def _single_primary_contact(self) -> SupplierPayload:
+        if sum(1 for contact in self.contacts if contact.is_primary) > 1:
+            raise ValueError("only one supplier contact can be primary")
+        if self.contacts and not any(contact.is_primary for contact in self.contacts):
+            self.contacts[0].is_primary = True
+        return self
+
+
+class CustomerPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=256)
+    legal_name: str | None = Field(default=None, max_length=256)
+    street: str = Field(min_length=1, max_length=256)
+    postal_code: str = Field(min_length=1, max_length=32)
+    city: str = Field(min_length=1, max_length=128)
+    country_code: str = Field(default="DE", min_length=2, max_length=2)
+    vat_id: str | None = Field(default=None, max_length=32)
+    leitweg_id: str | None = Field(default=None, max_length=46)
+    payment_terms: str | None = Field(default=None, max_length=512)
+    contact_name: str | None = Field(default=None, max_length=256)
+    contact_email: EmailStr | None = None
+    phone: str | None = Field(default=None, max_length=64)
+    notes: str | None = Field(default=None, max_length=4000)
+    is_active: bool = True
+
+    @field_validator("country_code")
+    @classmethod
+    def _upper_country(cls, value: str) -> str:
+        return value.upper()
+
+    @model_validator(mode="after")
+    def _validate_leitweg(self) -> CustomerPayload:
+        if self.leitweg_id is not None:
+            reference = self.leitweg_id.strip()
+            if reference and not 5 <= len(reference) <= 46:
+                raise ValueError("the Leitweg-ID must be 5 to 46 characters")
+            self.leitweg_id = reference or None
+        return self
 
 
 class WorkerScrapeTriggerPayload(BaseModel):

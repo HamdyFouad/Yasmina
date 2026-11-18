@@ -46,7 +46,15 @@ from src.models.enums import (
     TenderStatus,
     UnitOfMeasure,
 )
-from src.models.orm import QuotationSyncJob, TenderIngestionJob, WorkerRun
+from src.models.orm import (
+    Customer,
+    QuotationSyncJob,
+    Supplier,
+    SupplierContact,
+    TenderIngestionJob,
+    WorkerCommand,
+    WorkerRun,
+)
 from src.models.schemas import CustomerOffer, CustomerOfferLine, Tender, q2, q4
 from src.repositories.offer_repository import OfferRepository
 from src.repositories.tender_repository import TenderRepository
@@ -145,6 +153,8 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
     outbox_offer_number = f"E2E-OBX-{suffix}"
     tender_number = f"E2E-TND-{suffix}"
     quarantine_tender_number = f"E2E-QTN-{suffix}"
+    supplier_name = f"E2E Hygiene Supplier {suffix}"
+    master_customer_name = f"E2E Customer {suffix}"
 
     factory = get_session_factory(settings)
     try:
@@ -272,6 +282,56 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
                         error="E2E seeded ingestion failure",
                         details={"processed": 1, "failed": 1, "source": "e2e-seed"},
                     ),
+                    Supplier(
+                        name=supplier_name,
+                        legal_name=f"{supplier_name} GmbH",
+                        email="rfq@hygiene-gross.de",
+                        phone="+49 941 123456",
+                        street="Gewerbepark 7",
+                        postal_code="93055",
+                        city="Regensburg",
+                        country_code="DE",
+                        payment_terms="Payable within 30 days",
+                        delivery_days=5,
+                        contacts=[
+                            SupplierContact(
+                                name="Erika Muster",
+                                role="Key Account",
+                                email="rfq@hygiene-gross.de",
+                                phone="+49 941 123456",
+                                is_primary=True,
+                            )
+                        ],
+                    ),
+                    Customer(
+                        name=master_customer_name,
+                        legal_name=f"{master_customer_name} Stadt",
+                        street="Rathausplatz 1",
+                        postal_code="93047",
+                        city="Regensburg",
+                        country_code="DE",
+                        vat_id="DE123456789",
+                        leitweg_id=BUYER_REFERENCE,
+                        payment_terms="Payable within 14 days",
+                        contact_name="Einkauf Stadt",
+                        contact_email="einkauf@musterstadt.de",
+                    ),
+                    WorkerCommand(
+                        command_type="scrape",
+                        status="queued",
+                        portal="all",
+                        max_pages=1,
+                        requested_by=admin_username,
+                        details={"source": "e2e-seed"},
+                    ),
+                    WorkerCommand(
+                        command_type="ingestion",
+                        status="failed",
+                        batch_limit=10,
+                        requested_by=admin_username,
+                        error="E2E seeded command failure",
+                        details={"source": "e2e-seed"},
+                    ),
                     *[
                         WorkerRun(
                             run_type="scrape",
@@ -303,6 +363,8 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
         "outbox_offer_number": outbox_offer_number,
         "tender_number": tender_number,
         "quarantine_tender_number": quarantine_tender_number,
+        "supplier_name": supplier_name,
+        "master_customer_name": master_customer_name,
         "customer_name": CUSTOMER_NAME,
         "buyer_reference": BUYER_REFERENCE,
         "invoice_net": str(offer.total_net),

@@ -24,6 +24,8 @@ import {
 } from '@/components/ui/select'
 import { IngestionActionDialog } from '@/features/workers/ingestion-action-dialog'
 import { IngestionPanel } from '@/features/workers/ingestion-panel'
+import { CancelWorkerCommandDialog } from '@/features/workers/cancel-worker-command-dialog'
+import { WorkerCommandsPanel } from '@/features/workers/worker-commands-panel'
 import {
   ManualWorkerDialog,
   type WorkerActionMode,
@@ -32,10 +34,16 @@ import { ProbePortalDialog } from '@/features/workers/probe-portal-dialog'
 import { WorkerRunDetailSheet } from '@/features/workers/worker-run-detail-sheet'
 import { WorkerRunsPanel } from '@/features/workers/worker-runs-panel'
 import { apiErrorMessage } from '@/lib/api-error'
-import { fetchIngestionJobs, fetchPortalTargets, fetchWorkerRuns } from '@/lib/ops-api'
+import {
+  fetchIngestionJobs,
+  fetchPortalTargets,
+  fetchWorkerCommands,
+  fetchWorkerRuns,
+} from '@/lib/ops-api'
 import { formatDateTime } from '@/lib/utils'
 import type {
   IngestionJob,
+  WorkerCommand,
   WorkerRun,
   WorkerRunStatus,
   WorkerRunType,
@@ -43,6 +51,7 @@ import type {
 
 const RUN_PAGE_SIZE = 20
 const JOB_PAGE_SIZE = 20
+const COMMAND_PAGE_SIZE = 20
 
 function MetricCard({
   label,
@@ -80,12 +89,14 @@ export function WorkersPage() {
   const [probeOpen, setProbeOpen] = React.useState(false)
   const [manualMode, setManualMode] = React.useState<WorkerActionMode | null>(null)
   const [detailRun, setDetailRun] = React.useState<WorkerRun | null>(null)
+  const [cancelCommand, setCancelCommand] = React.useState<WorkerCommand | null>(null)
   const [actionState, setActionState] = React.useState<{
     job: IngestionJob
     action: 'retry' | 'discard'
   } | null>(null)
 
   const [runsPage, setRunsPage] = React.useState(0)
+  const [commandsPage, setCommandsPage] = React.useState(0)
   const [runType, setRunType] = React.useState<WorkerRunType | null>(null)
   const [runStatus, setRunStatus] = React.useState<WorkerRunStatus | null>(null)
   const [queueStatus, setQueueStatus] = React.useState<'pending' | 'processing' | null>(null)
@@ -140,11 +151,22 @@ export function WorkersPage() {
     placeholderData: keepPreviousData,
     refetchInterval: 60_000,
   })
+  const commands = useQuery({
+    queryKey: ['ops', 'worker-commands', { commandsPage }],
+    queryFn: () =>
+      fetchWorkerCommands({
+        limit: COMMAND_PAGE_SIZE,
+        offset: commandsPage * COMMAND_PAGE_SIZE,
+      }),
+    placeholderData: keepPreviousData,
+    refetchInterval: 60_000,
+  })
   const portals = useQuery({
     queryKey: ['ops', 'portals'],
     queryFn: fetchPortalTargets,
     staleTime: 300_000,
   })
+
 
   const summary = queue.data
   const latestRun = runs.data?.runs[0] ?? null
@@ -156,6 +178,7 @@ export function WorkersPage() {
   const refreshAll = (): void => {
     void Promise.all([
       runs.refetch(),
+      commands.refetch(),
       queue.refetch(),
       quarantine.refetch(),
       deadLetter.refetch(),
@@ -164,11 +187,18 @@ export function WorkersPage() {
   }
 
   const refreshIngestion = (): void => {
-    void Promise.all([queue.refetch(), quarantine.refetch(), deadLetter.refetch(), runs.refetch()])
+    void Promise.all([
+      queue.refetch(),
+      quarantine.refetch(),
+      deadLetter.refetch(),
+      runs.refetch(),
+      commands.refetch(),
+    ])
   }
 
   const isFetching =
     runs.isFetching ||
+    commands.isFetching ||
     queue.isFetching ||
     quarantine.isFetching ||
     deadLetter.isFetching
@@ -304,6 +334,18 @@ export function WorkersPage() {
         </span>
       </div>
 
+      <WorkerCommandsPanel
+        commands={commands.data?.commands ?? []}
+        total={commands.data?.count ?? 0}
+        page={commandsPage}
+        pageSize={COMMAND_PAGE_SIZE}
+        isFetching={commands.isFetching}
+        onPageChange={setCommandsPage}
+        onRefresh={() => void commands.refetch()}
+        onCancel={setCancelCommand}
+        actionsDisabled={cancelCommand !== null}
+      />
+
       <WorkerRunsPanel
         runs={runs.data?.runs ?? []}
         total={runs.data?.count ?? 0}
@@ -428,6 +470,18 @@ export function WorkersPage() {
         <WorkerRunDetailSheet run={detailRun} onClose={() => setDetailRun(null)} />
       ) : null}
 
+      {cancelCommand !== null ? (
+        <CancelWorkerCommandDialog
+          command={cancelCommand}
+          onClose={() => setCancelCommand(null)}
+          onCompleted={() => {
+            if (commands.data?.commands.length === 1 && commandsPage > 0) {
+              setCommandsPage((current) => Math.max(0, current - 1))
+            }
+          }}
+        />
+      ) : null}
+
       {actionState !== null ? (
         <IngestionActionDialog
           key={`${actionState.job.id}-${actionState.action}`}
@@ -435,7 +489,22 @@ export function WorkersPage() {
           action={actionState.action}
           onClose={() => setActionState(null)}
           onCompleted={() => {
+            const completed = actionState
             setActionState(null)
+            if (
+              completed.job.quarantined &&
+              quarantine.data?.jobs.length === 1 &&
+              quarantinePage > 0
+            ) {
+              setQuarantinePage((current) => Math.max(0, current - 1))
+            } else if (
+              completed.job.status === 'failed' &&
+              !completed.job.quarantined &&
+              deadLetter.data?.jobs.length === 1 &&
+              dlqPage > 0
+            ) {
+              setDlqPage((current) => Math.max(0, current - 1))
+            }
             refreshIngestion()
           }}
         />

@@ -1,8 +1,15 @@
 import * as React from 'react'
 
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
-import type { CustomerOffer, InvoiceRequestPayload } from '@/types/domain'
+import type { Customer, CustomerOffer, InvoiceRequestPayload } from '@/types/domain'
 
 export interface InvoiceFormValues {
   street: string
@@ -56,6 +63,23 @@ export function createInvoiceForm(offer: CustomerOffer): InvoiceFormValues {
     dueDate: isoDateAfterDays(14),
     iban: '',
     paymentTerms: '',
+  }
+}
+
+export function applyCustomerToInvoiceForm(
+  values: InvoiceFormValues,
+  customer: Customer,
+): InvoiceFormValues {
+  return {
+    ...values,
+    street: customer.street,
+    city: customer.city,
+    postalCode: customer.postal_code,
+    countryCode: customer.country_code,
+    vatId: customer.vat_id ?? '',
+    email: customer.contact_email ?? values.email,
+    buyerReference: customer.leitweg_id ?? values.buyerReference,
+    paymentTerms: customer.payment_terms ?? values.paymentTerms,
   }
 }
 
@@ -167,6 +191,9 @@ export function InvoiceFields({
   attempted,
   onChange,
   onBlur,
+  customers,
+  selectedCustomerId,
+  onSelectCustomer,
 }: {
   enabled: boolean
   onToggle: (enabled: boolean) => void
@@ -176,6 +203,9 @@ export function InvoiceFields({
   attempted: boolean
   onChange: (field: InvoiceField, value: string) => void
   onBlur: (field: InvoiceField) => void
+  customers: Customer[]
+  selectedCustomerId: string
+  onSelectCustomer: (customerId: string) => void
 }) {
   const fieldError = (field: InvoiceField): string | undefined =>
     attempted || touched.has(field) ? errors[field] : undefined
@@ -213,6 +243,29 @@ export function InvoiceFields({
           Adds a ZUGFeRD PDF/A-3 and an XRechnung XML to the approval. Leave collapsed to approve
           without invoicing.
         </p>
+
+        <div className="space-y-1">
+          <Label htmlFor="invoice-customer">Saved customer</Label>
+          <p id="invoice-customer-hint" className="text-xs text-muted-foreground">
+            Selecting a customer prefills the billing address, VAT ID, Leitweg-ID and terms.
+          </p>
+          <Select
+            value={selectedCustomerId || 'none'}
+            onValueChange={(value) => onSelectCustomer(value === 'none' ? '' : value)}
+          >
+            <SelectTrigger id="invoice-customer" aria-describedby="invoice-customer-hint">
+              <SelectValue placeholder="Manual buyer details" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">Manual buyer details</SelectItem>
+              {customers.map((customer) => (
+                <SelectItem key={customer.id} value={customer.id}>
+                  {customer.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
 
         {attempted && Object.keys(errors).length > 0 ? (
           <p

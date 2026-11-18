@@ -153,14 +153,89 @@ class Supplier(Base, TimestampMixin):
         PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
     )
     name: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
+    legal_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     erpnext_supplier_id: Mapped[str | None] = mapped_column(String(140), nullable=True, unique=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    street: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    postal_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    country_code: Mapped[str] = mapped_column(
+        String(2), nullable=False, default="DE", server_default=text("'DE'")
+    )
+    payment_terms: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    delivery_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=text("true")
     )
 
     quotes: Mapped[list[SupplierQuote]] = relationship(back_populates="supplier", lazy="selectin")
     catalog_articles: Mapped[list[CatalogArticle]] = relationship(back_populates="supplier", lazy="selectin")
+    contacts: Mapped[list[SupplierContact]] = relationship(
+        back_populates="supplier",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="SupplierContact.name",
+    )
+
+
+class SupplierContact(Base, TimestampMixin):
+    __tablename__ = "supplier_contacts"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    supplier_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("suppliers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    role: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+
+    supplier: Mapped[Supplier] = relationship(back_populates="contacts")
+
+    __table_args__ = (
+        Index(
+            "uq_supplier_contacts_primary",
+            "supplier_id",
+            unique=True,
+            postgresql_where=text("is_primary"),
+        ),
+    )
+
+
+class Customer(Base, TimestampMixin):
+    __tablename__ = "customers"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    name: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
+    legal_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    street: Mapped[str] = mapped_column(String(256), nullable=False)
+    postal_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    city: Mapped[str] = mapped_column(String(128), nullable=False)
+    country_code: Mapped[str] = mapped_column(
+        String(2), nullable=False, default="DE", server_default=text("'DE'")
+    )
+    vat_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    leitweg_id: Mapped[str | None] = mapped_column(String(46), nullable=True)
+    payment_terms: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    contact_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    contact_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
 
 
 class Tender(Base, TimestampMixin):
@@ -1324,6 +1399,56 @@ class WorkerRun(Base, TimestampMixin):
         CheckConstraint("errors_count >= 0", name="errors_non_negative"),
         Index("ix_worker_runs_started_at", "started_at"),
         Index("ix_worker_runs_type_status", "run_type", "status"),
+    )
+
+
+class WorkerCommand(Base, TimestampMixin):
+    """Durable admin-triggered worker command with a process lifecycle."""
+
+    __tablename__ = "worker_commands"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    command_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="queued", server_default=text("'queued'")
+    )
+    portal: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    max_pages: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    batch_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    requested_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "command_type IN ('scrape', 'ingestion')",
+            name="command_type_valid",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')",
+            name="status_valid",
+        ),
+        CheckConstraint("max_pages IS NULL OR max_pages BETWEEN 1 AND 5", name="max_pages_valid"),
+        CheckConstraint(
+            "batch_limit IS NULL OR batch_limit BETWEEN 1 AND 50",
+            name="batch_limit_valid",
+        ),
+        CheckConstraint("pid IS NULL OR pid > 0", name="pid_positive"),
+        Index("ix_worker_commands_created_at", "created_at"),
+        Index("ix_worker_commands_status", "status"),
+        Index(
+            "uq_worker_commands_active_type",
+            "command_type",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
     )
 
 

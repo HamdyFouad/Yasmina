@@ -306,8 +306,12 @@ async def test_scheduled_scrape_failure_sends_alert(monkeypatch) -> None:  # typ
     async def failing_run(*args, **kwargs):  # type: ignore[no-untyped-def]
         raise RuntimeError("portal returned 503")
 
+    async def fake_retention(settings):  # type: ignore[no-untyped-def]
+        return {"deleted": 0}
+
     monkeypatch.setattr(worker_module, "run_scheduler", fake_scheduler)
     monkeypatch.setattr(worker_module, "_run_once_with_db", failing_run)
+    monkeypatch.setattr(worker_module, "_purge_worker_runs_for_scheduler", fake_retention)
 
     with pytest.raises(RuntimeError, match="503"):
         await run_scheduled(
@@ -315,6 +319,7 @@ async def test_scheduled_scrape_failure_sends_alert(monkeypatch) -> None:  # typ
             portal="bayern",
             cron="0 2 * * *",
             notifier=notifier,  # type: ignore[arg-type]
+            retention_runner=fake_retention,
         )
 
     assert "scheduled scrape failed" in notifier.messages[0]
@@ -332,6 +337,10 @@ async def test_scheduled_job_runs_overdue_maintenance_before_scrape(monkeypatch)
         calls.append("overdue")
         return 2
 
+    async def fake_retention(settings):  # type: ignore[no-untyped-def]
+        calls.append("retention")
+        return {"deleted": 0}
+
     async def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
         calls.append("scrape")
         return []
@@ -345,7 +354,8 @@ async def test_scheduled_job_runs_overdue_maintenance_before_scrape(monkeypatch)
         cron="0 2 * * *",
         process_pending=False,
         overdue_runner=fake_overdue,
+        retention_runner=fake_retention,
     )
 
     assert runs == 1
-    assert calls == ["overdue", "scrape"]
+    assert calls == ["retention", "overdue", "scrape"]

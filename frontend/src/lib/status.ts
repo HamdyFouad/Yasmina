@@ -1,7 +1,7 @@
 /** Maps backend status enums to badge tones shared by tenders, offers and invoices. */
 export type StatusTone = 'default' | 'secondary' | 'outline' | 'success' | 'warning' | 'destructive'
 
-const SUCCESS = new Set(['PAID', 'APPROVED', 'ACCEPTED', 'AWARDED', 'SUCCEEDED', 'COMPLETED'])
+const SUCCESS = new Set(['PAID', 'APPROVED', 'ACCEPTED', 'AWARDED', 'SUCCEEDED', 'COMPLETED', 'ACTIVE'])
 const WARNING = new Set([
   'PENDING_APPROVAL',
   'PARTIALLY_PAID',
@@ -13,7 +13,7 @@ const WARNING = new Set([
   'RUNNING',
 ])
 const DESTRUCTIVE = new Set(['OVERDUE', 'REJECTED', 'CANCELLED', 'EXPIRED', 'FAILED'])
-const MUTED = new Set(['DRAFT', 'ARCHIVED', 'CLOSED', 'CREDITED', 'SKIPPED'])
+const MUTED = new Set(['DRAFT', 'ARCHIVED', 'CLOSED', 'CREDITED', 'SKIPPED', 'INACTIVE'])
 
 export function statusTone(status: string): StatusTone {
   const normalized = status.toUpperCase()

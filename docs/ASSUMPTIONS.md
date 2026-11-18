@@ -1344,3 +1344,54 @@ for deterministic fixture and chain-verification tests.
   transitions, stale-lock release and worker-run retention. `test_ops_workers_api`
   covers the admin alias, trigger audit events and release endpoint with mocked
   dependencies; E2E mocks the trigger endpoints so it never spawns a process.
+
+## Durable worker-command assumptions (P8.5)
+
+- **Lifecycle.** `worker_commands` stores `command_type` (`scrape`/`ingestion`),
+  `status` (`queued` → `running` → `succeeded`/`failed`/`cancelled`), target
+  options, PID, requesting admin, timestamps, error and details. Migration `0018`
+  adds the table plus a partial unique index on `command_type` for active rows, so
+  two queued/running commands of the same type are rejected even across replicas.
+- **Durability boundary.** The API commits the queued row before spawning
+  `python -m src.worker … --command-id <uuid>`. The child claims the row with its
+  PID; a spawn failure marks it failed. A queued row whose process never starts
+  remains visible and cancellable. A hard process crash can leave `running`;
+  operators can cancel it (the UI/API are the recovery path).
+- **Cancellation.** `POST /ops/worker-commands/{id}/cancel` moves queued/running
+  rows to `cancelled`, records the reason and sends SIGTERM when a PID exists.
+  The worker's terminal finish is conditional, so it cannot overwrite the
+  cancelled state. Every cancellation appends
+  `SYSTEM_WORKER_COMMAND_CANCELLED`.
+- **Pagination clamping.** Retry/discard and supplier/customer deactivation
+  decrement the current page in the mutation callback when the removed row was
+  the only row on a non-zero page; no render-time state effect is used.
+- **Retention schedule.** The daily scheduler runs `purge-worker-runs` before
+  overdue maintenance, in addition to the manual CLI. Individual failures are
+  logged and do not abort the scrape/ingestion cycle.
+
+## Supplier & customer master-data assumptions (P9.1)
+
+- **Supplier reuse.** The existing `suppliers` table (created for catalogue
+  articles and ERPNext mapping) is extended rather than duplicated. New nullable
+  address/terms fields, `country_code` default `DE`, contacts and notes coexist
+  with the existing unique name and ERPNext supplier id.
+- **Contacts.** `supplier_contacts` is owned by the supplier (cascade delete),
+  supports name/role/e-mail/phone and exactly one primary contact via a partial
+  unique index. Supplier create/update payloads reconcile the contact list by
+  optional id; the first contact is promoted to primary when none is marked.
+- **Customers.** `customers` stores the billing identity used by e-invoices:
+  name/legal name, billing address, country, VAT ID, Leitweg-ID, payment terms and
+  contact details. Names are unique. The address is required; optional fiscal
+  fields are validated when present.
+- **API roles.** Authenticated roles can read suppliers/customers so RFQ and
+  invoice dialogs work for sales/approvers; create/update/delete (soft
+  deactivation) is admin-only. Reads are paginated/searchable and writes append
+  `SYSTEM_SUPPLIER_*`/`SYSTEM_CUSTOMER_*` audit events.
+- **Integrations.** RFQ dispatch selects an active supplier and pre-fills its
+  primary contact name/e-mail (falling back to the supplier e-mail). The
+  e-invoice approval dialog selects an active customer and copies address, VAT ID,
+  Leitweg-ID, contact e-mail and payment terms; due date/IBAN remain operator
+  inputs.
+- **Deactivation.** DELETE marks `is_active=false` rather than deleting history.
+  Inactive suppliers/customers disappear from active RFQ/invoice selectors but
+  remain visible in the admin directory and historical records.

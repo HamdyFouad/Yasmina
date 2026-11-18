@@ -62,10 +62,12 @@ console, checks the seeded worker runs and quarantine/dead-letter rows, filters
 runs server-side, opens the run-detail drawer, renders a mocked read-only
 portal-probe report with HTML position counts, exercises retry/discard with
 cancel-first focus, and triggers the mocked scrape/ingestion/release-lock
-actions. It also verifies that a sales user and an approver have no nav link and
-are redirected away from `/ops/workers`. The mock relay
-(`mock-n8n-server.mjs`) verifies the outbound HMAC and returns a signed
-supplier-quote callback; the deployable production equivalent is
+actions. `tests/e2e/master-data.spec.ts` creates/deactivates a supplier and
+customer and verifies saved-supplier RFQ prefill; the golden path selects a
+saved customer to prefill the e-invoice. It also verifies that a sales user and
+an approver have no nav link and are redirected away from `/ops/workers`. The
+mock relay (`mock-n8n-server.mjs`) verifies the outbound HMAC and returns a
+signed supplier-quote callback; the deployable production equivalent is
 `deploy/n8n/rfq-supplier-workflow.json`. All use ARIA locators (`getByRole`,
 `getByLabel`) and a single worker, so the run is deterministic.
 
@@ -88,7 +90,9 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 | `/offers` | Paginated offer workspace with status and owner filters, a responsive table, a detail side panel (server VAT breakdown, signature state, line items, approved `.x84` bid download) and the approver/admin four-eyes approval dialog with an optional “Generate e-invoice” section (buyer, Leitweg-ID, due date, IBAN, payment terms). `?offer=<id>` deep-links the side panel (used by the Outbox and offer-creation handoff). |
 | `/invoices` | Responsive invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, the admin-only "Mark as paid" dialog and an invoice detail sheet (authoritative totals, line items including freight/pallet surcharges, VAT breakdown, credit-note history with credit-note PDF/XML downloads, document downloads, verified GoBD event timeline, admin-only credit-note/cancel/email dialogs with inline validation). |
 | `/ops/outbox` | Operations console for quotation_sync_jobs: status filter, attempts/retry budget, next attempt, last ERPNext error, a Retry action for failed jobs (admin/approver) and a link to the linked offer. |
-| `/ops/workers` | Admin-only Workers & Ingestion console: queue-health KPIs, server-paginated/filterable worker-run history with a JSON detail drawer, server-paginated ingestion queue, malware-quarantine and dead-letter tables, manual scrape/ingestion/release-lock dialogs, a read-only portal Probe dialog (portal, 1–5 pages, HTML position counts, warnings/errors, zero-result diagnostics) and Retry/Discard confirmations with cancel-first focus and audit events. |
+| `/ops/workers` | Admin-only Workers & Ingestion console: queue-health KPIs, durable worker-command lifecycle with cancel-run, server-paginated/filterable worker-run history with a JSON detail drawer, server-paginated ingestion queue, malware-quarantine and dead-letter tables, manual scrape/ingestion/release-lock dialogs, a read-only portal Probe dialog (portal, 1–5 pages, HTML position counts, warnings/errors, zero-result diagnostics) and Retry/Discard confirmations with cancel-first focus and audit events. |
+| `/master-data/suppliers` | Admin-only supplier directory with search/status filters, server pagination, create/edit dialogs including contact rows and primary-contact selection, soft deactivation, and the address book used by RFQ dispatch. |
+| `/master-data/customers` | Admin-only customer billing directory with search/status filters, server pagination, create/edit dialogs (address, VAT ID, Leitweg-ID, payment terms, contact), soft deactivation, and e-invoice prefill. |
 | `/admin/catalog` | Admin-only catalogue override table with supplier/article filters, pin badges and a dialog to add, replace or clear pinned merge fields. |
 | `/settings` | Account security: profile summary, password change, sign-out-everywhere confirmation, TOTP enrolment (QR code, manual secret, otpauth URI), ten one-time recovery codes with mandatory acknowledgment, and a password/code-confirmed disable dialog. Bootstrap-admin accounts see an explanatory notice. |
 | `/admin/users` | Admin-only user administration: responsive container-query table (roles, MFA, active/locked status, last login), create-user dialog, role editing, one-time reset-token issuance, and lock/unlock confirmations that focus Cancel first. |
@@ -144,10 +148,13 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 - `GET /ops/worker-runs` (run_type/status/limit/offset),
   `GET /healthz/worker_runs` (admin alias),
   `POST /ops/worker-runs/scrape`, `POST /ops/worker-runs/ingestion`,
+  `GET /ops/worker-commands`, `POST /ops/worker-commands/{id}/cancel`,
   `GET /ops/ingestion` (status/queue/quarantined/limit/offset),
   `POST /ops/ingestion/{job_id}/retry`, `POST /ops/ingestion/{job_id}/discard`,
   `POST /ops/ingestion/release-stale`, `GET /ops/portals`,
   `POST /ops/portals/{portal_id}/probe`
+- `GET/POST /suppliers`, `GET/PUT/DELETE /suppliers/{id}`,
+  `GET/POST /customers`, `GET/PUT/DELETE /customers/{id}`
 - `GET /admin/catalog/overrides`, `POST /admin/catalog/overrides`
 
 ## Environment
@@ -176,8 +183,10 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 - [x] Admin-only "Mark as paid" payment dialog
 - [x] Admin catalogue override table and pin/replace/clear dialog
 - [x] Outbox console with status filter, pagination and a failed-job Retry action
-- [x] Admin-only Workers & Ingestion console with server-paginated/filterable worker runs, queue/quarantine/DLQ tables, a run-detail drawer, manual worker actions, retry/discard confirmations and a read-only portal probe with HTML position counts
-- [x] Playwright operations coverage for pagination, run details, mocked manual triggers and Sales/Approver denial
+- [x] Admin-only Workers & Ingestion console with server-paginated/filterable worker runs, durable worker commands with cancel-run, queue/quarantine/DLQ tables, a run-detail drawer, manual worker actions, retry/discard confirmations and a read-only portal probe with HTML position counts
+- [x] Admin-only Master Data directories for suppliers/contacts and customers, with server-side search/pagination and soft deactivation
+- [x] RFQ address-book supplier selection and saved-customer e-invoice prefill
+- [x] Playwright operations/master-data coverage for pagination, run details, command cancellation, CRUD, RFQ prefill and Sales/Approver denial
 - [x] Offer workspace with status/owner filters, detail side panel and four-eyes approval dialog
 - [x] Optional e-invoice issuance (ZUGFeRD/XRechnung) from the approval dialog with inline validation and 422 recovery
 - [x] Playwright golden-path E2E (approval + credit note + invoice + payment + outbox retry) in CI

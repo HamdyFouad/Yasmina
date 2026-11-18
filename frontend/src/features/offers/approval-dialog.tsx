@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/dialog'
 import { useAuth } from '@/features/auth/auth-context'
 import { apiErrorMessage, isApiError } from '@/lib/api-error'
+import { fetchCustomers } from '@/lib/master-data-api'
 import { approveOffer } from '@/lib/offers-api'
 import { formatCurrency } from '@/lib/utils'
 import type {
@@ -24,6 +25,7 @@ import type {
 import {
   INVOICE_FIELD_ORDER,
   InvoiceFields,
+  applyCustomerToInvoiceForm,
   createInvoiceForm,
   toInvoicePayload,
   validateInvoiceForm,
@@ -70,9 +72,15 @@ export function ApprovalDialog({
   const { user } = useAuth()
   const formRef = React.useRef<HTMLFormElement>(null)
   const [invoiceEnabled, setInvoiceEnabled] = React.useState(false)
+  const [selectedCustomerId, setSelectedCustomerId] = React.useState('')
   const [values, setValues] = React.useState<InvoiceFormValues>(() => createInvoiceForm(offer))
   const [touched, setTouched] = React.useState<ReadonlySet<InvoiceField>>(new Set())
   const [attempted, setAttempted] = React.useState(false)
+  const customers = useQuery({
+    queryKey: ['master-data', 'customers', { active: true, limit: 200 }],
+    queryFn: () => fetchCustomers({ active: true, limit: 200 }),
+    staleTime: 60_000,
+  })
 
   const errors = validateInvoiceForm(values)
 
@@ -124,6 +132,14 @@ export function ApprovalDialog({
 
   const handleChange = (field: InvoiceField, value: string): void => {
     setValues((current) => ({ ...current, [field]: value }))
+  }
+
+  const handleSelectCustomer = (customerId: string): void => {
+    setSelectedCustomerId(customerId)
+    const customer = customers.data?.customers.find((item) => item.id === customerId)
+    if (customer !== undefined) {
+      setValues((current) => applyCustomerToInvoiceForm(current, customer))
+    }
   }
 
   const handleBlur = (field: InvoiceField): void => {
@@ -205,6 +221,9 @@ export function ApprovalDialog({
             attempted={attempted}
             onChange={handleChange}
             onBlur={handleBlur}
+            customers={customers.data?.customers ?? []}
+            selectedCustomerId={selectedCustomerId}
+            onSelectCustomer={handleSelectCustomer}
           />
 
           {approve.isError ? (

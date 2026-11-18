@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, TypeVar
+from uuid import UUID
 
 from src.api.context import build_agent_context
 from src.config import Settings, get_settings
@@ -28,6 +29,7 @@ from src.repositories.ingestion_repository import (
     TenderIngestionJobRepository,
 )
 from src.repositories.tender_repository import TenderRepository
+from src.repositories.worker_command_repository import WorkerCommandRepository
 from src.repositories.worker_run_repository import WorkerRunRepository
 from src.scheduler import CronExpression, CronScheduleError, run_scheduler, wait_for_stop
 from src.scrapers.api_feeds import build_api_scraper
@@ -605,6 +607,45 @@ async def run_scrape_once(
     return summaries
 
 
+async def _claim_worker_command(settings: Settings, command_id: str) -> bool:
+    factory = get_session_factory(settings)
+    try:
+        async with factory() as session:
+            repository = WorkerCommandRepository(session)
+            try:
+                return await repository.mark_running(UUID(command_id), os.getpid())
+            except Exception:
+                logger.exception("could not claim worker command id=%s", command_id)
+                return False
+    finally:
+        await dispose_engine()
+
+
+async def _finish_worker_command(
+    settings: Settings,
+    command_id: str,
+    *,
+    status: str,
+    error: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    factory = get_session_factory(settings)
+    try:
+        async with factory() as session:
+            repository = WorkerCommandRepository(session)
+            try:
+                await repository.finish(
+                    UUID(command_id),
+                    status=status,
+                    error=error,
+                    details=details,
+                )
+            except Exception:
+                logger.exception("could not finish worker command id=%s", command_id)
+    finally:
+        await dispose_engine()
+
+
 async def _run_once_with_db(
     portal: str,
     *,
@@ -779,6 +820,12 @@ async def process_jobs_once(
     return summaries
 
 
+async def _purge_worker_runs_for_scheduler(settings: Settings) -> dict[str, Any]:
+    from src.admin import purge_worker_runs
+
+    return await purge_worker_runs(settings=settings)
+
+
 async def run_scheduled(
     *,
     settings: Settings,
@@ -792,6 +839,7 @@ async def run_scheduled(
     process_pending: bool = True,
     notifier: TelegramNotifier | None = None,
     overdue_runner: Callable[[Settings], Any] | None = None,
+    retention_runner: Callable[[Settings], Any] | None = None,
 ) -> int:
     """Run the scraper job forever on the configured cron schedule."""
 
@@ -801,6 +849,7 @@ async def run_scheduled(
     )
     active_notifier = notifier if notifier is not None else TelegramNotifier(settings)
     active_overdue = overdue_runner or mark_overdue_once
+    active_retention = retention_runner or _purge_worker_runs_for_scheduler
     active_worker = worker_identity()
     logger.info(
         "scheduler started portal=%s cron=%r timezone=%s worker=%s",
@@ -811,6 +860,11 @@ async def run_scheduled(
     )
 
     async def job() -> None:
+        try:
+            purged = await active_retention(settings)
+            logger.info("daily worker-run retention purged=%s", purged.get("deleted", 0))
+        except Exception:
+            logger.exception("daily worker-run retention failed")
         try:
             marked = await active_overdue(settings)
             logger.info("daily overdue invoice maintenance marked=%s", marked)
@@ -941,6 +995,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="pilot disabled catalogue entries (does not affect the daily scheduler)",
     )
     scrape.add_argument("--json", action="store_true", dest="as_json")
+    scrape.add_argument("--command-id", default=None, help=argparse.SUPPRESS)
 
     process = subparsers.add_parser("process", help="process queued ingestion jobs")
     process.add_argument("--limit", type=int, default=10)
@@ -951,6 +1006,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="poll continuously with this many seconds between empty/complete polls",
     )
     process.add_argument("--json", action="store_true", dest="as_json")
+    process.add_argument("--command-id", default=None, help=argparse.SUPPRESS)
 
     probe = subparsers.add_parser(
         "probe",
@@ -993,6 +1049,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     settings = get_settings()
     configure_logging(settings.log_level, json_format=settings.log_format == "json")
+    command_id = getattr(args, "command_id", None)
+    if command_id is not None and not asyncio.run(_claim_worker_command(settings, command_id)):
+        print("worker command is no longer queued", file=sys.stderr)
+        return 0
+
+    def finish_command(status: str, error: str | None = None) -> None:
+        if command_id is not None:
+            asyncio.run(
+                _finish_worker_command(
+                    settings,
+                    command_id,
+                    status=status,
+                    error=error,
+                )
+            )
 
     try:
         if args.command == "scrape":
@@ -1016,6 +1087,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"{sum(1 for item in summary['results'] if item['created'])} new, "
                         f"{summary['skipped_cpv']} CPV-filtered"
                     )
+            scrape_error = next(
+                (error for summary in summaries for error in summary.get("errors", ())),
+                None,
+            )
+            finish_command("failed" if scrape_error else "succeeded", scrape_error)
             return 0
 
         if args.command == "process":
@@ -1031,6 +1107,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                     )
                 )
+                finish_command("succeeded")
                 return 0
             summaries = asyncio.run(
                 _run_with_shutdown(
@@ -1062,6 +1139,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"{summary['job_id']}: {summary['status']}")
                 for summary in synced:
                     print(f"{summary['job_id']}: {summary['status']} (quotation sync)")
+            failed = next((item for item in summaries if item["status"] == "failed"), None)
+            finish_command(
+                "failed" if failed is not None else "succeeded",
+                failed.get("error") if failed is not None else None,
+            )
             return 0
 
         if args.command == "probe":
@@ -1104,13 +1186,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"runs": runs}, ensure_ascii=False))
         return 0
     except (CronScheduleError, ValueError) as exc:
+        finish_command("failed", str(exc))
         print(f"worker configuration error: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:
+        finish_command("failed", str(exc))
         logger.exception("worker run failed")
         print(f"worker run failed: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
+        finish_command("failed", "interrupted")
         return 130
 
 

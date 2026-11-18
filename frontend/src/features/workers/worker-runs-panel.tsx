@@ -12,7 +12,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { TablePagination } from '@/features/workers/table-pagination'
+import { TablePagination } from '@/components/table-pagination'
 import { apiErrorMessage } from '@/lib/api-error'
 import { formatDateTime } from '@/lib/utils'
 import type { WorkerRun, WorkerRunStatus, WorkerRunType } from '@/types/domain'

@@ -85,6 +85,11 @@ quotation outbox → invoice/credit-note lifecycle.
   signature and enforce four-eyes ownership rules.
 - Every lifecycle transition that affects billing is appended to the GoBD
   invoice event chain; outbox work is durable and retryable.
+- Supplier and customer master data are separate from transactional snapshots:
+  deactivation hides a record from new RFQs/invoices but never rewrites historical
+  quotes, offers or invoices.
+- Manual worker commands are durable rows with queued/running/succeeded/failed/
+  cancelled states; cancellation is recorded before the process signal.
 
 **Authoritative code:** `src/models/schemas.py`, `src/repositories/tender_repository.py`,
 `src/repositories/offer_repository.py`, `src/services/pricing_service.py`,
@@ -119,6 +124,12 @@ the public health surface.
   age threshold.
 - Errors use FastAPI `detail` payloads; the SPA normalizes them through
   `src/lib/api-error.ts` and announces them with role=`alert`.
+- `/suppliers` and `/customers` expose paginated/searchable master data to
+  authenticated roles; writes (including soft deactivation and contact
+  reconciliation) are admin-only and audit every change.
+- Manual worker commands are created before process launch, guarded by a partial
+  unique index per active command type, and cancellable through
+  `/ops/worker-commands/{id}/cancel`.
 
 **Authoritative code:** `src/api/security.py`, `src/api/deps.py`,
 `src/api/schemas.py`, `src/api/routes/*.py`, `frontend/src/lib/api-client.ts`,
@@ -149,6 +160,9 @@ quarantine state, retention jobs and object/artifact ownership.
   pruned by `python -m src.admin purge-worker-runs` with an audit entry.
 - MinIO objects are referenced by key; SQL deletion does not silently delete
   evidence, and backups remain encrypted under `BACKUP_ENCRYPTION_KEY`.
+- Supplier contacts are cascade-owned by suppliers and limited to one primary row
+  per supplier; customer/supplier names remain unique. Soft deactivation is the
+  default lifecycle operation, preserving historical references.
 
 **Authoritative code:** `src/models/orm.py`, `alembic/versions/*`,
 `src/services/audit_service.py`, `src/repositories/invoice_event_repository.py`,

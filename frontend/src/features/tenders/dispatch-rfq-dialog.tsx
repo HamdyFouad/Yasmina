@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Loader2, Plus, RadioTower, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -14,8 +14,16 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { apiErrorMessage, isApiError } from '@/lib/api-error'
+import { fetchSuppliers } from '@/lib/master-data-api'
 import { dispatchRfq } from '@/lib/sourcing-api'
 import type { RfqDispatchRequest, RfqDispatchResponse, RfqSupplier, Tender } from '@/types/domain'
 
@@ -23,6 +31,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 interface SupplierDraft extends RfqSupplier {
   key: string
+  savedSupplierId: string
 }
 
 function randomId(): string {
@@ -44,6 +53,7 @@ function stableHash(value: string): string {
 function newSupplier(): SupplierDraft {
   return {
     key: randomId(),
+    savedSupplierId: '',
     name: '',
     email: '',
     contact_name: '',
@@ -115,6 +125,11 @@ export function DispatchRfqDialog({
 }) {
   const queryClient = useQueryClient()
   const [suppliers, setSuppliers] = React.useState<SupplierDraft[]>(() => [newSupplier()])
+  const savedSuppliers = useQuery({
+    queryKey: ['master-data', 'suppliers', { active: true, limit: 200 }],
+    queryFn: () => fetchSuppliers({ active: true, limit: 200 }),
+    staleTime: 60_000,
+  })
   const [responseDeadline, setResponseDeadline] = React.useState('')
   const [notes, setNotes] = React.useState('')
   const [attempted, setAttempted] = React.useState(false)
@@ -164,6 +179,21 @@ export function DispatchRfqDialog({
   const updateSupplier = (key: string, patch: Partial<RfqSupplier>): void => {
     setSuppliers((current) =>
       current.map((supplier) => (supplier.key === key ? { ...supplier, ...patch } : supplier)),
+    )
+  }
+
+  const applySavedSupplier = (key: string, supplierId: string): void => {
+    const saved = savedSuppliers.data?.suppliers.find((supplier) => supplier.id === supplierId)
+    if (saved === undefined) return
+    updateSupplier(key, {
+      name: saved.name,
+      email: saved.primary_contact_email ?? saved.email ?? '',
+      contact_name: saved.primary_contact_name ?? '',
+    })
+    setSuppliers((current) =>
+      current.map((supplier) =>
+        supplier.key === key ? { ...supplier, savedSupplierId: supplierId } : supplier,
+      ),
     )
   }
 
@@ -257,6 +287,50 @@ export function DispatchRfqDialog({
                           <Trash2 />
                           Remove
                         </Button>
+                      </div>
+                      <div className="mb-3 space-y-1">
+                        <Label htmlFor={`rfq-saved-supplier-${supplier.key}`}>
+                          Saved supplier
+                        </Label>
+                        <p
+                          id={`rfq-saved-supplier-${supplier.key}-hint`}
+                          className="text-xs text-muted-foreground"
+                        >
+                          Choose a master-data supplier to prefill name, e-mail and primary contact.
+                        </p>
+                        <Select
+                          value={supplier.savedSupplierId || 'none'}
+                          onValueChange={(value) => {
+                            if (value === 'none') {
+                              updateSupplier(supplier.key, {})
+                              setSuppliers((current) =>
+                                current.map((item) =>
+                                  item.key === supplier.key
+                                    ? { ...item, savedSupplierId: '' }
+                                    : item,
+                                ),
+                              )
+                            } else {
+                              applySavedSupplier(supplier.key, value)
+                            }
+                          }}
+                          disabled={dispatch.isPending || savedSuppliers.isLoading}
+                        >
+                          <SelectTrigger
+                            id={`rfq-saved-supplier-${supplier.key}`}
+                            aria-describedby={`rfq-saved-supplier-${supplier.key}-hint`}
+                          >
+                            <SelectValue placeholder="Select a saved supplier" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">Manual entry</SelectItem>
+                            {(savedSuppliers.data?.suppliers ?? []).map((saved) => (
+                              <SelectItem key={saved.id} value={saved.id}>
+                                {saved.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
                       <div className="grid gap-3 sm:grid-cols-3">
                         <div className="space-y-1">

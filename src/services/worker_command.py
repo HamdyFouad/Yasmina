@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -48,14 +49,27 @@ class WorkerCommandLauncher:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def launch_scrape(self, *, portal: str = "all", max_pages: int | None = 1) -> WorkerCommandResult:
+    def launch_scrape(
+        self,
+        *,
+        portal: str = "all",
+        max_pages: int | None = 1,
+        command_id: str | None = None,
+    ) -> WorkerCommandResult:
         self._validate_portal(portal)
         command = [sys.executable, "-m", "src.worker", "scrape", "--portal", portal]
         if max_pages is not None:
             command.extend(["--max-pages", str(max_pages)])
+        if command_id is not None:
+            command.extend(["--command-id", command_id])
         return self._spawn("scrape", command)
 
-    def launch_ingestion(self, *, limit: int = 10) -> WorkerCommandResult:
+    def launch_ingestion(
+        self,
+        *,
+        limit: int = 10,
+        command_id: str | None = None,
+    ) -> WorkerCommandResult:
         if not 1 <= limit <= 50:
             raise WorkerCommandError("limit must be between 1 and 50")
         command = [
@@ -66,7 +80,20 @@ class WorkerCommandLauncher:
             "--limit",
             str(limit),
         ]
+        if command_id is not None:
+            command.extend(["--command-id", command_id])
         return self._spawn("ingestion", command)
+
+    def terminate(self, pid: int) -> bool:
+        """Send a graceful termination request to a running command process."""
+
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return False
+        except OSError as exc:  # pragma: no cover - platform-specific permission errors
+            raise WorkerCommandError(f"could not terminate worker process {pid}: {exc}") from exc
+        return True
 
     def _validate_portal(self, portal: str) -> None:
         if portal == "all":

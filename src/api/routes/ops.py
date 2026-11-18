@@ -16,6 +16,7 @@ from src.api.deps import (
     get_ops_repository,
     get_quotation_sync_repository,
     get_worker_command_launcher,
+    get_worker_command_repository,
     get_worker_health_service,
     get_worker_run_repository,
     require_roles,
@@ -23,6 +24,7 @@ from src.api.deps import (
 from src.api.schemas import (
     IngestionDiscardPayload,
     ReleaseStaleLocksPayload,
+    WorkerCommandCancelPayload,
     WorkerIngestionTriggerPayload,
     WorkerScrapeTriggerPayload,
 )
@@ -39,6 +41,11 @@ from src.repositories.quotation_sync_repository import (
     QuotationSyncJobRepository,
     QuotationSyncJobView,
     QuotationSyncRepositoryError,
+)
+from src.repositories.worker_command_repository import (
+    WorkerCommandConflict,
+    WorkerCommandNotFound,
+    WorkerCommandRepository,
 )
 from src.repositories.worker_run_repository import WorkerRunRepository
 from src.scrapers.portal_config import PortalConfigError, load_portal_targets
@@ -58,6 +65,7 @@ OutboxJobStatus = Literal["pending", "processing", "succeeded", "failed", "skipp
 IngestionJobStatus = Literal["pending", "processing", "completed", "failed", "skipped"]
 WorkerRunType = Literal["scrape", "ingestion"]
 WorkerRunStatus = Literal["running", "succeeded", "failed", "skipped", "cancelled"]
+WorkerCommandStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
 
 
 def _job_payload(job: QuotationSyncJobView) -> dict[str, object]:
@@ -323,57 +331,141 @@ def _trigger_error(exc: WorkerCommandError) -> HTTPException:
     return HTTPException(status_code=code, detail=message)
 
 
-@api_router.post("/worker-runs/scrape")
-async def trigger_scrape_run(
-    payload: WorkerScrapeTriggerPayload,
+@api_router.get("/worker-commands")
+async def list_worker_commands(
+    status_filter: WorkerCommandStatus | None = Query(default=None, alias="status"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0, le=100_000),
+    repository: WorkerCommandRepository = Depends(get_worker_command_repository),
+    _: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, object]:
+    """Durable admin-triggered worker command history."""
+
+    rows = await repository.list_commands(
+        status_filter=status_filter,
+        limit=limit,
+        offset=offset,
+    )
+    total = await repository.count_commands(status_filter=status_filter)
+    return {
+        "commands": [row.as_dict() for row in rows],
+        "count": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@api_router.post("/worker-commands/{command_id}/cancel")
+async def cancel_worker_command(
+    command_id: UUID,
+    payload: WorkerCommandCancelPayload,
+    repository: WorkerCommandRepository = Depends(get_worker_command_repository),
     launcher: WorkerCommandLauncher = Depends(get_worker_command_launcher),
     audit: AuditService = Depends(get_audit_service),
     principal: Principal = Depends(require_roles(Role.ADMIN)),
 ) -> dict[str, object]:
-    """Launch a detached scrape worker for one portal or all targets."""
+    """Cancel a queued/running worker command and signal its process."""
 
+    try:
+        command = await repository.cancel(command_id, payload.reason)
+    except WorkerCommandNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except WorkerCommandConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    terminated = False
+    if command.pid is not None:
+        try:
+            terminated = launcher.terminate(command.pid)
+        except WorkerCommandError:
+            logger.exception("could not terminate worker command id=%s pid=%s", command.id, command.pid)
+    await audit.append(
+        event_type=AuditEventType.SYSTEM_WORKER_COMMAND_CANCELLED,
+        actor=principal.sub,
+        entity_type="worker_command",
+        entity_id=str(command.id),
+        payload={
+            "reason": payload.reason,
+            "command_type": command.command_type,
+            "pid": command.pid,
+            "terminated": terminated,
+        },
+    )
+    return {"command": command.as_dict(), "terminated": terminated}
+
+
+@api_router.post("/worker-runs/scrape")
+async def trigger_scrape_run(
+    payload: WorkerScrapeTriggerPayload,
+    repository: WorkerCommandRepository = Depends(get_worker_command_repository),
+    launcher: WorkerCommandLauncher = Depends(get_worker_command_launcher),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, object]:
+    """Launch a durable, detached scrape worker for one portal or all targets."""
+
+    try:
+        command = await repository.create(
+            command_type="scrape",
+            requested_by=principal.sub,
+            portal=payload.portal,
+            max_pages=payload.max_pages,
+        )
+    except WorkerCommandConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     try:
         result = launcher.launch_scrape(
             portal=payload.portal,
             max_pages=payload.max_pages,
+            command_id=str(command.id),
         )
     except WorkerCommandError as exc:
+        await repository.finish(command.id, status="failed", error=str(exc))
         raise _trigger_error(exc) from exc
     await audit.append(
         event_type=AuditEventType.SYSTEM_WORKER_SCRAPE_TRIGGERED,
         actor=principal.sub,
-        entity_type="worker_run",
-        entity_id="scrape",
+        entity_type="worker_command",
+        entity_id=str(command.id),
         payload={
             "portal": payload.portal,
             "max_pages": payload.max_pages,
             "pid": result.pid,
         },
     )
-    return result.as_dict()
+    return {**result.as_dict(), "worker_command": command.as_dict()}
 
 
 @api_router.post("/worker-runs/ingestion")
 async def trigger_ingestion_run(
     payload: WorkerIngestionTriggerPayload,
+    repository: WorkerCommandRepository = Depends(get_worker_command_repository),
     launcher: WorkerCommandLauncher = Depends(get_worker_command_launcher),
     audit: AuditService = Depends(get_audit_service),
     principal: Principal = Depends(require_roles(Role.ADMIN)),
 ) -> dict[str, object]:
-    """Launch a detached ingestion worker for a bounded batch."""
+    """Launch a durable, detached ingestion worker for a bounded batch."""
 
     try:
-        result = launcher.launch_ingestion(limit=payload.limit)
+        command = await repository.create(
+            command_type="ingestion",
+            requested_by=principal.sub,
+            batch_limit=payload.limit,
+        )
+    except WorkerCommandConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    try:
+        result = launcher.launch_ingestion(limit=payload.limit, command_id=str(command.id))
     except WorkerCommandError as exc:
+        await repository.finish(command.id, status="failed", error=str(exc))
         raise _trigger_error(exc) from exc
     await audit.append(
         event_type=AuditEventType.SYSTEM_INGESTION_TRIGGERED,
         actor=principal.sub,
-        entity_type="worker_run",
-        entity_id="ingestion",
+        entity_type="worker_command",
+        entity_id=str(command.id),
         payload={"limit": payload.limit, "pid": result.pid},
     )
-    return result.as_dict()
+    return {**result.as_dict(), "worker_command": command.as_dict()}
 
 
 @api_router.get("/portals")

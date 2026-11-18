@@ -721,16 +721,107 @@ export interface ProbeReport {
   zero_results: boolean
 }
 
+export interface WorkerCommand {
+  id: string
+  command_type: 'scrape' | 'ingestion'
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  portal: string | null
+  max_pages: number | null
+  batch_limit: number | null
+  pid: number | null
+  requested_by: string
+  started_at: string | null
+  finished_at: string | null
+  error: string | null
+  details: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkerCommandsResponse {
+  commands: WorkerCommand[]
+  count: number
+  limit: number
+  offset: number
+}
+
 export interface WorkerCommandResponse {
   accepted: boolean
   action: 'scrape' | 'ingestion'
   command: string[]
   pid: number
+  worker_command: WorkerCommand
 }
 
 export interface ReleaseStaleLocksResponse {
   released: number
   older_than_seconds: number
+}
+
+export interface SupplierContact {
+  id: string
+  name: string
+  role: string | null
+  email: string | null
+  phone: string | null
+  is_primary: boolean
+}
+
+export interface Supplier {
+  id: string
+  name: string
+  legal_name: string | null
+  erpnext_supplier_id: string | null
+  email: string | null
+  phone: string | null
+  street: string | null
+  postal_code: string | null
+  city: string | null
+  country_code: string
+  payment_terms: string | null
+  delivery_days: number | null
+  notes: string | null
+  is_active: boolean
+  contacts: SupplierContact[]
+  primary_contact_name: string | null
+  primary_contact_email: string | null
+  contact_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface SuppliersResponse {
+  suppliers: Supplier[]
+  count: number
+  limit: number
+  offset: number
+}
+
+export interface Customer {
+  id: string
+  name: string
+  legal_name: string | null
+  street: string
+  postal_code: string
+  city: string
+  country_code: string
+  vat_id: string | null
+  leitweg_id: string | null
+  payment_terms: string | null
+  contact_name: string | null
+  contact_email: string | null
+  phone: string | null
+  notes: string | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface CustomersResponse {
+  customers: Customer[]
+  count: number
+  limit: number
+  offset: number
 }
 
 export interface OfferVatSplit {

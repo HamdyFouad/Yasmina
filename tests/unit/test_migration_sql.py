@@ -33,6 +33,9 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert "CREATE TABLE quotation_sync_jobs" in sql
     assert "CREATE TABLE scraper_states" in sql
     assert "CREATE TABLE worker_runs" in sql
+    assert "CREATE TABLE worker_commands" in sql
+    assert "CREATE TABLE supplier_contacts" in sql
+    assert "CREATE TABLE customers" in sql
     assert "CREATE TABLE invoice_number_sequences" in sql
     assert "CREATE TABLE invoices" in sql
     assert "CREATE TABLE invoice_lines" in sql
@@ -67,6 +70,6 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert sql.rstrip().endswith("COMMIT;")
 
     # Every domain table is created exactly once.
-    assert sql.count("CREATE TABLE ") == 31  # 30 domain tables + alembic_version
+    assert sql.count("CREATE TABLE ") == 34  # 33 domain tables + alembic_version
 
     reset_settings_cache()

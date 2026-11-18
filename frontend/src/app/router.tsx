@@ -1,3 +1,4 @@
+import * as React from 'react'
 import { createBrowserRouter } from 'react-router-dom'
 
 import { AppShell, RequireAdmin, RequireAuth, RequireRoles } from '@/app/app-shell'
@@ -14,6 +15,21 @@ import { SettingsPage } from '@/features/settings/settings-page'
 import { TendersPage } from '@/features/tenders/tenders-page'
 import { UsersPage } from '@/features/admin/users-page'
 import { WorkersPage } from '@/features/workers/workers-page'
+
+const SuppliersPage = React.lazy(() =>
+  import('@/features/master-data/suppliers-page').then((module) => ({
+    default: module.SuppliersPage,
+  })),
+)
+const CustomersPage = React.lazy(() =>
+  import('@/features/master-data/customers-page').then((module) => ({
+    default: module.CustomersPage,
+  })),
+)
+
+function LazyPage({ children }: { children: React.ReactNode }) {
+  return <React.Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading…</div>}>{children}</React.Suspense>
+}
 
 export const router = createBrowserRouter([
   {
@@ -53,6 +69,26 @@ export const router = createBrowserRouter([
             element: (
               <RequireAdmin>
                 <WorkersPage />
+              </RequireAdmin>
+            ),
+          },
+          {
+            path: 'master-data/suppliers',
+            element: (
+              <RequireAdmin>
+                <LazyPage>
+                  <SuppliersPage />
+                </LazyPage>
+              </RequireAdmin>
+            ),
+          },
+          {
+            path: 'master-data/customers',
+            element: (
+              <RequireAdmin>
+                <LazyPage>
+                  <CustomersPage />
+                </LazyPage>
               </RequireAdmin>
             ),
           },

@@ -35,14 +35,19 @@ test('golden path: approve with invoice, pay it, and retry the outbox job', asyn
 
     await dialog.getByRole('button', { name: 'Generate e-invoice', exact: true }).click()
 
-    await dialog.getByLabel(/Street and house number/).fill('Rathausstr. 2')
-    await dialog.getByLabel(/Postal code/).fill('12345')
-    await dialog.getByLabel(/^City/).fill('Musterstadt')
-    await dialog.getByLabel(/Buyer e-mail/).fill('einkauf@musterstadt.de')
-    await dialog.getByLabel(/Buyer reference \(Leitweg-ID\)/).fill(fixtures.buyer_reference)
+    // A saved customer prefills the billing address, VAT ID, Leitweg-ID and terms.
+    await dialog.getByRole('combobox', { name: 'Saved customer' }).click()
+    await approverPage.getByRole('option', { name: fixtures.master_customer_name }).click()
+    await expect(dialog.getByLabel(/Street and house number/)).toHaveValue('Rathausplatz 1')
+    await expect(dialog.getByLabel(/Postal code/)).toHaveValue('93047')
+    await expect(dialog.getByLabel(/^City/)).toHaveValue('Regensburg')
+    await expect(dialog.getByLabel(/VAT ID/)).toHaveValue('DE123456789')
+    await expect(dialog.getByLabel(/Buyer reference \(Leitweg-ID\)/)).toHaveValue(
+      fixtures.buyer_reference,
+    )
+    await expect(dialog.getByLabel(/Payment terms/)).toHaveValue('Payable within 14 days')
     await dialog.getByLabel(/Due date/).fill('2030-01-15')
     await dialog.getByLabel(/^IBAN/).fill('DE89370400440532013000')
-    await dialog.getByLabel(/Payment terms/).fill('Payable within 14 days')
 
     await dialog
       .getByRole('button', { name: 'Approve, sign and issue invoice' })

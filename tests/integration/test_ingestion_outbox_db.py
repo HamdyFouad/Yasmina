@@ -11,7 +11,12 @@ from sqlalchemy import delete
 from src.config import Settings
 from src.db import dispose_engine, get_engine, get_session_factory
 from src.models.enums import ProcurementProcedure, TenderSourceFormat
-from src.models.orm import ScraperState, TenderIngestionJob, WorkerRun
+from src.models.orm import (
+    ScraperState,
+    TenderIngestionJob,
+    WorkerCommand,
+    WorkerRun,
+)
 from src.models.orm import Tender as TenderORM
 from src.models.schemas import Tender
 from src.repositories.ingestion_repository import (
@@ -19,6 +24,10 @@ from src.repositories.ingestion_repository import (
     TenderIngestionJobRepository,
 )
 from src.repositories.tender_repository import TenderRepository
+from src.repositories.worker_command_repository import (
+    WorkerCommandConflict,
+    WorkerCommandRepository,
+)
 from src.repositories.worker_run_repository import WorkerRunRepository
 from src.services.worker_lock import DatabasePortalLock
 
@@ -312,6 +321,46 @@ async def test_worker_run_retention_deletes_old_runs() -> None:
             assert await session.get(WorkerRun, old.id) is None
             assert await session.get(WorkerRun, fresh.id) is not None
             await session.execute(delete(WorkerRun).where(WorkerRun.id == fresh.id))
+            await session.commit()
+    finally:
+        await dispose_engine()
+
+
+async def test_worker_command_guard_lifecycle_and_cancellation() -> None:
+    factory = get_session_factory(settings())
+    try:
+        async with factory() as session:
+            commands = WorkerCommandRepository(session)
+            queued = await commands.create(
+                command_type="scrape",
+                requested_by="live-test",
+                portal="all",
+                max_pages=1,
+            )
+            with pytest.raises(WorkerCommandConflict):
+                await commands.create(
+                    command_type="scrape",
+                    requested_by="live-test",
+                    portal="all",
+                    max_pages=1,
+                )
+            assert await commands.mark_running(queued.id, 12345) is True
+            assert await commands.finish(queued.id, status="succeeded") is True
+            assert await commands.get(queued.id) is not None
+            assert (await commands.get(queued.id)).status == "succeeded"  # type: ignore[union-attr]
+
+            cancellable = await commands.create(
+                command_type="ingestion",
+                requested_by="live-test",
+                batch_limit=5,
+            )
+            cancelled = await commands.cancel(cancellable.id, "maintenance")
+            assert cancelled.status == "cancelled"
+            assert await commands.finish(cancellable.id, status="succeeded") is False
+
+            await session.execute(
+                delete(WorkerCommand).where(WorkerCommand.id.in_((queued.id, cancellable.id)))
+            )
             await session.commit()
     finally:
         await dispose_engine()

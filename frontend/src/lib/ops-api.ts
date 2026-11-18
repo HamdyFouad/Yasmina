@@ -13,7 +13,9 @@ import type {
   QuotationSyncJob,
   QuotationSyncStatus,
   ReleaseStaleLocksResponse,
+  WorkerCommand,
   WorkerCommandResponse,
+  WorkerCommandsResponse,
   WorkerRunsResponse,
   WorkerRunStatus,
   WorkerRunType,
@@ -158,5 +160,33 @@ export async function releaseStaleLocks(
   const response = await api.post<ReleaseStaleLocksResponse>('/ops/ingestion/release-stale', {
     older_than_seconds: olderThanSeconds,
   })
+  return response.data
+}
+
+export async function fetchWorkerCommands(
+  params: {
+    limit?: number
+    offset?: number
+    status?: WorkerCommand['status']
+  } = {},
+): Promise<WorkerCommandsResponse> {
+  const response = await api.get<WorkerCommandsResponse>('/ops/worker-commands', {
+    params: {
+      limit: params.limit ?? 20,
+      offset: params.offset ?? 0,
+      ...(params.status !== undefined ? { status: params.status } : {}),
+    },
+  })
+  return response.data
+}
+
+export async function cancelWorkerCommand(
+  commandId: string,
+  reason: string,
+): Promise<{ command: WorkerCommand; terminated: boolean }> {
+  const response = await api.post<{ command: WorkerCommand; terminated: boolean }>(
+    `/ops/worker-commands/${encodeURIComponent(commandId)}/cancel`,
+    { reason },
+  )
   return response.data
 }

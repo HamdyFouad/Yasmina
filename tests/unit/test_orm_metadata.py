@@ -9,6 +9,8 @@ from src.models.orm import AuditLog, Base, CatalogArticle
 
 EXPECTED_TABLES = {
     "suppliers",
+    "supplier_contacts",
+    "customers",
     "tenders",
     "tender_items",
     "supplier_quotes",
@@ -25,6 +27,7 @@ EXPECTED_TABLES = {
     "tender_ingestion_jobs",
     "scraper_states",
     "worker_runs",
+    "worker_commands",
     "quotation_sync_jobs",
     "invoice_number_sequences",
     "invoices",

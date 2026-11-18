@@ -22,6 +22,8 @@ export interface Fixtures {
   invoice_gross: string
   tender_number: string
   quarantine_tender_number: string
+  supplier_name: string
+  master_customer_name: string
 }
 
 function fixturePath(): string {

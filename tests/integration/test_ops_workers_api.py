@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -13,6 +14,7 @@ from src.api.deps import (
     get_ingestion_job_repository,
     get_session,
     get_worker_command_launcher,
+    get_worker_command_repository,
     get_worker_run_repository,
 )
 from src.api.routes import ops as ops_routes
@@ -22,6 +24,11 @@ from src.main import create_app
 from src.repositories.ingestion_repository import (
     IngestionJobView,
     IngestionRepositoryError,
+)
+from src.repositories.worker_command_repository import (
+    WorkerCommandConflict,
+    WorkerCommandNotFound,
+    WorkerCommandView,
 )
 from src.repositories.worker_run_repository import WorkerRunView
 from src.scrapers.portal_config import PortalTarget
@@ -151,35 +158,101 @@ class FakeIngestion:
 
 
 class FakeLauncher:
-    def launch_scrape(self, *, portal: str, max_pages: int | None) -> WorkerCommandResult:
+    def launch_scrape(
+        self, *, portal: str, max_pages: int | None, command_id: str | None = None
+    ) -> WorkerCommandResult:
         return WorkerCommandResult(
             action="scrape",
             command=("python", "-m", "src.worker", "scrape", "--portal", portal),
             pid=4242,
         )
 
-    def launch_ingestion(self, *, limit: int) -> WorkerCommandResult:
+    def launch_ingestion(self, *, limit: int, command_id: str | None = None) -> WorkerCommandResult:
         return WorkerCommandResult(
             action="ingestion",
             command=("python", "-m", "src.worker", "process", "--limit", str(limit)),
             pid=4343,
         )
 
+    def terminate(self, pid: int) -> bool:
+        return True
 
-def make_client() -> tuple[TestClient, FakeIngestion, FakeAudit]:
+
+def make_command(
+    *,
+    status: str = "queued",
+    command_id: UUID | None = None,
+) -> WorkerCommandView:
+    return WorkerCommandView(
+        id=command_id or uuid4(),
+        command_type="scrape",
+        status=status,
+        portal="all",
+        max_pages=1,
+        batch_limit=None,
+        pid=4242 if status == "running" else None,
+        requested_by="admin",
+        started_at=datetime(2026, 2, 1, 10, 0, tzinfo=UTC) if status != "queued" else None,
+        finished_at=datetime(2026, 2, 1, 10, 1, tzinfo=UTC)
+        if status in {"succeeded", "failed", "cancelled"}
+        else None,
+        error="cancelled by operator" if status == "cancelled" else None,
+        details={"source": "test"},
+        created_at=datetime(2026, 2, 1, 9, 59, tzinfo=UTC),
+        updated_at=datetime(2026, 2, 1, 10, 0, tzinfo=UTC),
+    )
+
+
+class FakeWorkerCommands:
+    def __init__(self) -> None:
+        self.commands = [make_command(status="running"), make_command(status="failed")]
+
+    async def create(self, **kwargs: Any) -> WorkerCommandView:
+        command = make_command()
+        self.commands.insert(0, command)
+        return command
+
+    async def finish(self, command_id: UUID, **kwargs: Any) -> bool:
+        return True
+
+    async def list_commands(self, **kwargs: Any) -> list[WorkerCommandView]:
+        return self.commands
+
+    async def count_commands(self, **kwargs: Any) -> int:
+        return len(self.commands)
+
+    async def cancel(self, command_id: UUID, reason: str) -> WorkerCommandView:
+        command = next((item for item in self.commands if item.id == command_id), None)
+        if command is None:
+            raise WorkerCommandNotFound("worker command not found")
+        if command.status not in {"queued", "running"}:
+            raise WorkerCommandConflict("only queued or running commands can be cancelled")
+        cancelled = replace(
+            command,
+            status="cancelled",
+            finished_at=datetime(2026, 2, 1, 10, 1, tzinfo=UTC),
+            error=reason,
+        )
+        self.commands = [cancelled if item.id == command.id else item for item in self.commands]
+        return cancelled
+
+
+def make_client() -> tuple[TestClient, FakeIngestion, FakeAudit, FakeWorkerCommands]:
     app = create_app(SETTINGS, run_startup_checks=False)
     ingestion = FakeIngestion()
     audit = FakeAudit()
+    commands = FakeWorkerCommands()
     app.dependency_overrides[get_session] = lambda: FakeSession()
     app.dependency_overrides[get_worker_run_repository] = lambda: FakeWorkerRuns()
     app.dependency_overrides[get_ingestion_job_repository] = lambda: ingestion
+    app.dependency_overrides[get_worker_command_repository] = lambda: commands
     app.dependency_overrides[get_worker_command_launcher] = lambda: FakeLauncher()
     app.dependency_overrides[get_audit_service] = lambda: audit
-    return TestClient(app), ingestion, audit
+    return TestClient(app), ingestion, audit, commands
 
 
 def test_worker_runs_and_ingestion_are_admin_only() -> None:
-    client, _, _ = make_client()
+    client, _, _, _ = make_client()
     with client:
         runs = client.get("/api/v1/ops/worker-runs", headers=ADMIN)
         ingestion = client.get("/api/v1/ops/ingestion", headers=ADMIN)
@@ -197,7 +270,7 @@ def test_worker_runs_and_ingestion_are_admin_only() -> None:
 
 
 def test_ingestion_retry_and_discard_audit_the_operator_action() -> None:
-    client, ingestion, audit = make_client()
+    client, ingestion, audit, _ = make_client()
     retry_job = make_job()
     discard_job = make_job(last_error="parser failed")
     ingestion.jobs = [retry_job, discard_job]
@@ -226,7 +299,7 @@ def test_ingestion_retry_and_discard_audit_the_operator_action() -> None:
 
 
 def test_probe_route_returns_read_only_report(monkeypatch: Any) -> None:
-    client, _, audit = make_client()
+    client, _, audit, _ = make_client()
     target = PortalTarget(
         id="bayern",
         name="Vergabe Bayern",
@@ -279,7 +352,7 @@ def test_probe_route_returns_read_only_report(monkeypatch: Any) -> None:
 
 
 def test_worker_runs_compatibility_alias_is_admin_only() -> None:
-    client, _, _ = make_client()
+    client, _, _, _ = make_client()
     with client:
         allowed = client.get("/healthz/worker_runs", headers=ADMIN)
         forbidden = client.get("/healthz/worker_runs", headers=SALES)
@@ -291,7 +364,7 @@ def test_worker_runs_compatibility_alias_is_admin_only() -> None:
 
 
 def test_manual_worker_triggers_and_stale_lock_release_are_audited() -> None:
-    client, _, audit = make_client()
+    client, _, audit, _ = make_client()
     with client:
         scrape = client.post(
             "/api/v1/ops/worker-runs/scrape",
@@ -312,6 +385,7 @@ def test_manual_worker_triggers_and_stale_lock_release_are_audited() -> None:
     assert scrape.status_code == 200, scrape.text
     assert scrape.json()["accepted"] is True
     assert scrape.json()["pid"] == 4242
+    assert scrape.json()["worker_command"]["status"] == "queued"
     assert ingestion.status_code == 200, ingestion.text
     assert ingestion.json()["action"] == "ingestion"
     assert release.status_code == 200, release.text
@@ -321,3 +395,23 @@ def test_manual_worker_triggers_and_stale_lock_release_are_audited() -> None:
         "SYSTEM_INGESTION_TRIGGERED",
         "SYSTEM_INGESTION_LOCKS_RELEASED",
     ]
+
+
+def test_worker_commands_are_listed_and_cancellable() -> None:
+    client, _, audit, commands = make_client()
+    command = commands.commands[0]
+    with client:
+        listed = client.get("/api/v1/ops/worker-commands", headers=ADMIN)
+        cancelled = client.post(
+            f"/api/v1/ops/worker-commands/{command.id}/cancel",
+            json={"reason": "maintenance window"},
+            headers=ADMIN,
+        )
+
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["count"] == 2
+    assert listed.json()["commands"][0]["status"] == "running"
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["command"]["status"] == "cancelled"
+    assert cancelled.json()["terminated"] is True
+    assert audit.entries[-1]["event_type"].value == "SYSTEM_WORKER_COMMAND_CANCELLED"

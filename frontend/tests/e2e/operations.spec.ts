@@ -15,6 +15,26 @@ test('admin inspects workers, ingestion queues and the probe dialog', async ({ p
   ).toBeVisible()
 
   await expect(page.getByRole('heading', { name: 'Worker runs', level: 2 })).toBeVisible()
+
+  // Durable worker commands expose the queued → cancelled transition.
+  await expect(page.getByRole('heading', { name: 'Worker commands', level: 2 })).toBeVisible()
+  const commandsRegion = page.getByRole('region', {
+    name: /Durable worker commands with type, target, status, process id and cancellation/,
+  })
+  await expect(commandsRegion).toBeVisible()
+  await commandsRegion
+    .getByRole('button', { name: /Cancel worker command scrape/ })
+    .click()
+  const commandCancelDialog = page.getByRole('dialog', {
+    name: 'Cancel scrape worker run?',
+  })
+  await expect(commandCancelDialog).toBeVisible()
+  await expect(commandCancelDialog.getByRole('button', { name: 'Keep running' })).toBeFocused()
+  await commandCancelDialog.getByRole('button', { name: 'Cancel run' }).click()
+  await expect(page.getByText('Worker command cancelled', { exact: true })).toBeVisible()
+  await expect(commandCancelDialog).toBeHidden()
+  await expect(commandsRegion.getByText('Cancelled', { exact: true })).toBeVisible()
+
   const runsRegion = page.getByRole('region', {
     name: /Worker runs with type, resource, status, duration, error counts/,
   })

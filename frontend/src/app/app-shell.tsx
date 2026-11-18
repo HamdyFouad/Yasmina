@@ -2,6 +2,7 @@ import * as React from 'react'
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import {
   Activity,
+  Building2,
   FileText,
   Inbox,
   LayoutDashboard,
@@ -12,6 +13,7 @@ import {
   Settings,
   ShieldCheck,
   Tags,
+  Truck,
   Users,
   X,
 } from 'lucide-react'
@@ -58,6 +60,25 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/tenders', label: 'Tenders', icon: FileText, end: false },
       { to: '/offers', label: 'Offers', icon: Tags, end: false },
       { to: '/invoices', label: 'Invoices', icon: ReceiptText, end: false },
+    ],
+  },
+  {
+    label: 'Master Data',
+    items: [
+      {
+        to: '/master-data/suppliers',
+        label: 'Suppliers',
+        icon: Truck,
+        end: false,
+        roles: ['admin'],
+      },
+      {
+        to: '/master-data/customers',
+        label: 'Customers',
+        icon: Building2,
+        end: false,
+        roles: ['admin'],
+      },
     ],
   },
   {
