@@ -291,6 +291,7 @@ export function WorkerRunsPanel({
       )}
 
       <TablePagination
+        label="worker runs"
         total={total}
         page={page}
         pageSize={pageSize}

@@ -16,7 +16,7 @@ test('admin inspects workers, ingestion queues and the probe dialog', async ({ p
 
   await expect(page.getByRole('heading', { name: 'Worker runs', level: 2 })).toBeVisible()
   const runsRegion = page.getByRole('region', {
-    name: /Worker runs with type, resource, status, duration and error counts/,
+    name: /Worker runs with type, resource, status, duration, error counts/,
   })
   await expect(runsRegion).toBeVisible()
   await expect(runsRegion.getByText('bayern')).toBeVisible()
@@ -44,10 +44,10 @@ test('admin inspects workers, ingestion queues and the probe dialog', async ({ p
   await expect(runsRegion.getByText('bayern')).toBeVisible()
 
   // The seed has 23 runs, so the second page proves server-side pagination.
-  await runsSection.getByRole('button', { name: 'Next' }).click()
+  await runsSection.getByRole('button', { name: 'Next page for worker runs' }).click()
   await expect(runsSection.getByText('Page 2 of 2')).toBeVisible()
   await expect(runsSection.getByText('Showing 21–23 of 23')).toBeVisible()
-  await runsSection.getByRole('button', { name: 'Previous' }).click()
+  await runsSection.getByRole('button', { name: 'Previous page for worker runs' }).click()
   await expect(runsSection.getByText('Page 1 of 2')).toBeVisible()
 
   await expect(page.getByRole('heading', { name: 'Quarantined tenders', level: 2 })).toBeVisible()

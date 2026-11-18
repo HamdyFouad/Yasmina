@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
 export function TablePagination({
+  label,
   total,
   page,
   pageSize,
@@ -10,6 +11,7 @@ export function TablePagination({
   isFetching,
   onPageChange,
 }: {
+  label: string
   total: number
   page: number
   pageSize: number
@@ -32,6 +34,7 @@ export function TablePagination({
           type="button"
           variant="outline"
           size="sm"
+          aria-label={`Previous page for ${label}`}
           disabled={page === 0 || isFetching}
           onClick={() => onPageChange(Math.max(0, page - 1))}
         >
@@ -45,6 +48,7 @@ export function TablePagination({
           type="button"
           variant="outline"
           size="sm"
+          aria-label={`Next page for ${label}`}
           disabled={page + 1 >= pageCount || isFetching}
           onClick={() => onPageChange(page + 1)}
         >

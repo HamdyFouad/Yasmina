@@ -93,7 +93,7 @@ class WorkerCommandLauncher:
         if os.name == "posix":
             kwargs["start_new_session"] = True
         else:  # pragma: no cover - production and CI are POSIX
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         try:
             process = subprocess.Popen(command, **kwargs)
         except OSError as exc:

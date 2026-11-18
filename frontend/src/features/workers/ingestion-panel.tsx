@@ -242,6 +242,7 @@ export function IngestionPanel({
       )}
 
       <TablePagination
+        label={title.toLowerCase()}
         total={total}
         page={page}
         pageSize={pageSize}
