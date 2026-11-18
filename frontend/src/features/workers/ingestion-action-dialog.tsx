@@ -43,12 +43,12 @@ export function IngestionActionDialog({
       toast.success(action === 'retry' ? 'Ingestion job re-queued' : 'Ingestion job discarded', {
         description: job.tender_number ?? job.tender_id,
       })
+      onCompleted()
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['ops', 'ingestion'] }),
         queryClient.invalidateQueries({ queryKey: ['ops', 'worker-runs'] }),
         queryClient.invalidateQueries({ queryKey: ['ops', 'summary'] }),
       ])
-      onCompleted()
     },
   })
 

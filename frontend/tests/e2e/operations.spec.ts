@@ -165,6 +165,7 @@ test('admin inspects workers, ingestion queues and the probe dialog', async ({ p
   await expect(scrapeDialog.getByRole('combobox', { name: 'Portal' })).toBeFocused()
   await scrapeDialog.getByRole('button', { name: 'Start scrape' }).click()
   await expect(page.getByText('Scrape run started', { exact: true })).toBeVisible()
+  await expect(scrapeDialog).toBeHidden()
 
   await page.getByRole('button', { name: 'Process queue' }).click()
   const ingestionDialog = page.getByRole('dialog', { name: 'Process ingestion queue' })
@@ -172,6 +173,7 @@ test('admin inspects workers, ingestion queues and the probe dialog', async ({ p
   await expect(ingestionDialog.getByLabel('Batch size')).toBeFocused()
   await ingestionDialog.getByRole('button', { name: 'Start ingestion' }).click()
   await expect(page.getByText('Ingestion run started', { exact: true })).toBeVisible()
+  await expect(ingestionDialog).toBeHidden()
 
   await page.getByRole('button', { name: 'Release locks' }).click()
   const releaseDialog = page.getByRole('dialog', { name: 'Release stale locks?' })
@@ -179,6 +181,7 @@ test('admin inspects workers, ingestion queues and the probe dialog', async ({ p
   await expect(releaseDialog.getByRole('button', { name: 'Cancel' })).toBeFocused()
   await releaseDialog.getByRole('button', { name: 'Release locks' }).click()
   await expect(page.getByText('Stale locks released', { exact: true })).toBeVisible()
+  await expect(releaseDialog).toBeHidden()
 
   // A dead-letter job can be safely re-queued; focus starts on Cancel.
   await dlqRegion
@@ -191,6 +194,7 @@ test('admin inspects workers, ingestion queues and the probe dialog', async ({ p
   await expect(retryDialog.getByRole('button', { name: 'Cancel' })).toBeFocused()
   await retryDialog.getByRole('button', { name: 'Retry job' }).click()
   await expect(page.getByText('Ingestion job re-queued', { exact: true })).toBeVisible()
+  await expect(retryDialog).toBeHidden()
 
   const queueRegion = page.getByRole('region', {
     name: /Ingestion queue with tender, portal, status, retry budget, last error/,
@@ -214,6 +218,7 @@ test('admin inspects workers, ingestion queues and the probe dialog', async ({ p
   await expect(discardDialog.getByRole('button', { name: 'Cancel' })).toBeFocused()
   await discardDialog.getByRole('button', { name: 'Discard job' }).click()
   await expect(page.getByText('Ingestion job discarded', { exact: true })).toBeVisible()
+  await expect(discardDialog).toBeHidden()
 })
 
 test('sales and approvers cannot access the workers and ingestion console', async ({ browser }) => {

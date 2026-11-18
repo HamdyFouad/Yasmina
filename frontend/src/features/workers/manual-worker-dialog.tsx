@@ -69,11 +69,11 @@ export function ManualWorkerDialog({
           description: `Worker process ${pid} started. History refreshes automatically.`,
         })
       }
+      onClose()
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['ops', 'worker-runs'] }),
         queryClient.invalidateQueries({ queryKey: ['ops', 'ingestion'] }),
       ])
-      onClose()
     },
     onError: (mutationError) => {
       setError(apiErrorMessage(mutationError))
