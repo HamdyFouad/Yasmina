@@ -139,7 +139,9 @@ async def test_purchase_order_invoice_matching_and_margin_lifecycle() -> None:
                     )
                 ],
             )
-            session.add_all([supplier, tender, offer, quote])
+            session.add_all([supplier, tender])
+            await session.flush()
+            session.add_all([offer, quote])
             await session.commit()
 
         async with factory() as session:
