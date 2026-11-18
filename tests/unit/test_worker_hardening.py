@@ -309,6 +309,9 @@ async def test_scheduled_scrape_failure_sends_alert(monkeypatch) -> None:  # typ
     async def fake_retention(settings):  # type: ignore[no-untyped-def]
         return {"deleted": 0}
 
+    async def fake_dunning(settings):  # type: ignore[no-untyped-def]
+        return {"sent_count": 0}
+
     monkeypatch.setattr(worker_module, "run_scheduler", fake_scheduler)
     monkeypatch.setattr(worker_module, "_run_once_with_db", failing_run)
     monkeypatch.setattr(worker_module, "_purge_worker_runs_for_scheduler", fake_retention)
@@ -320,6 +323,7 @@ async def test_scheduled_scrape_failure_sends_alert(monkeypatch) -> None:  # typ
             cron="0 2 * * *",
             notifier=notifier,  # type: ignore[arg-type]
             retention_runner=fake_retention,
+            dunning_runner=fake_dunning,
         )
 
     assert "scheduled scrape failed" in notifier.messages[0]
@@ -341,6 +345,10 @@ async def test_scheduled_job_runs_overdue_maintenance_before_scrape(monkeypatch)
         calls.append("retention")
         return {"deleted": 0}
 
+    async def fake_dunning(settings):  # type: ignore[no-untyped-def]
+        calls.append("dunning")
+        return {"sent_count": 0}
+
     async def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
         calls.append("scrape")
         return []
@@ -355,7 +363,8 @@ async def test_scheduled_job_runs_overdue_maintenance_before_scrape(monkeypatch)
         process_pending=False,
         overdue_runner=fake_overdue,
         retention_runner=fake_retention,
+        dunning_runner=fake_dunning,
     )
 
     assert runs == 1
-    assert calls == ["retention", "overdue", "scrape"]
+    assert calls == ["retention", "overdue", "dunning", "scrape"]

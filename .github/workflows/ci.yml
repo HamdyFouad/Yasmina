@@ -93,6 +93,7 @@ jobs:
           grep -q "CREATE TABLE purchase_orders" migration.sql
           grep -q "CREATE TABLE supplier_invoices" migration.sql
           grep -q "ALTER TABLE supplier_quotes ADD COLUMN accepted_at" migration.sql
+          grep -q "ALTER TABLE invoices ADD COLUMN dunning_level" migration.sql
           grep -q "ALTER TABLE users ADD COLUMN mfa_enabled" migration.sql
           grep -q "INSERT INTO alembic_version" migration.sql
 

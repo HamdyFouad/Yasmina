@@ -56,6 +56,8 @@ def test_initial_migration_renders_offline(monkeypatch) -> None:  # type: ignore
     assert "ALTER TABLE catalog_articles ADD COLUMN manual_overrides" in sql
     assert "ALTER TABLE catalog_articles ADD COLUMN embedding_model" in sql
     assert "ALTER TABLE tender_items ADD COLUMN thickness_mm" in sql
+    assert "ALTER TABLE invoices ADD COLUMN dunning_level" in sql
+    assert "ck_invoices_dunning_level_range" in sql
     assert "ROUND(thickness_um / 1000.0, 3)" in sql
     assert "ALTER TABLE customer_offers ALTER COLUMN margin_rate TYPE NUMERIC(6, 4)" in sql
     assert "ck_tenders_source_format_valid" in sql

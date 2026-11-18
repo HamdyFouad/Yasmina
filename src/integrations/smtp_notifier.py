@@ -130,3 +130,44 @@ class SmtpNotifier:
             filename=f"{invoice_number}.xml",
         )
         return await self._send(message, context="invoice")
+
+    async def send_dunning(
+        self,
+        recipient: str,
+        *,
+        invoice_number: str,
+        buyer_name: str | None,
+        amount_due: str,
+        due_date: str,
+        level: int,
+        currency: str = "EUR",
+    ) -> bool:
+        """Send one dunning reminder for an overdue invoice."""
+
+        if not self.configured:
+            raise SmtpError("SMTP is not configured")
+        if not recipient.strip():
+            raise SmtpError("recipient e-mail address is missing")
+
+        reminder = "Reminder 1" if level == 1 else "Reminder 2"
+        message = EmailMessage()
+        message["From"] = formataddr((self.settings.smtp_from_name, self.sender_email))
+        message["To"] = recipient.strip()
+        message["Subject"] = f"Yasmina {reminder.lower()} for invoice {invoice_number}"
+        greeting = f"Hello {buyer_name}," if buyer_name else "Hello,"
+        urgency = (
+            "Please arrange payment at your earliest convenience."
+            if level == 1
+            else "This invoice is now significantly overdue. Please arrange payment immediately "
+            "or contact us to discuss the outstanding balance."
+        )
+        message.set_content(
+            f"{greeting}\n\n"
+            f"Our records show that invoice {invoice_number} remains unpaid.\n\n"
+            f"Outstanding amount: {amount_due} {currency}\n"
+            f"Due date: {due_date}\n\n"
+            f"{urgency}\n\n"
+            "If you have already paid, please disregard this message.\n\n"
+            "This message was sent by Yasmina.\n"
+        )
+        return await self._send(message, context="dunning")

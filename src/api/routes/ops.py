@@ -13,6 +13,7 @@ from src.api.deps import (
     get_app_settings,
     get_audit_service,
     get_ingestion_job_repository,
+    get_notification_repository,
     get_ops_repository,
     get_quotation_sync_repository,
     get_worker_command_launcher,
@@ -36,6 +37,7 @@ from src.repositories.ingestion_repository import (
     IngestionRepositoryError,
     TenderIngestionJobRepository,
 )
+from src.repositories.notification_repository import NotificationRepository
 from src.repositories.ops_repository import OpsRepository
 from src.repositories.quotation_sync_repository import (
     QuotationSyncJobRepository,
@@ -558,6 +560,16 @@ async def recent_activity(
 
     events = await repository.recent_activity(limit=limit)
     return {"events": [event.as_dict() for event in events], "count": len(events)}
+
+
+@api_router.get("/notifications")
+async def notifications(
+    repository: NotificationRepository = Depends(get_notification_repository),
+    _: Principal = Depends(require_roles(Role.ADMIN, Role.APPROVER, Role.VIEWER)),
+) -> dict[str, object]:
+    """Live critical alerts for the in-app notification center."""
+
+    return await repository.notifications()
 
 
 @api_router.get("/summary")

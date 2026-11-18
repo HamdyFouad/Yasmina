@@ -527,6 +527,119 @@ export interface ProcurementHealth {
   today: string
 }
 
+export interface PipelineStage {
+  status: string
+  count: number
+  total_net: string
+}
+
+export interface WinLoss {
+  won_count: number
+  lost_count: number
+  won_value: string
+  lost_value: string
+  win_rate: string | null
+}
+
+export interface ConversionMetrics {
+  total_tenders: number
+  tenders_with_offers: number
+  tenders_with_accepted_offers: number
+  offer_conversion_rate: string | null
+  tender_coverage_rate: string | null
+  tender_win_rate: string | null
+}
+
+export interface ReportingSummary {
+  kpis: {
+    tenders: number
+    offers: number
+    pipeline_value: string
+    won_offers: number
+    win_rate: string | null
+    gross_invoiced: string
+    outstanding: string
+    overdue_amount: string
+    currency: Currency
+  }
+  pipeline: PipelineStage[]
+  win_loss: WinLoss
+  conversion: ConversionMetrics
+}
+
+export interface MarginBreakdown {
+  dimension: 'customer' | 'tender' | 'supplier'
+  label: string
+  offer_count: number
+  revenue_net: string
+  cost_net: string
+  margin_net: string
+  margin_rate: string | null
+}
+
+export interface ReportingMarginsResponse {
+  customers: MarginBreakdown[]
+  tenders: MarginBreakdown[]
+  suppliers: MarginBreakdown[]
+}
+
+export interface AgingBucket {
+  label: string
+  invoice_count: number
+  total_gross: string
+  paid_amount: string
+  outstanding: string
+}
+
+export interface AgingReport {
+  buckets: AgingBucket[]
+  invoice_count: number
+  paid_total: string
+  overdue_total: string
+  outstanding_total: string
+  currency: Currency
+}
+
+export interface NotificationAlert {
+  id: string
+  severity: 'critical' | 'warning' | 'info'
+  title: string
+  message: string
+  count: number
+  href: string
+}
+
+export interface NotificationsResponse {
+  alerts: NotificationAlert[]
+  count: number
+}
+
+export interface AuditLogEntry {
+  id: number
+  occurred_at: string
+  event_type: string
+  actor: string
+  entity_type: string
+  entity_id: string
+  payload: Record<string, unknown>
+  prev_hash: string | null
+  entry_hash: string
+  signature: string | null
+}
+
+export interface AuditLogsResponse {
+  logs: AuditLogEntry[]
+  count: number
+  limit: number
+  offset: number
+}
+
+export interface AuditEventTypesResponse {
+  event_types: string[]
+}
+
+export type AuditExportFormat = 'csv' | 'xlsx'
+
 export interface ManualSupplierQuoteLineRequest {
   line_number: number
   description: string

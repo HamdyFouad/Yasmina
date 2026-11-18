@@ -143,11 +143,27 @@ the public health surface.
 - Margin reporting compares the approved customer offer's quoted cost/margin
   with non-rejected supplier invoices booked against its POs; actual margin is
   unavailable until the first invoice exists.
+- `/reporting/summary`, `/reporting/margins` and `/reporting/aging` return
+  server-side aggregates for pipeline/win-loss, conversion, quoted margin
+  dimensions and invoice aging; pure sales users are owner-scoped.
+- The audit chain is exposed admin-only through `/audit/logs` with event/actor/
+  entity/payload/date filters. CSV and XLSX exports stream from the same filtered
+  chain and append `SYSTEM_AUDIT_EXPORTED`.
+- The daily scheduler marks invoices overdue, then sends at most one dunning
+  reminder per invoice per run using `DUNNING_REMINDER_1_DAYS` and
+  `DUNNING_REMINDER_2_DAYS`. Successful sends stamp the invoice's dunning level
+  and append a GoBD `EMAIL_SENT` event with `kind=dunning`.
+- `/ops/notifications` is the live alert source for the header notification
+  center: procurement exceptions, ClamAV quarantines, dead-letter/outbox failures
+  and overdue invoices.
 
 **Authoritative code:** `src/api/security.py`, `src/api/deps.py`,
 `src/api/schemas.py`, `src/api/routes/*.py`, `src/repositories/procurement_repository.py`,
-`src/services/procurement_service.py`, `frontend/src/lib/api-client.ts`,
-`frontend/src/lib/ops-api.ts`, `frontend/src/lib/procurement-api.ts`.
+`src/repositories/reporting_repository.py`, `src/repositories/audit_repository.py`,
+`src/services/procurement_service.py`, `src/services/audit_export.py`,
+`src/services/dunning.py`, `frontend/src/lib/api-client.ts`,
+`frontend/src/lib/ops-api.ts`, `frontend/src/lib/procurement-api.ts`,
+`frontend/src/lib/reporting-api.ts`, `frontend/src/lib/audit-api.ts`.
 
 ---
 

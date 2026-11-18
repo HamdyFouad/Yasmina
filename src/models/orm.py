@@ -1020,6 +1020,8 @@ class Invoice(Base, TimestampMixin):
     )
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     credit_note_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dunning_level: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    dunning_last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     vat_breakdown: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
@@ -1068,7 +1070,12 @@ class Invoice(Base, TimestampMixin):
             name="payment_plus_credit_bounded",
         ),
         CheckConstraint("issue_date <= due_date", name="due_date_after_issue"),
+        CheckConstraint(
+            "dunning_level >= 0 AND dunning_level <= 2",
+            name="dunning_level_range",
+        ),
         Index("ix_invoices_status_due", "status", "due_date"),
+        Index("ix_invoices_dunning_due", "status", "due_date", "dunning_level"),
         Index("ix_invoices_issue_date", "issue_date"),
     )
 

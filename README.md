@@ -57,7 +57,9 @@ waste bags across all thicknesses, volumes and colour standards.
 > with a guarded DRAFT→SENT→CONFIRMED→DELIVERED lifecycle, supplier invoices are
 > matched against PO quantities/prices/totals/delivery, and actual invoice margin
 > is compared with the approved customer offer in a responsive Procurement
-> workspace and exception queue.
+> workspace and exception queue. P9.3 adds pipeline/conversion/margin/aging
+> reporting, an admin GoBD audit viewer with streaming CSV/XLSX exports,
+> scheduled SMTP dunning reminders and an in-app notification center.
 
 ---
 
@@ -128,6 +130,8 @@ src/
       ops.py             # worker/ingestion operations, health snapshot + outbox metrics
       master_data.py     # supplier/customer CRUD and contact master data
       procurement.py     # purchase orders, supplier-invoice matching and margins
+      reporting.py       # pipeline, conversion, margin and invoice-aging aggregates
+      audit.py           # GoBD audit viewer + streaming CSV/XLSX exports
   repositories/
     tender_repository.py # PostgreSQL tender/position persistence + owner
     offer_repository.py  # offer lines, artifacts and ERPNext names
@@ -141,6 +145,9 @@ src/
     quotation_sync_repository.py # durable ERPNext quotation outbox
     worker_run_repository.py # run history for scrapes and ingestion batches
     procurement_repository.py # POs, supplier invoices, matching and margin reads
+    reporting_repository.py # efficient commercial/reporting SQL aggregates
+    audit_repository.py  # paged/filterable audit chain + batch export iterator
+    notification_repository.py # live critical-alert counts for the header panel
     integration_repository.py # durable idempotency-key ledger
     supplier_quote_repository.py # inbound n8n quote persistence
   models/
@@ -166,6 +173,8 @@ src/
     approval_service.py  # canonical payload, Ed25519 sign/verify/apply
     mfa_service.py       # RFC 6238 TOTP, sealed secrets and otpauth URIs
     token_maintenance.py # expired refresh/JTI/reset-token retention job
+    dunning.py           # overdue reminder ladder + SMTP escalation
+    audit_export.py      # streaming CSV and dependency-free XLSX writer
     backup_service.py    # encrypted pg_dump → MinIO backups + retention
   scheduler.py           # dependency-free five-field cron scheduler
   worker.py              # scrape/process CLI, signals, locks, alerts
@@ -191,7 +200,7 @@ src/
     schematron/          # vendored KoSIT EN16931 + XRechnung CIUS rules
     zugferd_generator.py # Factur-X/ZUGFeRD 2.2 CII + PDF embedding
     xrechnung_generator.py # XRechnung 3.0 UBL XML + KoSIT validation
-alembic/                 # async migrations (… 0019 master data, 0020 procurement)
+alembic/                 # async migrations (… 0020 procurement, 0021 dunning)
 config/
   portals.yaml           # 120-target engine/API catalogue (verified targets enabled)
 docker/                  # PostgreSQL bootstrap (pgvector, n8n database)
@@ -352,7 +361,12 @@ RFQ dialog selects saved suppliers and the e-invoice approval selects saved
 customers. Sales → Procurement converts accepted supplier quotes into purchase
 orders, tracks delivery and container-query exception queues, records supplier
 invoices, re-runs deterministic matching and compares actual invoice margin with
-the approved customer offer. The Offers workspace with
+the approved customer offer. Sales → Reporting aggregates pipeline, win/loss,
+tender conversion, margin by customer/supplier/tender and paid-vs-overdue invoice
+aging with accessible bar/donut visualisations. Admin → Audit Logs exposes the
+full hash-chained audit stream with filters and streaming CSV/XLSX exports. A
+header notification bell surfaces procurement exceptions, ClamAV quarantines,
+dead-letter spikes, outbox failures and overdue invoices. The Offers workspace with
 status/owner filters, VAT and line-item detail, and the four-eyes approval
 dialog that can optionally issue the ZUGFeRD/XRechnung invoice in the same
 step. Security → Settings enrols or disables TOTP MFA with a QR/manual key and
@@ -446,6 +460,13 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | GET | `/procurement/margins[/{offer_id}]` | authenticated; quoted vs actual supplier-invoice margin |
 | GET | `/procurement/accepted-quotes` | authenticated; accepted quotes still waiting for a PO |
 | GET | `/procurement/health` | authenticated; PO and exception counters for the workspace header |
+| GET | `/reporting/summary` | authenticated; KPIs, pipeline, win/loss and tender conversion (sales owner-scoped) |
+| GET | `/reporting/margins` | authenticated; quoted margin by customer, supplier and tender |
+| GET | `/reporting/aging` | authenticated; paid/outstanding/overdue invoice aging buckets |
+| GET | `/ops/notifications` | admin/approver/viewer; live critical-alert counts for the header panel |
+| GET | `/audit/event-types` | admin only; selectable audit event vocabulary |
+| GET | `/audit/logs` | admin only; paginated/filterable hash-chained audit viewer |
+| GET | `/audit/logs/export?format=csv\|xlsx` | admin only; streaming GoBD audit export |
 | GET | `/ops/portals` | admin only; configured portal targets for the read-only probe |
 | POST | `/ops/portals/{portal_id}/probe` | admin only; read-only P7.3 portal diagnostic with position counts |
 | GET | `/admin/catalog/overrides` | admin only; list pinned catalogue fields |
@@ -672,6 +693,31 @@ surface in the Procurement exception queue.
 non-rejected supplier invoices booked against its POs. Actual margin, absolute
 and rate variance, invoice coverage, and exception counts are returned as
 decimal strings; the UI shows "Awaiting invoice" until the first invoice exists.
+
+### Reporting, GoBD audit and dunning
+
+`GET /reporting/summary` runs grouped aggregate queries for offer-stage pipeline,
+win/loss counts and values, tender/offer conversion and invoice totals; pure sales
+users are owner-scoped. `GET /reporting/margins` returns quoted margin by
+customer, supplier (through the supplier-quote chain) and tender.
+`GET /reporting/aging` buckets issued invoices by due date and returns paid,
+outstanding and overdue totals. The Reporting page renders these as accessible
+CSS bars/donut plus text/table-equivalent labels.
+
+`GET /audit/logs` is admin-only and exposes the entire `audit_logs` chain with
+event-type, actor, entity, payload search and date filters. `GET
+/audit/logs/export?format=csv|xlsx` streams the filtered chain. CSV is generated
+in batches with formula-injection neutralisation; XLSX is written to a spooled
+ZIP/XML workbook and streamed in chunks without an extra spreadsheet dependency.
+Exports append `SYSTEM_AUDIT_EXPORTED` to the chain.
+
+The daily scheduler marks invoices overdue, then runs the dunning ladder.
+Reminder 1 fires after `DUNNING_REMINDER_1_DAYS` (default 3) and reminder 2 after
+`DUNNING_REMINDER_2_DAYS` (default 14). SMTP delivery records `dunning_level`,
+`dunning_last_sent_at` and an `EMAIL_SENT` invoice event with `kind=dunning`;
+manual runs use `python -m src.worker dunning [--dry-run] [--json]`. The header
+notification bell polls `/ops/notifications` for procurement exceptions, ClamAV
+quarantines, dead-letter/outbox failures and overdue invoices.
 
 ### Catalogue override API
 
@@ -1235,8 +1281,10 @@ approval → `.x84` path (`tender-to-export.spec.ts`), the pending-TTL path
 manual-trigger actions and Sales/Approver denial). `master-data.spec.ts` covers
 supplier/customer creation, deactivation and RFQ address-book prefill;
 `procurement.spec.ts` accepts a seeded supplier quote and converts it into a
-purchase order through the Procurement workspace. The golden path selects the
-seeded customer to prefill the e-invoice.
+purchase order through the Procurement workspace. `reporting.spec.ts` opens the
+notification panel, checks the Reporting sections, filters the audit chain,
+opens an event detail and downloads CSV/XLSX exports. The golden path selects
+the seeded customer to prefill the e-invoice.
 `upload-errors.spec.ts` uses `invalid-tender.x83` plus a Playwright-mocked
 ClamAV rejection.
 
@@ -1540,6 +1588,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | n8n | `N8N_WEBHOOK_BASE_URL`, `N8N_WEBHOOK_HMAC_SECRET`, `N8N_RFQ_WEBHOOK_PATH`, `N8N_CALLBACK_URL`, `N8N_CALLBACK_MAX_AGE_SECONDS`, `N8N_DISPATCH_PENDING_TTL_SECONDS` |
 | Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_APPROVAL_CHAT_ID`, `TELEGRAM_ALERTS_ENABLED`, `TELEGRAM_TIMEOUT_SECONDS`, `TELEGRAM_MAX_RETRIES`, `TELEGRAM_RETRY_BACKOFF_SECONDS` |
 | SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME`, `SMTP_STARTTLS`, `SMTP_SSL`, `SMTP_TIMEOUT_SECONDS` |
+| Dunning | `DUNNING_REMINDER_1_DAYS`, `DUNNING_REMINDER_2_DAYS` |
 | ERPNext | `ERPNEXT_BASE_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `ERPNEXT_ITEM_GROUP`, `ERPNEXT_SELLING_PRICE_LIST`, `ERPNEXT_QUOTATION_SERIES`, `QUOTATION_SYNC_MAX_ATTEMPTS`, `QUOTATION_SYNC_BACKOFF_SECONDS`, `QUOTATION_SYNC_BATCH_SIZE` |
 | Portal scrapers | `PORTAL_CONFIG_FILE`, `SCRAPER_REQUEST_DELAY_SECONDS`, `SCRAPER_ROBOTS_CACHE_SECONDS`, `SCRAPER_MAX_PAGES`, `SCRAPER_MAX_CONCURRENT_PORTALS`, `SCRAPER_DOMAIN_LOCK_TTL_SECONDS`, `SCRAPER_PREFER_API`, `SCRAPER_ARCHIVE_RAW`, `SCRAPER_ARCHIVE_PREFIX`, `SCRAPER_USER_AGENTS`, `SCRAPER_HARVEST_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENT_MB`, `SCRAPER_SCHEDULE_CRON` |
 | Worker history | `WORKER_RUN_RETENTION_DAYS` (`purge-worker-runs` CLI) |
@@ -1689,6 +1738,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P8.5 — local reliability hardening: durable `worker_commands` lifecycle with concurrency guard and cancel-run, pagination clamping after row removal, scheduler-driven worker-run retention, migration `0018`
 - [x] P9.1 — supplier & customer master data: extended supplier contacts and customer billing schema (migration `0019`), authenticated CRUD APIs, admin Master Data directories with responsive tables/dialogs, RFQ address-book selection and customer-prefilled e-invoice approval
 - [x] P9.2 — procurement execution: accepted supplier quotes generate purchase orders with a guarded DRAFT/SENT/CONFIRMED/DELIVERED/CANCELLED lifecycle (migration `0020`), supplier-invoice matching for quantities/prices/totals/delivery, actual-vs-quoted margin tracking, container-query Procurement workspace with exception queues, live PostgreSQL lifecycle tests and a Playwright accepted-quote→PO journey
+- [x] P9.3 — reporting, audit & notifications: efficient pipeline/win-loss/conversion/margin/aging aggregates with accessible CSS visualisations, admin GoBD audit viewer with filtered streaming CSV/XLSX exports, scheduled SMTP dunning ladder (migration `0021`), and a live in-app notification center for procurement, ClamAV, dead-letter, outbox and overdue alerts
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

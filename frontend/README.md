@@ -65,8 +65,9 @@ cancel-first focus, and triggers the mocked scrape/ingestion/release-lock
 actions. `tests/e2e/master-data.spec.ts` creates/deactivates a supplier and
 customer and verifies saved-supplier RFQ prefill; `tests/e2e/procurement.spec.ts`
 accepts a seeded supplier quote in the tender workspace and creates the draft PO
-in the Procurement workspace. The golden path selects a saved customer to
-prefill the e-invoice. It also verifies that a sales user and an approver have no
+in the Procurement workspace; `tests/e2e/reporting.spec.ts` checks the
+notification panel, Reporting sections, audit filtering/detail and both export
+downloads. The golden path selects a saved customer to prefill the e-invoice. It also verifies that a sales user and an approver have no
 nav link and are redirected away from `/ops/workers`. The
 mock relay (`mock-n8n-server.mjs`) verifies the outbound HMAC and returns a
 signed supplier-quote callback; the deployable production equivalent is
@@ -92,6 +93,9 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 | `/offers` | Paginated offer workspace with status and owner filters, a responsive table, a detail side panel (server VAT breakdown, signature state, line items, approved `.x84` bid download) and the approver/admin four-eyes approval dialog with an optional “Generate e-invoice” section (buyer, Leitweg-ID, due date, IBAN, payment terms). `?offer=<id>` deep-links the side panel (used by the Outbox and offer-creation handoff). |
 | `/invoices` | Responsive invoice table with status filter, PDF (ZUGFeRD) and XML (XRechnung) downloads, the admin-only "Mark as paid" dialog and an invoice detail sheet (authoritative totals, line items including freight/pallet surcharges, VAT breakdown, credit-note history with credit-note PDF/XML downloads, document downloads, verified GoBD event timeline, admin-only credit-note/cancel/email dialogs with inline validation). |
 | `/procurement` | Sales/admin procurement workspace: container-query KPI grid, accepted-quote → draft PO dialog, PO lifecycle actions (send/confirm/deliver/cancel), delivery progress, supplier-invoice recording with PO-prefilled line quantities/prices, deterministic matching and re-match, an exception queue for total/delivery/quantity/price deviations, and quoted vs actual invoice margin with variance and coverage. Read-only for approvers/viewers. |
+| `/reporting` | Commercial reporting: KPI cards, pipeline bars, accessible win/loss donut, tender conversion cards, quoted margin by customer/supplier/tender and paid-vs-overdue invoice aging. Uses a container-query metric grid. Sales users see their own data. |
+| `/audit` | Admin-only GoBD audit viewer: event-type/actor/entity/payload/date filters, hash-chain columns, event-detail dialog, and streaming CSV/XLSX export downloads. |
+| Header notification center | Bell popover with live counts/links for procurement exceptions, ClamAV quarantines, dead-letter/outbox failures and overdue invoices. Available to admin/approver/viewer. |
 | `/ops/outbox` | Operations console for quotation_sync_jobs: status filter, attempts/retry budget, next attempt, last ERPNext error, a Retry action for failed jobs (admin/approver) and a link to the linked offer. |
 | `/ops/workers` | Admin-only Workers & Ingestion console: queue-health KPIs, durable worker-command lifecycle with cancel-run, server-paginated/filterable worker-run history with a JSON detail drawer, server-paginated ingestion queue, malware-quarantine and dead-letter tables, manual scrape/ingestion/release-lock dialogs, a read-only portal Probe dialog (portal, 1–5 pages, HTML position counts, warnings/errors, zero-result diagnostics) and Retry/Discard confirmations with cancel-first focus and audit events. |
 | `/master-data/suppliers` | Admin-only supplier directory with search/status filters, server pagination, create/edit dialogs including contact rows and primary-contact selection, soft deactivation, and the address book used by RFQ dispatch. |
@@ -144,6 +148,10 @@ Reports and traces land in `playwright-report/` and `test-results/`.
   `POST /procurement/supplier-invoices/{id}/rematch`,
   `GET /procurement/margins[/{offer_id}]`,
   `GET /procurement/health`
+- `GET /reporting/summary`, `GET /reporting/margins`, `GET /reporting/aging`
+- `GET /ops/notifications`
+- `GET /audit/event-types`, `GET /audit/logs`,
+  `GET /audit/logs/export?format=csv|xlsx`
 - `POST /integrations/rfq/dispatch` with an `Idempotency-Key`
 - `GET /offers?tender_id={id}`, `GET /offers` (status/owner/limit/offset),
   `GET /offers/{id}` (includes the server-computed `vat_breakdown`),
@@ -200,6 +208,10 @@ Reports and traces land in `playwright-report/` and `test-results/`.
 - [x] RFQ address-book supplier selection and saved-customer e-invoice prefill
 - [x] Procurement workspace with accepted-quote PO generation, PO lifecycle, supplier-invoice matching, exception queue and actual-vs-quoted margin
 - [x] Container-query procurement metric/exception layouts and responsive PO/invoice/margin tables
+- [x] Reporting workspace with accessible pipeline/win-loss/conversion/margin/aging visualisations
+- [x] Admin GoBD audit viewer with filters, detail dialog and streaming CSV/XLSX downloads
+- [x] Header notification center for procurement, ClamAV, dead-letter, outbox and overdue alerts
+- [x] Playwright reporting/audit coverage with real CSV/XLSX download assertions
 - [x] Playwright procurement journey (accepted supplier quote → generated PO)
 - [x] Playwright operations/master-data coverage for pagination, run details, command cancellation, CRUD, RFQ prefill and Sales/Approver denial
 - [x] Offer workspace with status/owner filters, detail side panel and four-eyes approval dialog

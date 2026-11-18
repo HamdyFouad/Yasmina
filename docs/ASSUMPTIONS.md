@@ -1436,3 +1436,38 @@ for deterministic fixture and chain-verification tests.
   exception-card grid in addition to the shared stacked-table container query, so
   it adapts to its pane rather than the viewport. Approvers/viewers see a
   read-only workspace.
+
+## Reporting, audit and dunning assumptions (P9.3)
+
+- **Win/loss definition.** Won means `ACCEPTED`; lost means `REJECTED` or
+  `EXPIRED`. `win_rate = won / (won + lost)` and is null when no decision exists.
+  Pipeline value includes `DRAFT`, `PENDING_APPROVAL`, `APPROVED` and `SENT`
+  offer totals.
+- **Conversion.** Tender coverage is tenders with an offer divided by all tenders.
+  Offer conversion is accepted offers divided by all offers. Tender win rate is
+  tenders with an accepted offer divided by tenders with any offer.
+- **Margin dimensions.** Customer and tender margin use offer `total_net` versus
+  the sum of line `quantity × cost_unit_price_net`. Supplier margin uses only
+  lines linked through `customer_offer_lines.supplier_quote_line_id`; unlinked
+  lines appear as `Unassigned`. Negative margins remain valid and are displayed.
+- **Invoice aging.** Buckets are Current, 1–30, 31–60, 61–90 and 90+ days past
+  due. Outstanding is gross less payments and credits; cancelled invoices are
+  excluded. `paid_total` is the gross value of `PAID` invoices; `overdue_total`
+  is the gross value of `OVERDUE` invoices.
+- **Owner scope.** Pure sales accounts see reporting for their own tenders/offers;
+  admin, approver and viewer accounts see global aggregates.
+- **Audit export.** CSV uses batched RFC-4180-compatible output with formula
+  injection neutralised by prefixing `'` for cells starting with `= + - @` or
+  control whitespace. XLSX is a minimal dependency-free ZIP/XML workbook written
+  to a spooled temp file and streamed in 64 KiB chunks. Exports audit their own
+  format and filters as `SYSTEM_AUDIT_EXPORTED`.
+- **Dunning.** Reminder 1 is due at `DUNNING_REMINDER_1_DAYS` (default 3) past
+  due; reminder 2 at `DUNNING_REMINDER_2_DAYS` (default 14). At most one level is
+  sent per invoice per run; a failed SMTP send does not advance the level. Only
+  invoices with a buyer e-mail and `ISSUED`, `PARTIALLY_PAID` or `OVERDUE` status
+  are candidates. If SMTP is not configured the scheduler logs and skips; the CLI
+  reports the configuration error.
+- **Notification center.** Alerts are computed live, not persisted. Operational
+  roles (admin/approver/viewer) see procurement exceptions, ClamAV quarantine
+  counts, dead-letter/outbox failures and overdue invoice counts; zero-count
+  alerts are omitted.

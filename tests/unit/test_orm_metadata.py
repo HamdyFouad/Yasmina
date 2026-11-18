@@ -248,6 +248,9 @@ def test_invoice_and_vat_tables_shape() -> None:
     assert "uq_invoice_vat_rate" in {constraint.name for constraint in splits.constraints}
     assert sequences.c.last_value.nullable is False
     assert sequences.c.year.primary_key is True
+    assert invoices.c.dunning_level.nullable is False
+    assert "ck_invoices_dunning_level_range" in {constraint.name for constraint in invoices.constraints}
+    assert "ix_invoices_dunning_due" in {index.name for index in invoices.indexes}
 
 
 def test_customer_offer_line_has_vat_rate() -> None:

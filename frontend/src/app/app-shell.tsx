@@ -2,6 +2,7 @@ import * as React from 'react'
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import {
   Activity,
+  BarChart3,
   Building2,
   FileText,
   Inbox,
@@ -10,6 +11,7 @@ import {
   LogOut,
   Menu,
   ReceiptText,
+  ScrollText,
   Settings,
   ShieldCheck,
   ShoppingCart,
@@ -36,6 +38,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Separator } from '@/components/ui/separator'
 import { useAuth } from '@/features/auth/auth-context'
+import { NotificationCenter } from '@/features/notifications/notification-center'
 import { API_BASE_URL } from '@/lib/env'
 import { cn, titleCase } from '@/lib/utils'
 import type { Role } from '@/types/auth'
@@ -61,6 +64,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/tenders', label: 'Tenders', icon: FileText, end: false },
       { to: '/offers', label: 'Offers', icon: Tags, end: false },
       { to: '/procurement', label: 'Procurement', icon: ShoppingCart, end: false },
+      { to: '/reporting', label: 'Reporting', icon: BarChart3, end: false },
       { to: '/invoices', label: 'Invoices', icon: ReceiptText, end: false },
     ],
   },
@@ -99,6 +103,13 @@ const NAV_GROUPS: NavGroup[] = [
         icon: Inbox,
         end: false,
         roles: ['admin', 'approver', 'viewer'],
+      },
+      {
+        to: '/audit',
+        label: 'Audit Logs',
+        icon: ScrollText,
+        end: false,
+        roles: ['admin'],
       },
       {
         to: '/admin/catalog',
@@ -227,9 +238,11 @@ function Header({ onOpenMobileNav }: { onOpenMobileNav: () => void }) {
         </div>
       </div>
 
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" className="h-10 gap-2 px-2">
+      <div className="flex items-center gap-1">
+        <NotificationCenter />
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" className="h-10 gap-2 px-2">
             <Avatar className="h-8 w-8">
               <AvatarFallback>{initials || 'Y'}</AvatarFallback>
             </Avatar>
@@ -274,8 +287,9 @@ function Header({ onOpenMobileNav }: { onOpenMobileNav: () => void }) {
             <LogOut className="h-4 w-4" />
             Sign out
           </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     </header>
   )
 }

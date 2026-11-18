@@ -65,6 +65,8 @@ def make_original() -> StoredInvoice:
         credited_amount=Decimal("0.00"),
         paid_at=None,
         credit_note_number=None,
+        dunning_level=0,
+        dunning_last_sent_at=None,
         vat_breakdown=({"rate": "0.19", "taxable_amount": "100.00", "tax_amount": "19.00"},),
         artifacts={},
     )

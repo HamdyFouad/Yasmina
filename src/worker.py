@@ -45,6 +45,7 @@ from src.scrapers.oeffentlichevergabe import OeffentlicheVergabeScraper
 from src.scrapers.portal_config import PortalTarget, load_portal_targets
 from src.scrapers.probe import format_probe_report, probe_portal
 from src.services.audit_service import AuditService
+from src.services.dunning import run_dunning_once
 from src.services.ingestion_processor import TenderIngestionProcessor
 from src.services.invoice_overdue import mark_overdue_once
 from src.services.quotation_sync import process_quotation_sync_jobs_once
@@ -839,6 +840,7 @@ async def run_scheduled(
     process_pending: bool = True,
     notifier: TelegramNotifier | None = None,
     overdue_runner: Callable[[Settings], Any] | None = None,
+    dunning_runner: Callable[[Settings], Any] | None = None,
     retention_runner: Callable[[Settings], Any] | None = None,
 ) -> int:
     """Run the scraper job forever on the configured cron schedule."""
@@ -849,6 +851,7 @@ async def run_scheduled(
     )
     active_notifier = notifier if notifier is not None else TelegramNotifier(settings)
     active_overdue = overdue_runner or mark_overdue_once
+    active_dunning = dunning_runner or run_dunning_once
     active_retention = retention_runner or _purge_worker_runs_for_scheduler
     active_worker = worker_identity()
     logger.info(
@@ -870,6 +873,16 @@ async def run_scheduled(
             logger.info("daily overdue invoice maintenance marked=%s", marked)
         except Exception:
             logger.exception("daily overdue invoice maintenance failed")
+        try:
+            dunning = await active_dunning(settings)
+            sent_count = (
+                dunning.get("sent_count", 0)
+                if isinstance(dunning, dict)
+                else len(getattr(dunning, "sent", ()))
+            )
+            logger.info("daily dunning reminders sent=%s", sent_count)
+        except Exception:
+            logger.exception("daily dunning run failed")
         try:
             summaries = await _run_once_with_db(
                 portal,
@@ -1031,6 +1044,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     overdue.add_argument("--json", action="store_true", dest="as_json")
 
+    dunning = subparsers.add_parser(
+        "dunning",
+        help="mark overdue invoices and send the configured reminder ladder",
+    )
+    dunning.add_argument("--dry-run", action="store_true")
+    dunning.add_argument("--json", action="store_true", dest="as_json")
+
     schedule = subparsers.add_parser("schedule", help="run the daily cron scheduler")
     schedule.add_argument("--portal", default="all", help="target id from portals.yaml, or all")
     schedule.add_argument("--cron", default=None, help="five-field cron expression")
@@ -1168,6 +1188,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps({"overdue_marked": marked}, ensure_ascii=False))
             else:
                 print(f"marked {marked} invoice(s) overdue")
+            return 0
+
+        if args.command == "dunning":
+            result = asyncio.run(run_dunning_once(settings, dry_run=args.dry_run))
+            if args.as_json:
+                print(json.dumps(result.as_dict(), ensure_ascii=False))
+            else:
+                suffix = " (dry run)" if result.dry_run else ""
+                print(f"sent {len(result.sent)} dunning reminder(s){suffix}")
             return 0
 
         runs = asyncio.run(

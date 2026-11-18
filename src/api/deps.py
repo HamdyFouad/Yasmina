@@ -16,16 +16,19 @@ from src.integrations.clamav_client import ClamAVScanner
 from src.integrations.erpnext_client import ERPNextClient
 from src.integrations.minio_client import MinioObjectStorage
 from src.integrations.n8n_client import N8nClient
+from src.repositories.audit_repository import AuditLogRepository
 from src.repositories.catalog_repository import CatalogRepository
 from src.repositories.credit_note_repository import CreditNoteRepository
 from src.repositories.ingestion_repository import TenderIngestionJobRepository
 from src.repositories.integration_repository import IntegrationRepository
 from src.repositories.invoice_repository import InvoiceRepository
 from src.repositories.master_data_repository import CustomerRepository, SupplierRepository
+from src.repositories.notification_repository import NotificationRepository
 from src.repositories.offer_repository import OfferRepository
 from src.repositories.ops_repository import OpsRepository
 from src.repositories.procurement_repository import ProcurementRepository
 from src.repositories.quotation_sync_repository import QuotationSyncJobRepository
+from src.repositories.reporting_repository import ReportingRepository
 from src.repositories.supplier_quote_repository import SupplierQuoteRepository
 from src.repositories.tender_repository import TenderRepository
 from src.repositories.user_repository import (
@@ -43,6 +46,7 @@ from src.services.worker_metrics import WorkerHealthService
 __all__ = [
     "bearer_scheme",
     "get_app_settings",
+    "get_audit_log_repository",
     "get_audit_service",
     "get_catalog_repository",
     "get_clamav_scanner",
@@ -53,6 +57,7 @@ __all__ = [
     "get_integration_repository",
     "get_invoice_repository",
     "get_n8n_client",
+    "get_notification_repository",
     "get_object_storage",
     "get_offer_repository",
     "get_ops_repository",
@@ -61,6 +66,7 @@ __all__ = [
     "get_principal",
     "get_procurement_repository",
     "get_quotation_sync_repository",
+    "get_reporting_repository",
     "get_refresh_token_repository",
     "get_session",
     "get_supplier_quote_repository",
@@ -275,6 +281,24 @@ def get_procurement_repository(
     session: AsyncSession = Depends(get_session),
 ) -> ProcurementRepository:
     return ProcurementRepository(session)
+
+
+def get_reporting_repository(
+    session: AsyncSession = Depends(get_session),
+) -> ReportingRepository:
+    return ReportingRepository(session)
+
+
+def get_audit_log_repository(
+    session: AsyncSession = Depends(get_session),
+) -> AuditLogRepository:
+    return AuditLogRepository(session)
+
+
+def get_notification_repository(
+    session: AsyncSession = Depends(get_session),
+) -> NotificationRepository:
+    return NotificationRepository(session)
 
 
 def get_credit_note_repository(

@@ -22,6 +22,7 @@ from src.api.rate_limit import RateLimitMiddleware
 from src.api.routes import (
     admin_catalog,
     approvals,
+    audit,
     auth,
     integrations,
     invoices,
@@ -29,6 +30,7 @@ from src.api.routes import (
     offers,
     ops,
     procurement,
+    reporting,
     supplier_quotes,
     tenders,
 )
@@ -130,6 +132,8 @@ def create_app(settings: Settings | None = None, *, run_startup_checks: bool = T
     application.include_router(offers.router, prefix="/api/v1")
     application.include_router(supplier_quotes.router, prefix="/api/v1")
     application.include_router(procurement.router, prefix="/api/v1")
+    application.include_router(reporting.router, prefix="/api/v1")
+    application.include_router(audit.router, prefix="/api/v1")
     application.include_router(invoices.router, prefix="/api/v1")
     application.include_router(master_data.router, prefix="/api/v1")
     application.include_router(admin_catalog.router, prefix="/api/v1")

@@ -31,6 +31,16 @@ const ProcurementPage = React.lazy(() =>
     default: module.ProcurementPage,
   })),
 )
+const ReportingPage = React.lazy(() =>
+  import('@/features/reporting/reporting-page').then((module) => ({
+    default: module.ReportingPage,
+  })),
+)
+const AuditPage = React.lazy(() =>
+  import('@/features/audit/audit-page').then((module) => ({
+    default: module.AuditPage,
+  })),
+)
 
 function LazyPage({ children }: { children: React.ReactNode }) {
   return <React.Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading…</div>}>{children}</React.Suspense>
@@ -65,6 +75,24 @@ export const router = createBrowserRouter([
               <LazyPage>
                 <ProcurementPage />
               </LazyPage>
+            ),
+          },
+          {
+            path: 'reporting',
+            element: (
+              <LazyPage>
+                <ReportingPage />
+              </LazyPage>
+            ),
+          },
+          {
+            path: 'audit',
+            element: (
+              <RequireAdmin>
+                <LazyPage>
+                  <AuditPage />
+                </LazyPage>
+              </RequireAdmin>
             ),
           },
           { path: 'invoices', element: <InvoicesPage /> },

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import builtins
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -33,6 +33,7 @@ from src.models.schemas import q2
 from src.repositories.invoice_event_repository import InvoiceEventRepository
 
 __all__ = [
+    "DunningCandidate",
     "InvoiceNumberExhaustedError",
     "InvoiceRepository",
     "InvoiceRepositoryConflict",
@@ -56,6 +57,25 @@ class InvoiceNumberExhaustedError(InvoiceRepositoryError):
 
 
 @dataclass(frozen=True, slots=True)
+class DunningCandidate:
+    id: UUID
+    invoice_number: str
+    buyer_name: str
+    buyer_email: str
+    due_date: date
+    total_gross: Decimal
+    paid_amount: Decimal
+    credited_amount: Decimal
+    currency: str
+    dunning_level: int
+    days_overdue: int
+
+    @property
+    def amount_due(self) -> Decimal:
+        return q2(self.total_gross - self.paid_amount - self.credited_amount)
+
+
+@dataclass(frozen=True, slots=True)
 class StoredInvoice:
     id: UUID
     offer_id: UUID
@@ -65,6 +85,8 @@ class StoredInvoice:
     credited_amount: Decimal
     paid_at: datetime | None
     credit_note_number: str | None
+    dunning_level: int
+    dunning_last_sent_at: datetime | None
     vat_breakdown: tuple[dict[str, str], ...]
     artifacts: dict[str, Any]
 
@@ -84,6 +106,10 @@ class StoredInvoice:
             "credited_amount": format(self.credited_amount, "f"),
             "paid_at": self.paid_at.isoformat() if self.paid_at is not None else None,
             "credit_note_number": self.credit_note_number,
+            "dunning_level": self.dunning_level,
+            "dunning_last_sent_at": (
+                self.dunning_last_sent_at.isoformat() if self.dunning_last_sent_at is not None else None
+            ),
             "buyer_email": str(self.invoice.buyer.email) if self.invoice.buyer.email else None,
             "vat_breakdown": [dict(item) for item in self.vat_breakdown],
             "lines": [
@@ -180,6 +206,8 @@ def _stored(orm: InvoiceORM) -> StoredInvoice:
         credited_amount=orm.credited_amount,
         paid_at=orm.paid_at,
         credit_note_number=orm.credit_note_number,
+        dunning_level=orm.dunning_level,
+        dunning_last_sent_at=orm.dunning_last_sent_at,
         vat_breakdown=tuple(dict(item) for item in (orm.vat_breakdown or [])),
         artifacts=dict(orm.artifacts or {}),
     )
@@ -559,6 +587,100 @@ class InvoiceRepository:
         if rows:
             await self.session.commit()
         return updated
+
+    async def list_dunning_candidates(
+        self,
+        *,
+        today: date | None = None,
+        first_reminder_days: int = 3,
+        second_reminder_days: int = 14,
+    ) -> builtins.list[DunningCandidate]:
+        """Return overdue invoices that are eligible for a next dunning level."""
+
+        current = today or datetime.now(UTC).date()
+        cutoff = current - timedelta(days=first_reminder_days)
+        rows = (
+            (
+                await self.session.execute(
+                    select(InvoiceORM)
+                    .where(
+                        InvoiceORM.status.in_(
+                            [InvoiceStatus.ISSUED, InvoiceStatus.PARTIALLY_PAID, InvoiceStatus.OVERDUE]
+                        ),
+                        InvoiceORM.due_date <= cutoff,
+                        InvoiceORM.dunning_level < 2,
+                    )
+                    .order_by(InvoiceORM.due_date.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        candidates: builtins.list[DunningCandidate] = []
+        for row in rows:
+            email = str(row.buyer_email).strip() if row.buyer_email else ""
+            if not email:
+                continue
+            days_overdue = (current - row.due_date).days
+            if days_overdue < first_reminder_days:
+                continue
+            if row.dunning_level >= 1 and days_overdue < second_reminder_days:
+                continue
+            candidates.append(
+                DunningCandidate(
+                    id=row.id,
+                    invoice_number=row.invoice_number,
+                    buyer_name=row.buyer_name,
+                    buyer_email=email,
+                    due_date=row.due_date,
+                    total_gross=row.total_gross,
+                    paid_amount=row.paid_amount,
+                    credited_amount=row.credited_amount,
+                    currency=row.currency.value,
+                    dunning_level=row.dunning_level,
+                    days_overdue=days_overdue,
+                )
+            )
+        return candidates
+
+    async def record_dunning(
+        self,
+        invoice_id: UUID,
+        *,
+        level: int,
+        recipient: str,
+        now: datetime | None = None,
+    ) -> bool:
+        """Persist a successful dunning send and its GoBD delivery event."""
+
+        row = await self._get_row(invoice_id, lock=True)
+        if row.status not in {
+            InvoiceStatus.ISSUED,
+            InvoiceStatus.PARTIALLY_PAID,
+            InvoiceStatus.OVERDUE,
+        }:
+            return False
+        if row.dunning_level >= level:
+            return False
+        sent_at = now or datetime.now(UTC)
+        row.dunning_level = level
+        row.dunning_last_sent_at = sent_at
+        amount_due = q2(row.total_gross - row.paid_amount - row.credited_amount)
+        await InvoiceEventRepository(self.session).append(
+            invoice_id,
+            "EMAIL_SENT",
+            reference=recipient[:128],
+            payload={
+                "kind": "dunning",
+                "level": level,
+                "amount_due": format(amount_due, "f"),
+                "due_date": row.due_date.isoformat(),
+                "sent_at": sent_at.isoformat(),
+            },
+            commit=False,
+        )
+        await self.session.commit()
+        return True
 
     async def cancel(
         self,

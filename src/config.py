@@ -196,6 +196,10 @@ class Settings(BaseSettings):
     smtp_ssl: bool = False
     smtp_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
 
+    # --- Automated dunning -------------------------------------------------
+    dunning_reminder_1_days: int = Field(default=3, ge=0, le=365)
+    dunning_reminder_2_days: int = Field(default=14, ge=1, le=730)
+
     # --- Portal scrapers ---------------------------------------------------
     scraper_request_delay_seconds: float = Field(default=2.0, ge=0.0, le=120.0)
     scraper_timeout_seconds: float = Field(default=20.0, gt=0.0, le=120.0)
@@ -296,6 +300,8 @@ class Settings(BaseSettings):
     def _validate_smtp_transport(self) -> Self:
         if self.smtp_starttls and self.smtp_ssl:
             raise ValueError("SMTP_STARTTLS and SMTP_SSL are mutually exclusive")
+        if self.dunning_reminder_2_days <= self.dunning_reminder_1_days:
+            raise ValueError("DUNNING_REMINDER_2_DAYS must be greater than DUNNING_REMINDER_1_DAYS")
         return self
 
     @model_validator(mode="after")
