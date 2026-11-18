@@ -118,7 +118,7 @@ test('admin inspects workers, ingestion queues and the probe dialog', async ({ p
   await expect(probeDialog.getByRole('combobox', { name: 'Portal' })).toBeVisible()
   await probeDialog.getByRole('button', { name: 'Run probe' }).click()
   await expect(probeDialog.getByText('Read-only probe complete: Vergabe Bayern')).toBeVisible()
-  await expect(probeDialog.getByText('Position rows')).toBeVisible()
+  await expect(probeDialog.getByText('Position rows', { exact: true })).toBeVisible()
   await expect(probeDialog.getByText(/Zero results:/)).toBeVisible()
   await expect(probeDialog.getByText('No publication date selector matched')).toBeVisible()
   await expect(probeDialog.getByText('detail fetch failed')).toBeVisible()
