@@ -131,6 +131,24 @@ async def test_runner_sends_reminder_and_records_the_level() -> None:
     assert result.as_dict()["sent_count"] == 1
 
 
+async def test_dry_run_reports_candidates_without_sending() -> None:
+    repository = FakeRepository([make_candidate(days_overdue=5)])
+    notifier = FakeNotifier(configured=False)
+
+    result = await run_dunning(
+        repository,  # type: ignore[arg-type]
+        notifier,
+        first_reminder_days=3,
+        second_reminder_days=14,
+        dry_run=True,
+    )
+
+    assert result.dry_run is True
+    assert len(result.sent) == 1
+    assert notifier.sent == []
+    assert repository.recorded == []
+
+
 async def test_runner_skips_delivery_failure_and_unconfigured_smtp() -> None:
     repository = FakeRepository([make_candidate(days_overdue=5)])
     notifier = FakeNotifier(delivered=False)

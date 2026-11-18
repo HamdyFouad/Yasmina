@@ -178,7 +178,8 @@ async def run_dunning_once(
     factory = get_session_factory(settings)
     async with factory() as session:
         repository = InvoiceRepository(session)
-        await repository.mark_overdue_batch(today=today)
+        if not dry_run:
+            await repository.mark_overdue_batch(today=today)
         return await run_dunning(
             repository,
             active_notifier,

@@ -393,7 +393,7 @@ class ReportingRepository:
 
         supplier_statement = (
             select(
-                func.coalesce(SupplierORM.name, "Unassigned").label("supplier_name"),
+                SupplierORM.name,
                 func.count(func.distinct(CustomerOfferORM.id)),
                 func.coalesce(func.sum(CustomerOfferLineORM.total_net), 0),
                 func.coalesce(
@@ -412,13 +412,22 @@ class ReportingRepository:
                 SupplierQuoteORM.id == SupplierQuoteLineORM.supplier_quote_id,
             )
             .outerjoin(SupplierORM, SupplierORM.id == SupplierQuoteORM.supplier_id)
-            .group_by(func.coalesce(SupplierORM.name, "Unassigned"))
+            .group_by(SupplierORM.name)
             .order_by(func.sum(CustomerOfferLineORM.total_net).desc())
             .limit(25)
         )
         supplier_statement = self._offer_filter(supplier_statement, owner)
         supplier_rows = (await self.session.execute(supplier_statement)).all()
-        suppliers = [_margin("supplier", str(row[0]), int(row[1]), row[2], row[3]) for row in supplier_rows]
+        suppliers = [
+            _margin(
+                "supplier",
+                str(row[0]) if row[0] is not None else "Unassigned",
+                int(row[1]),
+                row[2],
+                row[3],
+            )
+            for row in supplier_rows
+        ]
         return {"customers": customers, "tenders": tenders, "suppliers": suppliers}
 
     async def aging(self, *, owner: str | None = None, today: date | None = None) -> AgingReport:
