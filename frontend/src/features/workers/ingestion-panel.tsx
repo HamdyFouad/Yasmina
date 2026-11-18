@@ -6,6 +6,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { TablePagination } from '@/features/workers/table-pagination'
 import { apiErrorMessage } from '@/lib/api-error'
 import { formatDateTime } from '@/lib/utils'
 import type { IngestionJob } from '@/types/domain'
@@ -22,30 +23,43 @@ export function IngestionPanel({
   title,
   description,
   jobs,
+  total,
+  page,
+  pageSize,
   isLoading,
   isError,
+  isFetching,
   error,
   emptyTitle,
   emptyDescription,
   onRetry,
   onDiscard,
   actionsDisabled,
+  onPageChange,
+  toolbar,
 }: {
   id: string
   title: string
   description: string
   jobs: IngestionJob[]
+  total: number
+  page: number
+  pageSize: number
   isLoading: boolean
   isError: boolean
+  isFetching: boolean
   error: unknown
   emptyTitle: string
   emptyDescription: string
   onRetry?: (job: IngestionJob) => void
   onDiscard?: (job: IngestionJob) => void
   actionsDisabled: boolean
+  onPageChange: (page: number) => void
+  toolbar?: React.ReactNode
 }) {
   const captionId = React.useId()
   const headingId = `${id}-heading`
+  const hasActions = onRetry !== undefined || onDiscard !== undefined
 
   if (isLoading) {
     return (
@@ -92,6 +106,8 @@ export function IngestionPanel({
         <p className="text-sm text-muted-foreground">{description}</p>
       </div>
 
+      {toolbar !== undefined ? <div className="flex flex-wrap items-end gap-3">{toolbar}</div> : null}
+
       {jobs.length === 0 ? (
         <EmptyState icon={Inbox} title={emptyTitle} description={emptyDescription} />
       ) : (
@@ -99,13 +115,14 @@ export function IngestionPanel({
           <div
             role="region"
             aria-labelledby={captionId}
+            aria-busy={isFetching}
             tabIndex={0}
             className="stacked-table max-h-[55vh] overflow-auto focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           >
-            <table className="w-full min-w-[820px] border-collapse text-sm">
+            <table className="w-full min-w-[860px] border-collapse text-sm">
               <caption id={captionId} className="sr-only">
                 {title} with tender, portal, status, retry budget, last error
-                {onRetry !== undefined || onDiscard !== undefined ? ' and actions' : ''}
+                {hasActions ? ' and actions' : ''}
               </caption>
               <thead className="sticky top-0 z-10 bg-card shadow-sm">
                 <tr className="border-b border-border">
@@ -120,7 +137,7 @@ export function IngestionPanel({
                       </th>
                     ),
                   )}
-                  {onRetry !== undefined || onDiscard !== undefined ? (
+                  {hasActions ? (
                     <th
                       scope="col"
                       className="h-10 px-3 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground"
@@ -155,9 +172,16 @@ export function IngestionPanel({
                     <td data-label="Status" className="px-3 py-3 align-top">
                       <StatusBadge status={job.status} />
                       {job.quarantined ? (
-                        <span className="mt-1 block text-[11px] font-medium text-destructive">
-                          Malware quarantine
-                        </span>
+                        <>
+                          <span className="mt-1 block text-[11px] font-medium text-destructive">
+                            Malware quarantine
+                          </span>
+                          {job.quarantine_reason !== null ? (
+                            <span className="mt-1 block max-w-56 text-[11px] text-muted-foreground">
+                              {job.quarantine_reason}
+                            </span>
+                          ) : null}
+                        </>
                       ) : null}
                     </td>
                     <td
@@ -174,7 +198,7 @@ export function IngestionPanel({
                         {shortError(job.last_error)}
                       </span>
                     </td>
-                    {onRetry !== undefined || onDiscard !== undefined ? (
+                    {hasActions ? (
                       <td
                         data-label="Actions"
                         className="whitespace-nowrap px-3 py-3 text-right align-top"
@@ -216,6 +240,15 @@ export function IngestionPanel({
           </div>
         </Card>
       )}
+
+      <TablePagination
+        total={total}
+        page={page}
+        pageSize={pageSize}
+        shown={jobs.length}
+        isFetching={isFetching}
+        onPageChange={onPageChange}
+      />
     </section>
   )
 }

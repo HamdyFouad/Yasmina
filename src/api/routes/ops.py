@@ -15,11 +15,17 @@ from src.api.deps import (
     get_ingestion_job_repository,
     get_ops_repository,
     get_quotation_sync_repository,
+    get_worker_command_launcher,
     get_worker_health_service,
     get_worker_run_repository,
     require_roles,
 )
-from src.api.schemas import IngestionDiscardPayload
+from src.api.schemas import (
+    IngestionDiscardPayload,
+    ReleaseStaleLocksPayload,
+    WorkerIngestionTriggerPayload,
+    WorkerScrapeTriggerPayload,
+)
 from src.api.security import Principal, Role
 from src.config import Settings
 from src.models.enums import AuditEventType
@@ -38,6 +44,7 @@ from src.repositories.worker_run_repository import WorkerRunRepository
 from src.scrapers.portal_config import PortalConfigError, load_portal_targets
 from src.scrapers.probe import probe_portal
 from src.services.audit_service import AuditService
+from src.services.worker_command import WorkerCommandError, WorkerCommandLauncher
 from src.services.worker_metrics import WorkerHealthService
 
 __all__ = ["api_router", "router"]
@@ -80,6 +87,7 @@ def _ingestion_payload(job: IngestionJobView) -> dict[str, object]:
         "attempts": job.attempts,
         "max_attempts": job.max_attempts,
         "quarantined": job.quarantined,
+        "quarantine_reason": job.quarantine_reason,
         "last_error": job.last_error,
         "attachment_count": len(job.attachments),
         "available_at": job.available_at.isoformat() if job.available_at is not None else None,
@@ -114,17 +122,14 @@ async def worker_health(
     return JSONResponse(status_code=200, content=snapshot)
 
 
-@api_router.get("/worker-runs")
-async def list_worker_runs(
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0, le=100_000),
-    run_type: WorkerRunType | None = Query(default=None),
-    run_status: WorkerRunStatus | None = Query(default=None, alias="status"),
-    runs: WorkerRunRepository = Depends(get_worker_run_repository),
-    _: Principal = Depends(require_roles(Role.ADMIN)),
+async def _worker_runs_payload(
+    runs: WorkerRunRepository,
+    *,
+    limit: int,
+    offset: int,
+    run_type: WorkerRunType | None,
+    run_status: WorkerRunStatus | None,
 ) -> dict[str, object]:
-    """Admin view of recent scrape/ingestion worker runs."""
-
     rows = await runs.list_runs(
         limit=limit,
         offset=offset,
@@ -140,12 +145,58 @@ async def list_worker_runs(
     }
 
 
+@api_router.get("/worker-runs")
+async def list_worker_runs(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0, le=100_000),
+    run_type: WorkerRunType | None = Query(default=None),
+    run_status: WorkerRunStatus | None = Query(default=None, alias="status"),
+    runs: WorkerRunRepository = Depends(get_worker_run_repository),
+    _: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, object]:
+    """Admin view of recent scrape/ingestion worker runs."""
+
+    return await _worker_runs_payload(
+        runs,
+        limit=limit,
+        offset=offset,
+        run_type=run_type,
+        run_status=run_status,
+    )
+
+
+@router.get("/healthz/worker_runs")
+async def worker_runs_health_alias(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0, le=100_000),
+    run_type: WorkerRunType | None = Query(default=None),
+    run_status: WorkerRunStatus | None = Query(default=None, alias="status"),
+    runs: WorkerRunRepository = Depends(get_worker_run_repository),
+    _: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, object]:
+    """Admin compatibility alias for the paginated worker-run list.
+
+    The legacy ``/healthz/worker`` snapshot remains public because uptime probes
+    depend on it. Full run rows stay admin-scoped here, just like
+    ``/ops/worker-runs``.
+    """
+
+    return await _worker_runs_payload(
+        runs,
+        limit=limit,
+        offset=offset,
+        run_type=run_type,
+        run_status=run_status,
+    )
+
+
 @api_router.get("/ingestion")
 async def list_ingestion_jobs(
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0, le=100_000),
     status_filter: IngestionJobStatus | None = Query(default=None, alias="status"),
     quarantined: bool | None = Query(default=None),
+    queue: bool | None = Query(default=None),
     repository: TenderIngestionJobRepository = Depends(get_ingestion_job_repository),
     _: Principal = Depends(require_roles(Role.ADMIN)),
 ) -> dict[str, object]:
@@ -154,12 +205,14 @@ async def list_ingestion_jobs(
     jobs = await repository.list_jobs(
         status_filter=status_filter,
         quarantined=quarantined,
+        queue=queue,
         limit=limit,
         offset=offset,
     )
     total = await repository.count_jobs(
         status_filter=status_filter,
         quarantined=quarantined,
+        queue=queue,
     )
     return {
         "jobs": [_ingestion_payload(job) for job in jobs],
@@ -229,6 +282,98 @@ async def discard_ingestion_job(
         },
     )
     return {"job": _ingestion_payload(job)}
+
+
+@api_router.post("/ingestion/release-stale")
+async def release_stale_ingestion_locks(
+    payload: ReleaseStaleLocksPayload,
+    repository: TenderIngestionJobRepository = Depends(get_ingestion_job_repository),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, object]:
+    """Reset ingestion jobs whose processing lock exceeded the threshold."""
+
+    released = await repository.release_stale(
+        older_than_seconds=payload.older_than_seconds,
+    )
+    await audit.append(
+        event_type=AuditEventType.SYSTEM_INGESTION_LOCKS_RELEASED,
+        actor=principal.sub,
+        entity_type="tender_ingestion_job",
+        entity_id="stale-locks",
+        payload={
+            "released": released,
+            "older_than_seconds": payload.older_than_seconds,
+        },
+    )
+    return {
+        "released": released,
+        "older_than_seconds": payload.older_than_seconds,
+    }
+
+
+def _trigger_error(exc: WorkerCommandError) -> HTTPException:
+    message = str(exc)
+    if "unknown portal" in message:
+        code = status.HTTP_404_NOT_FOUND
+    elif "is disabled" in message:
+        code = status.HTTP_409_CONFLICT
+    else:
+        code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return HTTPException(status_code=code, detail=message)
+
+
+@api_router.post("/worker-runs/scrape")
+async def trigger_scrape_run(
+    payload: WorkerScrapeTriggerPayload,
+    launcher: WorkerCommandLauncher = Depends(get_worker_command_launcher),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, object]:
+    """Launch a detached scrape worker for one portal or all targets."""
+
+    try:
+        result = launcher.launch_scrape(
+            portal=payload.portal,
+            max_pages=payload.max_pages,
+        )
+    except WorkerCommandError as exc:
+        raise _trigger_error(exc) from exc
+    await audit.append(
+        event_type=AuditEventType.SYSTEM_WORKER_SCRAPE_TRIGGERED,
+        actor=principal.sub,
+        entity_type="worker_run",
+        entity_id="scrape",
+        payload={
+            "portal": payload.portal,
+            "max_pages": payload.max_pages,
+            "pid": result.pid,
+        },
+    )
+    return result.as_dict()
+
+
+@api_router.post("/worker-runs/ingestion")
+async def trigger_ingestion_run(
+    payload: WorkerIngestionTriggerPayload,
+    launcher: WorkerCommandLauncher = Depends(get_worker_command_launcher),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_roles(Role.ADMIN)),
+) -> dict[str, object]:
+    """Launch a detached ingestion worker for a bounded batch."""
+
+    try:
+        result = launcher.launch_ingestion(limit=payload.limit)
+    except WorkerCommandError as exc:
+        raise _trigger_error(exc) from exc
+    await audit.append(
+        event_type=AuditEventType.SYSTEM_INGESTION_TRIGGERED,
+        actor=principal.sub,
+        entity_type="worker_run",
+        entity_id="ingestion",
+        payload={"limit": payload.limit, "pid": result.pid},
+    )
+    return result.as_dict()
 
 
 @api_router.get("/portals")

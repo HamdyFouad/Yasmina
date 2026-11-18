@@ -4,10 +4,33 @@ import { AlertTriangle, RefreshCw } from 'lucide-react'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { TablePagination } from '@/features/workers/table-pagination'
 import { apiErrorMessage } from '@/lib/api-error'
 import { formatDateTime } from '@/lib/utils'
-import type { WorkerRun } from '@/types/domain'
+import type { WorkerRun, WorkerRunStatus, WorkerRunType } from '@/types/domain'
+
+const RUN_TYPE_OPTIONS: { value: WorkerRunType | 'ALL'; label: string }[] = [
+  { value: 'ALL', label: 'All run types' },
+  { value: 'scrape', label: 'Scrape' },
+  { value: 'ingestion', label: 'Ingestion' },
+]
+
+const RUN_STATUS_OPTIONS: { value: WorkerRunStatus | 'ALL'; label: string }[] = [
+  { value: 'ALL', label: 'All statuses' },
+  { value: 'running', label: 'Running' },
+  { value: 'succeeded', label: 'Succeeded' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'skipped', label: 'Skipped' },
+  { value: 'cancelled', label: 'Cancelled' },
+]
 
 function durationLabel(run: WorkerRun): string {
   if (run.duration_ms === null) {
@@ -25,18 +48,36 @@ function resourceLabel(run: WorkerRun): string {
 
 export function WorkerRunsPanel({
   runs,
+  total,
+  page,
+  pageSize,
   isLoading,
   isError,
   error,
   isFetching,
+  runType,
+  runStatus,
+  onRunTypeChange,
+  onRunStatusChange,
+  onPageChange,
   onRefresh,
+  onViewRun,
 }: {
   runs: WorkerRun[]
+  total: number
+  page: number
+  pageSize: number
   isLoading: boolean
   isError: boolean
   error: unknown
   isFetching: boolean
+  runType: WorkerRunType | null
+  runStatus: WorkerRunStatus | null
+  onRunTypeChange: (value: WorkerRunType | null) => void
+  onRunStatusChange: (value: WorkerRunStatus | null) => void
+  onPageChange: (page: number) => void
   onRefresh: () => void
+  onViewRun: (run: WorkerRun) => void
 }) {
   const captionId = React.useId()
 
@@ -61,6 +102,56 @@ export function WorkerRunsPanel({
           <RefreshCw className={isFetching ? 'animate-spin' : undefined} aria-hidden="true" />
           Refresh runs
         </Button>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="flex items-center gap-2">
+          <label htmlFor="worker-run-type" className="text-sm text-muted-foreground">
+            Run type
+          </label>
+          <Select
+            value={runType ?? 'ALL'}
+            onValueChange={(value) =>
+              onRunTypeChange(value === 'ALL' ? null : (value as WorkerRunType))
+            }
+          >
+            <SelectTrigger id="worker-run-type" className="w-44">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {RUN_TYPE_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-2">
+          <label htmlFor="worker-run-status" className="text-sm text-muted-foreground">
+            Status
+          </label>
+          <Select
+            value={runStatus ?? 'ALL'}
+            onValueChange={(value) =>
+              onRunStatusChange(value === 'ALL' ? null : (value as WorkerRunStatus))
+            }
+          >
+            <SelectTrigger id="worker-run-status" className="w-44">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {RUN_STATUS_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <p className="ml-auto text-xs text-muted-foreground">
+          {total.toLocaleString('de-DE')} run(s)
+        </p>
       </div>
 
       {isLoading ? (
@@ -88,7 +179,7 @@ export function WorkerRunsPanel({
       ) : runs.length === 0 ? (
         <Card>
           <CardContent className="p-6 text-sm text-muted-foreground">
-            No worker runs have been recorded yet. The daily scheduler and ingestion worker append
+            No worker runs matched these filters. The daily scheduler and ingestion worker append
             their history here.
           </CardContent>
         </Card>
@@ -101,9 +192,9 @@ export function WorkerRunsPanel({
             tabIndex={0}
             className="stacked-table max-h-[55vh] overflow-auto focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
           >
-            <table className="w-full min-w-[860px] border-collapse text-sm">
+            <table className="w-full min-w-[940px] border-collapse text-sm">
               <caption id={captionId} className="sr-only">
-                Worker runs with type, resource, status, duration and error counts
+                Worker runs with type, resource, status, duration, error counts and detail actions
               </caption>
               <thead className="sticky top-0 z-10 bg-card shadow-sm">
                 <tr className="border-b border-border">
@@ -120,6 +211,12 @@ export function WorkerRunsPanel({
                       </th>
                     ),
                   )}
+                  <th
+                    scope="col"
+                    className="h-10 px-3 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                  >
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -171,6 +268,20 @@ export function WorkerRunsPanel({
                         </span>
                       ) : null}
                     </td>
+                    <td
+                      data-label="Actions"
+                      className="whitespace-nowrap px-3 py-3 text-right align-top"
+                    >
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        aria-label={`View run details for ${run.resource}`}
+                        onClick={() => onViewRun(run)}
+                      >
+                        View details
+                      </Button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -178,6 +289,15 @@ export function WorkerRunsPanel({
           </div>
         </Card>
       )}
+
+      <TablePagination
+        total={total}
+        page={page}
+        pageSize={pageSize}
+        shown={runs.length}
+        isFetching={isFetching}
+        onPageChange={onPageChange}
+      />
     </section>
   )
 }

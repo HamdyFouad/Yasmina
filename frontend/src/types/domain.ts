@@ -651,6 +651,7 @@ export interface IngestionJob {
   attempts: number
   max_attempts: number
   quarantined: boolean
+  quarantine_reason: string | null
   last_error: string | null
   attachment_count: number
   available_at: string | null
@@ -709,11 +710,27 @@ export interface ProbeReport {
     stale: number
   }
   details_fetched: number
+  detail_pages_parsed: number
+  positions_parsed: number
+  notices_with_positions: number
+  zero_positions: boolean
   errors: string[]
   issues: ProbeIssue[]
   issues_truncated: number
   warnings: string[]
   zero_results: boolean
+}
+
+export interface WorkerCommandResponse {
+  accepted: boolean
+  action: 'scrape' | 'ingestion'
+  command: string[]
+  pid: number
+}
+
+export interface ReleaseStaleLocksResponse {
+  released: number
+  older_than_seconds: number
 }
 
 export interface OfferVatSplit {

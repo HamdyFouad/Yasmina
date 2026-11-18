@@ -9,6 +9,7 @@ import json
 import logging
 import sys
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from src.repositories.catalog_repository import (
     dedupe_catalog_items,
 )
 from src.repositories.integration_repository import IntegrationRepository
+from src.repositories.worker_run_repository import WorkerRunRepository
 from src.services.approval_service import generate_keypair
 from src.services.audit_service import AuditService
 from src.services.backup_service import (
@@ -55,6 +57,7 @@ __all__ = [
     "main",
     "parse_catalog_rows",
     "purge_tokens",
+    "purge_worker_runs",
     "reclaim_dispatch_reservations",
     "seed_catalog",
 ]
@@ -499,6 +502,48 @@ async def purge_tokens(
         await dispose_engine()
 
 
+async def purge_worker_runs(
+    *,
+    settings: Settings,
+    retention_days: int | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Delete worker-run history older than the configured retention window."""
+
+    days = settings.worker_run_retention_days if retention_days is None else retention_days
+    if days < 1:
+        raise ValueError("retention_days must be positive")
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    factory = get_session_factory(settings)
+    try:
+        async with factory() as session:
+            repository = WorkerRunRepository(session)
+            if dry_run:
+                deleted = await repository.count_older_than(cutoff)
+            else:
+                deleted = await repository.delete_older_than(cutoff)
+                if deleted:
+                    await AuditService(session).append(
+                        event_type=AuditEventType.SYSTEM_WORKER_RUNS_PURGED,
+                        actor="yasmina-admin",
+                        entity_type="worker_run",
+                        entity_id="retention",
+                        payload={
+                            "retention_days": days,
+                            "cutoff": cutoff.isoformat(),
+                            "deleted": deleted,
+                        },
+                    )
+            return {
+                "retention_days": days,
+                "cutoff": cutoff.isoformat(),
+                "deleted": deleted,
+                "dry_run": dry_run,
+            }
+    finally:
+        await dispose_engine()
+
+
 async def reclaim_dispatch_reservations(
     *,
     settings: Settings,
@@ -645,6 +690,18 @@ def _parser() -> argparse.ArgumentParser:
     )
     purge.add_argument("--dry-run", action="store_true", help="count rows without deleting")
     purge.add_argument("--json", action="store_true", dest="as_json")
+    worker_purge = subparsers.add_parser(
+        "purge-worker-runs",
+        help="delete worker_runs history older than the retention window",
+    )
+    worker_purge.add_argument(
+        "--retention-days",
+        type=int,
+        default=None,
+        help="keep worker runs this many days (default: WORKER_RUN_RETENTION_DAYS)",
+    )
+    worker_purge.add_argument("--dry-run", action="store_true", help="count rows without deleting")
+    worker_purge.add_argument("--json", action="store_true", dest="as_json")
     reclaim = subparsers.add_parser(
         "reclaim-dispatch-reservations",
         help="fail n8n RFQ reservations left pending past their TTL",
@@ -759,6 +816,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"{cleanup.blocklisted_jtis} blocklisted JTIs, "
                     f"{cleanup.password_reset_tokens} password reset tokens "
                     f"(retention {cleanup.retention_days} days)"
+                )
+            return 0
+        if args.command == "purge-worker-runs":
+            purged = asyncio.run(
+                purge_worker_runs(
+                    settings=settings,
+                    retention_days=args.retention_days,
+                    dry_run=args.dry_run,
+                )
+            )
+            if args.as_json:
+                print(json.dumps(purged, indent=2, ensure_ascii=False))
+            else:
+                action = "would purge" if purged["dry_run"] else "purged"
+                print(
+                    f"{action} {purged['deleted']} worker run(s) older than "
+                    f"{purged['retention_days']} days (cutoff {purged['cutoff']})"
                 )
             return 0
         if args.command == "reclaim-dispatch-reservations":

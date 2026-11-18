@@ -1,5 +1,5 @@
-# Project Yasmina — Section 4: Domain Models, Normalization, & Enums Specification
-*(File Target: `docs/DETAILED_SPEC.md` — Referenced by root `AGENTS.md`)*
+# Project Yasmina — Sections 4-8: Domain, Workflow, Operations & Deployment Specification
+*(File Target: `docs/DETAILED_SPEC.md` — Referenced by root `AGENTS.md`; Sections 5-8 are seeded skeletons pending field-by-field expansion)*
 
 ---
 
@@ -62,5 +62,127 @@ def normalize_glove_size(raw: str | int | float | None) -> GloveSize:
   - deterministic `decimal.Decimal` parsing for German number formats (`"1.234,56"`), percentages (`"19%"` → `0.19`) and pack contents (`"à 1000 Stk"` → `1000`).
 - Normalizers are **pure functions**: no I/O, no network, no LLM calls. Unmappable values raise `NormalizationError` (a `ValueError`) instead of silently producing defaults, except where the domain explicitly defines a fallback (`GloveSize.NOT_APPLICABLE`, `StandardizedColor.UNKNOWN`, `MaterialType.NOT_APPLICABLE`, `UnitOfMeasure.NOT_APPLICABLE`).
 - Every raw extraction dictionary is passed through `normalize_raw_extraction()` before Pydantic validation; parsers and LLM nodes never instantiate domain models from raw text.
+
+---
+
+## Section 5 — Commercial Workflow & Lifecycle (skeleton)
+
+**Status:** seeded skeleton. The authoritative implementation is the Pydantic
+schemas, repositories and route handlers named below; this section will be
+expanded field-by-field once the source specification is published.
+
+**Scope:** tender intake → normalized positions → supplier quotes/RFQ →
+deterministic pricing → four-eyes approval → GAEB `.x84` export → ERPNext
+quotation outbox → invoice/credit-note lifecycle.
+
+**Invariants to preserve while expanding:**
+
+- `Tender`/`TenderItem` and `CustomerOffer` are strict Pydantic models; no raw
+  German extraction enters them before the normalizer layer.
+- Pricing is deterministic `Decimal` code in `src/services/pricing_service.py`;
+  margin, freight, pallet surcharge, MOQ rounding and VAT never depend on an LLM.
+- Approval, `.x84` export and ERPNext quotation creation require a valid Ed25519
+  signature and enforce four-eyes ownership rules.
+- Every lifecycle transition that affects billing is appended to the GoBD
+  invoice event chain; outbox work is durable and retryable.
+
+**Authoritative code:** `src/models/schemas.py`, `src/repositories/tender_repository.py`,
+`src/repositories/offer_repository.py`, `src/services/pricing_service.py`,
+`src/api/routes/tenders.py`, `src/api/routes/approvals.py`,
+`src/api/routes/offers.py`, `src/api/routes/invoices.py`,
+`src/repositories/quotation_sync_repository.py`.
+
+---
+
+## Section 6 — API, Identity & Operations Contracts (skeleton)
+
+**Status:** seeded skeleton.
+
+**Scope:** `/api/v1` route contracts, RBAC/ownership rules, four-eyes approval,
+ingestion/quarantine operations, worker-run history, manual worker commands and
+the public health surface.
+
+**Current contract highlights:**
+
+- Business routes require a bearer access token; refresh tokens are HttpOnly,
+  rotating, same-site cookies with a PostgreSQL JTI blocklist.
+- Sales users are owner-scoped for tenders/offers/invoices; approvers can read
+  offers; admin-only surfaces include users, catalogue overrides and the
+  Workers & Ingestion console.
+- `/ops/worker-runs` and `/healthz/worker_runs` are admin-only and return the
+  same paginated run payload. `/healthz/worker` remains the public snapshot.
+- `/ops/ingestion` accepts `status`, `queue` and `quarantined` filters and returns
+  filtered `count` plus global status/quarantine counts.
+- Quarantine is the dedicated `quarantined`/`quarantine_reason` state; retry and
+  discard are admin-only audited actions. Manual scrape/ingestion triggers spawn
+  detached workers and return a PID; stale locks can be released with a bounded
+  age threshold.
+- Errors use FastAPI `detail` payloads; the SPA normalizes them through
+  `src/lib/api-error.ts` and announces them with role=`alert`.
+
+**Authoritative code:** `src/api/security.py`, `src/api/deps.py`,
+`src/api/schemas.py`, `src/api/routes/*.py`, `frontend/src/lib/api-client.ts`,
+`frontend/src/lib/ops-api.ts`.
+
+---
+
+## Section 7 — Data, Compliance & Retention (skeleton)
+
+**Status:** seeded skeleton.
+
+**Scope:** PostgreSQL schema, migration discipline, audit/GoBD guarantees,
+quarantine state, retention jobs and object/artifact ownership.
+
+**Invariants:**
+
+- Schema changes ship as Alembic revisions; the CI quality gate renders offline
+  SQL and integration jobs run `alembic upgrade head` against PostgreSQL.
+- `audit_logs` is append-only and SHA-256 hash-chained. PostgreSQL triggers block
+  `UPDATE`, `DELETE` and `TRUNCATE`; secrets/tokens/recovery codes are never
+  written to payloads.
+- `invoice_events` is a separate GoBD hash chain with the same append-only
+  protections; invoice/credit numbering is gapless.
+- `tender_ingestion_jobs.quarantined` implies terminal `status = 'failed'` via a
+  check constraint. `quarantine_reason` preserves the scanner reason; discard
+  keeps the historical reason while clearing the active flag.
+- `worker_runs` is retained for `WORKER_RUN_RETENTION_DAYS` (default 90) and
+  pruned by `python -m src.admin purge-worker-runs` with an audit entry.
+- MinIO objects are referenced by key; SQL deletion does not silently delete
+  evidence, and backups remain encrypted under `BACKUP_ENCRYPTION_KEY`.
+
+**Authoritative code:** `src/models/orm.py`, `alembic/versions/*`,
+`src/services/audit_service.py`, `src/repositories/invoice_event_repository.py`,
+`src/repositories/ingestion_repository.py`, `src/admin.py`.
+
+---
+
+## Section 8 — Deployment, Observability & Verification (skeleton)
+
+**Status:** seeded skeleton.
+
+**Scope:** container images, compose/Caddy edges, CI gates, staging rollout,
+metrics/logging, E2E and live-service tests.
+
+**Current contract highlights:**
+
+- Production API image is multi-stage, non-root UID 10001 and removes package
+  managers; workers share the API image with different commands.
+- CI has seven jobs: quality, Python 3.11 tests, Python 3.12 tests, Docker,
+  frontend, security and Playwright E2E. Tests use real PostgreSQL/pgvector,
+  MinIO, ClamAV and Redis services.
+- Playwright runs against uvicorn + Vite + a signed mock n8n relay; manual worker
+  triggers are mocked so the browser suite never spawns a worker.
+- Staging deploys SHA-tagged GHCR images, runs `alembic upgrade head`, smoke-tests
+  `/healthz` + authenticated `/auth/me` and restores the previous tag on smoke
+  failure. Missing `STAGING_*` secrets intentionally skip the rollout.
+- `LOG_FORMAT=json`, `/metrics` and worker run history provide operational
+  visibility; probes and manual triggers are audited.
+- Live-service tests are opt-in with `YASMINA_TEST_DATABASE_URL`,
+  `YASMINA_TEST_REDIS_URL` and `YASMINA_TEST_SERVICES`; the CI jobs set them.
+
+**Authoritative code:** `.github/workflows/ci.yml`,
+`.github/workflows/deploy-staging.yml`, `docker-compose*.yml`, `Caddyfile*`,
+`Dockerfile*`, `scripts/deploy_staging.sh`, `scripts/smoke_test.sh`,
+`frontend/playwright.config.ts`, `tests/integration/`.
 
 ---

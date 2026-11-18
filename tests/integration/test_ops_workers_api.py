@@ -12,6 +12,7 @@ from src.api.deps import (
     get_audit_service,
     get_ingestion_job_repository,
     get_session,
+    get_worker_command_launcher,
     get_worker_run_repository,
 )
 from src.api.routes import ops as ops_routes
@@ -25,6 +26,7 @@ from src.repositories.ingestion_repository import (
 from src.repositories.worker_run_repository import WorkerRunView
 from src.scrapers.portal_config import PortalTarget
 from src.scrapers.probe import ProbePortal, ProbeReport
+from src.services.worker_command import WorkerCommandResult
 
 SETTINGS = Settings(
     _env_file=None,
@@ -99,6 +101,12 @@ def make_job(
         updated_at=datetime(2026, 2, 1, 10, 0, tzinfo=UTC),
         tender_number="E2E-DLQ",
         tender_title="E2E dead letter",
+        quarantined=bool(last_error and last_error.startswith("SECURITY:")),
+        quarantine_reason=(
+            last_error.removeprefix("SECURITY: ")
+            if last_error and last_error.startswith("SECURITY:")
+            else None
+        ),
     )
 
 
@@ -138,6 +146,25 @@ class FakeIngestion:
         self.discarded.append((job_id, reason))
         return make_job(status="skipped", last_error=reason, job_id=job.id)
 
+    async def release_stale(self, *, older_than_seconds: int) -> int:
+        return 2
+
+
+class FakeLauncher:
+    def launch_scrape(self, *, portal: str, max_pages: int | None) -> WorkerCommandResult:
+        return WorkerCommandResult(
+            action="scrape",
+            command=("python", "-m", "src.worker", "scrape", "--portal", portal),
+            pid=4242,
+        )
+
+    def launch_ingestion(self, *, limit: int) -> WorkerCommandResult:
+        return WorkerCommandResult(
+            action="ingestion",
+            command=("python", "-m", "src.worker", "process", "--limit", str(limit)),
+            pid=4343,
+        )
+
 
 def make_client() -> tuple[TestClient, FakeIngestion, FakeAudit]:
     app = create_app(SETTINGS, run_startup_checks=False)
@@ -146,6 +173,7 @@ def make_client() -> tuple[TestClient, FakeIngestion, FakeAudit]:
     app.dependency_overrides[get_session] = lambda: FakeSession()
     app.dependency_overrides[get_worker_run_repository] = lambda: FakeWorkerRuns()
     app.dependency_overrides[get_ingestion_job_repository] = lambda: ingestion
+    app.dependency_overrides[get_worker_command_launcher] = lambda: FakeLauncher()
     app.dependency_overrides[get_audit_service] = lambda: audit
     return TestClient(app), ingestion, audit
 
@@ -164,6 +192,7 @@ def test_worker_runs_and_ingestion_are_admin_only() -> None:
     assert ingestion.json()["status_counts"]["completed"] == 4
     assert ingestion.json()["quarantine_count"] == 1
     assert ingestion.json()["jobs"][0]["quarantined"] is True
+    assert ingestion.json()["jobs"][0]["quarantine_reason"] == "Eicar-Test-Signature"
     assert forbidden.status_code == 403
 
 
@@ -247,3 +276,48 @@ def test_probe_route_returns_read_only_report(monkeypatch: Any) -> None:
     assert response.json()["read_only"] is True
     assert response.json()["notices_parsed"] == 2
     assert audit.entries[-1]["event_type"].value == "SYSTEM_PORTAL_PROBED"
+
+
+def test_worker_runs_compatibility_alias_is_admin_only() -> None:
+    client, _, _ = make_client()
+    with client:
+        allowed = client.get("/healthz/worker_runs", headers=ADMIN)
+        forbidden = client.get("/healthz/worker_runs", headers=SALES)
+
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["count"] == 2
+    assert allowed.json()["runs"][0]["resource"] == "bayern"
+    assert forbidden.status_code == 403
+
+
+def test_manual_worker_triggers_and_stale_lock_release_are_audited() -> None:
+    client, _, audit = make_client()
+    with client:
+        scrape = client.post(
+            "/api/v1/ops/worker-runs/scrape",
+            json={"portal": "bayern", "max_pages": 2},
+            headers=ADMIN,
+        )
+        ingestion = client.post(
+            "/api/v1/ops/worker-runs/ingestion",
+            json={"limit": 5},
+            headers=ADMIN,
+        )
+        release = client.post(
+            "/api/v1/ops/ingestion/release-stale",
+            json={"older_than_seconds": 120},
+            headers=ADMIN,
+        )
+
+    assert scrape.status_code == 200, scrape.text
+    assert scrape.json()["accepted"] is True
+    assert scrape.json()["pid"] == 4242
+    assert ingestion.status_code == 200, ingestion.text
+    assert ingestion.json()["action"] == "ingestion"
+    assert release.status_code == 200, release.text
+    assert release.json()["released"] == 2
+    assert [entry["event_type"].value for entry in audit.entries] == [
+        "SYSTEM_WORKER_SCRAPE_TRIGGERED",
+        "SYSTEM_INGESTION_TRIGGERED",
+        "SYSTEM_INGESTION_LOCKS_RELEASED",
+    ]

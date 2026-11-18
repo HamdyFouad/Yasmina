@@ -214,6 +214,7 @@ class Settings(BaseSettings):
     scraper_max_concurrent_portals: int = Field(default=6, ge=1, le=50)
     scraper_domain_lock_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
     scraper_prefer_api: bool = True
+    worker_run_retention_days: int = Field(default=90, ge=1, le=3650)
 
     # --- HITL approval -----------------------------------------------------
     # The API signs approvals with the private key held server-side; the public

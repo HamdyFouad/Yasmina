@@ -1210,6 +1210,10 @@ class TenderIngestionJob(Base, TimestampMixin):
     )
     raw_object: Mapped[str | None] = mapped_column(String(512), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    quarantined: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    quarantine_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         CheckConstraint(
@@ -1217,7 +1221,13 @@ class TenderIngestionJob(Base, TimestampMixin):
             name="status_valid",
         ),
         CheckConstraint("attempts >= 0", name="attempts_non_negative"),
+        CheckConstraint(
+            "NOT quarantined OR status = 'failed'",
+            name="quarantine_state_valid",
+        ),
         Index("ix_tender_ingestion_jobs_status_available", "status", "available_at"),
+        Index("ix_tender_ingestion_jobs_status_locked", "status", "locked_at"),
+        Index("ix_tender_ingestion_jobs_quarantined", "quarantined"),
     )
 
 

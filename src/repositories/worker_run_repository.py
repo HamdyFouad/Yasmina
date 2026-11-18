@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.orm import WorkerRun
@@ -176,6 +176,16 @@ class WorkerRunRepository:
         if run_status is not None:
             statement = statement.where(WorkerRun.status == run_status)
         return int((await self.session.execute(statement)).scalar_one())
+
+    async def count_older_than(self, cutoff: datetime) -> int:
+        statement = select(func.count()).select_from(WorkerRun).where(WorkerRun.started_at < cutoff)
+        return int((await self.session.execute(statement)).scalar_one())
+
+    async def delete_older_than(self, cutoff: datetime) -> int:
+        statement = delete(WorkerRun).where(WorkerRun.started_at < cutoff)
+        result = await self.session.execute(statement)
+        await self.session.commit()
+        return int(getattr(result, "rowcount", 0) or 0)
 
     async def latest_by_type(self) -> dict[str, WorkerRunView]:
         latest: dict[str, WorkerRunView] = {}

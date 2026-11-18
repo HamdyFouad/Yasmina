@@ -244,6 +244,8 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
                         max_attempts=5,
                         available_at=datetime.now(UTC),
                         last_error="SECURITY: Eicar-Test-Signature",
+                        quarantined=True,
+                        quarantine_reason="Eicar-Test-Signature",
                     ),
                     WorkerRun(
                         run_type="scrape",
@@ -257,6 +259,36 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
                         errors_count=0,
                         details={"pages_fetched": 1, "source": "e2e-seed"},
                     ),
+                    WorkerRun(
+                        run_type="ingestion",
+                        resource="outbox",
+                        status="failed",
+                        worker_id="e2e-worker",
+                        started_at=datetime.now(UTC) - timedelta(minutes=10),
+                        finished_at=datetime.now(UTC) - timedelta(minutes=9),
+                        duration_ms=60_000,
+                        items_processed=1,
+                        errors_count=1,
+                        error="E2E seeded ingestion failure",
+                        details={"processed": 1, "failed": 1, "source": "e2e-seed"},
+                    ),
+                    *[
+                        WorkerRun(
+                            run_type="scrape",
+                            resource=f"e2e-extra-{index:02d}",
+                            status="succeeded",
+                            worker_id="e2e-worker",
+                            started_at=datetime.now(UTC) - timedelta(hours=index + 1),
+                            finished_at=datetime.now(UTC)
+                            - timedelta(hours=index + 1)
+                            + timedelta(seconds=30),
+                            duration_ms=30_000,
+                            items_processed=1,
+                            errors_count=0,
+                            details={"source": "e2e-seed", "page_fixture": index},
+                        )
+                        for index in range(21)
+                    ],
                 ]
             )
             await session.commit()

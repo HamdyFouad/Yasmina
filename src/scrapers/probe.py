@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+from bs4 import BeautifulSoup
 
 from src.config import Settings
 from src.scrapers.base_scraper import BaseScraper
@@ -35,7 +36,9 @@ __all__ = [
     "ProbeReport",
     "ReadOnlyStorage",
     "ReadOnlyStorageError",
+    "ZERO_POSITION_WARNING",
     "ZERO_RESULT_WARNING",
+    "count_position_rows",
     "format_probe_report",
     "probe_portal",
 ]
@@ -45,6 +48,49 @@ ZERO_RESULT_WARNING = (
     "indicates a dead start_url, an API-first change, or a heavily modified "
     "portal layout that no longer matches the configured selectors."
 )
+
+ZERO_POSITION_WARNING = (
+    "No HTML position rows were found in the parsed detail pages. The notice "
+    "metadata is valid, but line items may live in a GAEB/PDF attachment; "
+    "download that attachment in the ingestion worker to validate positions."
+)
+
+_POSITION_HEADER_TOKENS = (
+    "pos",
+    "position",
+    "menge",
+    "einheit",
+    "leistung",
+    "artikel",
+    "bezeichnung",
+    "preis",
+)
+
+
+def count_position_rows(html: str) -> int:
+    """Count tender line items in an HTML detail page.
+
+    Portals expose positions inconsistently. We only trust a table whose header
+    contains at least two position-ish columns (for example Position/Menge or
+    Leistung/Einheit) and count its data rows. Attachment-only positions are
+    intentionally out of scope for the read-only probe because parsing a GAEB
+    or PDF without ClamAV would violate the ingestion security gate.
+    """
+
+    soup = BeautifulSoup(html, "html.parser")
+    best = 0
+    for table in soup.find_all("table"):
+        header_text = " ".join(cell.get_text(" ", strip=True).casefold() for cell in table.find_all("th"))
+        if sum(token in header_text for token in _POSITION_HEADER_TOKENS) < 2:
+            continue
+        rows = table.select("tbody tr") or table.find_all("tr")
+        count = 0
+        for row in rows:
+            cells = row.find_all(["td", "th"])
+            if row.find("td") is not None and len(cells) >= 2:
+                count += 1
+        best = max(best, count)
+    return best
 
 
 class ReadOnlyStorageError(RuntimeError):
@@ -101,10 +147,17 @@ class ProbeReport:
     warnings: tuple[str, ...]
     elapsed_seconds: float
     probed_at: datetime
+    detail_pages_parsed: int = 0
+    positions_parsed: int = 0
+    notices_with_positions: int = 0
 
     @property
     def zero_results(self) -> bool:
         return self.notices_parsed == 0
+
+    @property
+    def zero_positions(self) -> bool:
+        return self.notices_parsed > 0 and self.positions_parsed == 0
 
     @property
     def read_only(self) -> bool:
@@ -126,6 +179,10 @@ class ProbeReport:
                 "stale": self.skipped_stale,
             },
             "details_fetched": self.details_fetched,
+            "detail_pages_parsed": self.detail_pages_parsed,
+            "positions_parsed": self.positions_parsed,
+            "notices_with_positions": self.notices_with_positions,
+            "zero_positions": self.zero_positions,
             "errors": list(self.errors),
             "issues": [
                 {"url": issue.url, "code": issue.code, "message": issue.message} for issue in self.issues
@@ -141,6 +198,7 @@ def _warnings(
     target: PortalTarget,
     notices_discovered: int,
     notices_parsed: int,
+    positions_parsed: int,
     skipped_cpv: int,
 ) -> tuple[str, ...]:
     warnings: list[str] = []
@@ -161,6 +219,8 @@ def _warnings(
                 "Cards were parsed but rejected as incomplete; inspect the extraction "
                 "issues below (deadline, title, client or CPV selectors)."
             )
+    elif positions_parsed == 0:
+        warnings.append(ZERO_POSITION_WARNING)
     if target.api is not None:
         warnings.append(
             "This portal configures an API feed that the worker prefers over HTML; the "
@@ -206,11 +266,38 @@ async def probe_portal(
 
     started = time.monotonic()
     report = await scraper.scrape(max_pages=max_pages)
-    elapsed = time.monotonic() - started
 
     diagnostics = getattr(scraper, "last_diagnostics", None)
     if not isinstance(diagnostics, DiscoveryDiagnostics):
         diagnostics = DiscoveryDiagnostics(cards_seen=report.count, details_fetched=0)
+
+    # The listing engine only fetches a detail page when required to complete a
+    # card. Probe accuracy needs every parsed tender's detail page so operators
+    # can see HTML-visible position rows, not just notice counts.
+    detail_pages_parsed = 0
+    positions_parsed = 0
+    notices_with_positions = 0
+    errors = list(report.errors)
+    position_issues: list[DiscoveryIssue] = []
+    for tender in report.discovered:
+        try:
+            detail_page = await scraper.fetch(tender.detail_url, archive=False)
+        except Exception as exc:
+            errors.append(f"{tender.detail_url}: position detail fetch failed: {exc}")
+            position_issues.append(
+                DiscoveryIssue(
+                    url=tender.detail_url,
+                    code="position_detail_failed",
+                    message=f"position detail fetch failed: {exc}",
+                )
+            )
+            continue
+        detail_pages_parsed += 1
+        count = count_position_rows(detail_page.text)
+        if count > 0:
+            positions_parsed += count
+            notices_with_positions += 1
+    elapsed = time.monotonic() - started
 
     return ProbeReport(
         portal=ProbePortal(
@@ -229,13 +316,17 @@ async def probe_portal(
         skipped_invalid=report.skipped_invalid,
         skipped_stale=report.skipped_stale,
         details_fetched=diagnostics.details_fetched,
-        errors=report.errors,
-        issues=diagnostics.issues,
+        detail_pages_parsed=detail_pages_parsed,
+        positions_parsed=positions_parsed,
+        notices_with_positions=notices_with_positions,
+        errors=tuple(errors),
+        issues=(*diagnostics.issues, *position_issues),
         issues_truncated=diagnostics.issues_truncated,
         warnings=_warnings(
             target=target,
             notices_discovered=diagnostics.cards_seen,
             notices_parsed=report.count,
+            positions_parsed=positions_parsed,
             skipped_cpv=report.skipped_cpv,
         ),
         elapsed_seconds=elapsed,
@@ -270,6 +361,11 @@ def format_probe_report(report: ProbeReport) -> str:
             f"skipped cpv={report.skipped_cpv} invalid={report.skipped_invalid} "
             f"stale={report.skipped_stale}"
         ),
+        (
+            f"detail pages parsed: {report.detail_pages_parsed} | "
+            f"notices with positions: {report.notices_with_positions} | "
+            f"position rows: {report.positions_parsed}"
+        ),
     ]
 
     if report.errors:
@@ -293,9 +389,11 @@ def format_probe_report(report: ProbeReport) -> str:
     lines.append(
         "result: "
         + (
-            "OK - notices parsed"
-            if not report.zero_results
+            "OK - notices and position rows parsed"
+            if not report.zero_results and not report.zero_positions
             else "ZERO RESULTS - nothing parsed (see warning above)"
+            if report.zero_results
+            else "NOTICES PARSED - no HTML position rows found (see warning above)"
         )
     )
     return "\n".join(lines)

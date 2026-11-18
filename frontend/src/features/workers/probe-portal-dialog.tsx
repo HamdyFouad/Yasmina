@@ -86,7 +86,8 @@ export function ProbePortalDialog({
           <DialogTitle>Run portal probe</DialogTitle>
           <DialogDescription>
             Fetches one configured portal read-only: no database writes, no MinIO archive, no
-            ingestion job. Use it to diagnose empty scrapes and selector regressions.
+            ingestion job. It parses detail pages for HTML-visible position rows and reports
+            extraction diagnostics.
           </DialogDescription>
         </DialogHeader>
 
@@ -162,11 +163,17 @@ export function ProbePortalDialog({
               </div>
 
               <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <Metric label="Discovered" value={report.notices_discovered} />
-                <Metric label="Parsed" value={report.notices_parsed} />
-                <Metric label="Pages" value={report.pages_fetched} />
-                <Metric label="Details" value={report.details_fetched} />
+                <Metric label="Notices discovered" value={report.notices_discovered} />
+                <Metric label="Notices parsed" value={report.notices_parsed} />
+                <Metric label="Detail pages" value={report.detail_pages_parsed} />
+                <Metric label="Position rows" value={report.positions_parsed} />
               </dl>
+
+              <p className="text-xs text-muted-foreground">
+                {report.notices_with_positions.toLocaleString('de-DE')} notice(s) exposed
+                HTML position rows; {report.details_fetched.toLocaleString('de-DE')} detail page(s)
+                were fetched during discovery.
+              </p>
 
               <dl className="grid grid-cols-3 gap-3 text-xs">
                 <Metric label="CPV skipped" value={report.skipped.cpv} />
@@ -181,6 +188,16 @@ export function ProbePortalDialog({
                 >
                   Zero results: the probe completed but parsed no notices. Check the start URL,
                   API preference, robots enforcement and selectors.
+                </p>
+              ) : null}
+
+              {report.zero_positions ? (
+                <p
+                  role="status"
+                  className="rounded-md border border-warning/40 bg-warning/5 p-2 text-xs text-warning"
+                >
+                  No HTML position rows were found. Line items may be inside a GAEB/PDF
+                  attachment that the ingestion worker validates separately.
                 </p>
               ) : null}
 

@@ -1,8 +1,9 @@
 # Inference Notes — Domain & Service Assumptions
 
-Sections 5–8 of `docs/DETAILED_SPEC.md` (field-by-field schemas and pricing
-rules) are not yet published. This file records the contract inferred for the
-P0 foundation and the P1 parsers/pricing/matching services so it can be
+Sections 5–8 of `docs/DETAILED_SPEC.md` are seeded skeletons (scope, invariants
+and authoritative implementation pointers) and will be expanded as the
+remaining specification is published. This file records the contract inferred
+for the P0 foundation and the P1 parsers/pricing/matching services so it can be
 reconciled with the authoritative spec later.
 
 ## Conventions
@@ -820,7 +821,8 @@ for deterministic fixture and chain-verification tests.
   ClamAV INSTREAM, and only then written to the ingestion work directory. A
   scanner/connection error fails closed and leaves the job retryable; a
   positive scan discards the bytes before Docling/pyGAEB, marks the
-  `TenderIngestionJob` terminal `failed` with a `SECURITY:` error, and appends
+  `TenderIngestionJob` terminal `failed` with `quarantined=true`,
+  `quarantine_reason` and a `SECURITY:` error, and appends
   `SYSTEM_SECURITY_ALERT` to the hash-chained audit log. The audit payload
   contains the filename/object key/signature/job/portal, never file bytes.
 - Malware rejections count as hard failures for the run record so operators
@@ -1250,15 +1252,15 @@ for deterministic fixture and chain-verification tests.
   are newest-first; the page refreshes every 60 seconds and offers a manual
   Refresh. The worker-run table reuses the container-query `.stacked-table`
   pattern, so it becomes labelled cards inside a narrow container.
-- **Ingestion state model.** The console requests the newest 200 jobs from
-  `GET /ops/ingestion` (the endpoint default is 100) joined to their tender plus
-  global `status_counts`, `count` and `quarantine_count`. Quarantine is derived
-  from terminal state (`status = "failed"` **and** `last_error` starts with
-  `SECURITY:`), matching `TenderIngestionJobRepository.security_fail`. The
-  console splits the returned rows into pending/processing, quarantined and
-  dead-letter groups; the dead-letter KPI is
-  `status_counts.failed - quarantine_count` so it is not limited by the page
-  size.
+- **Ingestion state model.** The console requests the newest 20 jobs per table
+  from `GET /ops/ingestion` (the endpoint default is 100) joined to their tender
+  plus global `status_counts`, `count` and `quarantine_count`. P8.3 originally
+  derived quarantine from terminal state plus a `SECURITY:` prefix; P8.4 replaces
+  that with the dedicated flag/reason documented below. The console queries
+  pending/processing (`queue=true`), quarantine (`quarantined=true`) and
+  dead-letter (`status=failed&quarantined=false`) independently; the
+  dead-letter KPI remains `status_counts.failed - quarantine_count` so it is not
+  limited by the page size.
 - **Retry semantics.** `POST /ops/ingestion/{job_id}/retry` accepts only a
   terminal `failed` job. It sets `pending`, `attempts = 0`, `available_at = now`,
   clears both lock fields and clears `last_error`, then audits
@@ -1282,10 +1284,63 @@ for deterministic fixture and chain-verification tests.
   returns `502` and an unknown portal `404`.
 - **Seed fixtures and E2E.** `scripts/seed_e2e.py` adds a quarantine-only tender
   (`E2E-QTN-<suffix>`), a failed malware job with
-  `SECURITY: Eicar-Test-Signature`, a dead-letter failed job for the existing
-  tender (`E2E seeded dead-letter: parser failed`) and a succeeded `bayern`
-  worker run. `operations.spec.ts` asserts the admin page, the run row,
-  quarantine/DLQ rows, cancel-first focus, the retry → queue and discard →
-  closed-out transitions, and the probe dialog (including Escape close). It then
-  logs in as the seeded sales user and approver, asserts the nav link is absent
-  and that `/ops/workers` redirects to `/` Overview in both contexts.
+  `SECURITY: Eicar-Test-Signature` plus `quarantined=true`/reason, a dead-letter
+  failed job for the existing tender (`E2E seeded dead-letter: parser failed`) and
+  succeeded/failed worker runs. `operations.spec.ts` asserts the admin page,
+  server-side run filtering/pagination, the run-detail drawer, quarantine/DLQ
+  rows, cancel-first focus, the retry → queue and discard → closed-out
+  transitions, mocked manual worker actions and the probe dialog (including
+  Escape close). It then logs in as the seeded sales user and approver, asserts
+  the nav link is absent and that `/ops/workers` redirects to `/` Overview in
+  both contexts.
+
+## Operations hardening assumptions (P8.4)
+
+- **Dedicated quarantine state.** Migration `0017` adds `quarantined BOOLEAN
+  NOT NULL DEFAULT false`, `quarantine_reason TEXT`, an index and the invariant
+  `NOT quarantined OR status = 'failed'`. Existing failed rows with a
+  `SECURITY:` error are backfilled, with the prefix stripped from the stored
+  reason. `last_error` keeps the historical `SECURITY: ...` text for operator
+  continuity. Retry clears the flag/reason/last error; discard keeps the reason
+  as history, clears the active flag and moves the job to `skipped`.
+- **Worker-run retention.** `WORKER_RUN_RETENTION_DAYS` defaults to 90.
+  `python -m src.admin purge-worker-runs [--retention-days N] [--dry-run]
+  [--json]` counts or deletes `worker_runs` older than the cutoff and audits
+  `SYSTEM_WORKER_RUNS_PURGED` on a real purge. Deletion is by `started_at`;
+  running rows are not special-cased.
+- **Probe positions.** The probe still distinguishes listing cards from parsed
+  notices, then fetches every parsed tender's detail page read-only and counts
+  rows in an HTML table whose header has at least two position-like columns
+  (`Position`, `Leistung`, `Menge`, `Einheit`, `Artikel`, `Preis`, ...). This is
+  deliberately an HTML-visible count: attachment-only GAEB/PDF positions are not
+  parsed without the mandatory ClamAV gate. `zero_positions` and a warning make
+  that limitation explicit. `detail_pages_parsed`, `positions_parsed` and
+  `notices_with_positions` are part of the JSON/CLI/UI contract.
+- **Manual worker triggers.** `POST /ops/worker-runs/scrape` and
+  `/ops/worker-runs/ingestion` validate the admin request, then spawn a detached
+  `python -m src.worker ...` process (`start_new_session` on POSIX) and return
+  the PID immediately. Portal advisory locks still prevent overlapping portal
+  scrapes. Unknown portals return `404`, disabled targets `409`; spawn/catalogue
+  failures return `503`. Both actions and
+  `POST /ops/ingestion/release-stale` are audited.
+- **Stale locks.** `POST /ops/ingestion/release-stale` resets `processing` jobs
+  whose `locked_at` is NULL or older than `older_than_seconds` (default 900,
+  range 60–86400), refunds one attempt, makes them pending and clears both lock
+  fields. Portal/domain advisory locks release on connection close; this endpoint
+  targets the durable ingestion row state, not Redis/PostgreSQL locks.
+- **Pagination/filter contract.** `/ops/worker-runs` already filtered by
+  `run_type` and `status`. `/ops/ingestion` adds `queue=true|false` so the UI can
+  request pending+processing independently from quarantine (`quarantined=true`)
+  and dead-letter (`status=failed&quarantined=false`) tables. Each response
+  carries its filtered `count` plus global `status_counts` and
+  `quarantine_count` for the KPI cards. The UI requests 20 rows per table and
+  uses the response count for Previous/Next.
+- **Compatibility alias.** Admin-only `GET /healthz/worker_runs` returns the same
+  paginated payload as `/ops/worker-runs`. The public `/healthz/worker` snapshot
+  remains unchanged for uptime probes; the alias does not expose run rows without
+  authentication.
+- **Live database coverage.** `tests/integration/test_ingestion_outbox_db.py`
+  now verifies real PostgreSQL retry/discard commits, quarantine flag/reason
+  transitions, stale-lock release and worker-run retention. `test_ops_workers_api`
+  covers the admin alias, trigger audit events and release endpoint with mocked
+  dependencies; E2E mocks the trigger endpoints so it never spawns a process.

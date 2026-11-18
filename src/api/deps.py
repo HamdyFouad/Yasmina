@@ -34,6 +34,7 @@ from src.repositories.user_repository import (
 )
 from src.repositories.worker_run_repository import WorkerRunRepository
 from src.services.audit_service import AuditService
+from src.services.worker_command import WorkerCommandLauncher
 from src.services.worker_metrics import WorkerHealthService
 
 __all__ = [
@@ -62,6 +63,7 @@ __all__ = [
     "get_token_blocklist_repository",
     "get_user_repository",
     "get_worker_health_service",
+    "get_worker_command_launcher",
     "get_worker_run_repository",
     "get_workflow_checkpointer",
     "require_roles",
@@ -236,6 +238,12 @@ def get_worker_run_repository(
     session: AsyncSession = Depends(get_session),
 ) -> WorkerRunRepository:
     return WorkerRunRepository(session)
+
+
+def get_worker_command_launcher(
+    settings: Settings = Depends(get_app_settings),
+) -> WorkerCommandLauncher:
+    return WorkerCommandLauncher(settings)
 
 
 def get_credit_note_repository(

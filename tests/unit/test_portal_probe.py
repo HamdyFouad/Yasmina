@@ -16,11 +16,13 @@ from src.scrapers.base_scraper import BaseScraper
 from src.scrapers.models import DiscoveryIssue
 from src.scrapers.portal_config import PortalApiConfig, PortalTarget
 from src.scrapers.probe import (
+    ZERO_POSITION_WARNING,
     ZERO_RESULT_WARNING,
     ProbePortal,
     ProbeReport,
     ReadOnlyStorage,
     ReadOnlyStorageError,
+    count_position_rows,
     format_probe_report,
     probe_portal,
 )
@@ -47,6 +49,24 @@ DETAIL_WITHOUT_DEADLINE = """<!doctype html>
   <h1>Nitrilhandschuhe Klinikum</h1>
   <p>Auftraggeber: Klinikum Nord</p>
   <p>CPV: 33141420-0</p>
+</body></html>"""
+
+DETAIL_WITH_POSITIONS = """<!doctype html>
+<html><body>
+  <h1>Toilettenpapier Rahmenvertrag</h1>
+  <table>
+    <thead><tr><th>Position</th><th>Leistung</th><th>Menge</th><th>Einheit</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Toilettenpapier 3-lagig</td><td>1200</td><td>Karton</td></tr>
+      <tr><td>2</td><td>Papierhandtücher</td><td>800</td><td>Karton</td></tr>
+    </tbody>
+  </table>
+</body></html>"""
+
+DETAIL_WITHOUT_POSITIONS = """<!doctype html>
+<html><body>
+  <h1>Toilettenpapier Rahmenvertrag</h1>
+  <p>Die Leistungsbeschreibung befindet sich in der beigefügten GAEB-Datei.</p>
 </body></html>"""
 
 EMPTY_LISTING = """<!doctype html>
@@ -85,6 +105,7 @@ def make_target(**overrides: Any) -> PortalTarget:
 def make_transport(
     *,
     listing: str = LISTING_HTML,
+    detail_one: str = DETAIL_WITH_POSITIONS,
 ) -> tuple[httpx.MockTransport, list[httpx.Request]]:
     requests: list[httpx.Request] = []
 
@@ -96,6 +117,12 @@ def make_transport(
             return httpx.Response(200, text="User-agent: *\nAllow: /\n")
         if request.url.path == "/listing":
             return httpx.Response(200, text=listing, headers={"Content-Type": "text/html; charset=utf-8"})
+        if request.url.path == "/detail/1":
+            return httpx.Response(
+                200,
+                text=detail_one,
+                headers={"Content-Type": "text/html; charset=utf-8"},
+            )
         if request.url.path == "/detail/2":
             return httpx.Response(
                 200,
@@ -120,6 +147,10 @@ async def test_probe_parses_first_page_and_reports_extraction_issues() -> None:
     assert report.notices_discovered == 2
     assert report.notices_parsed == 1
     assert report.details_fetched == 1
+    assert report.detail_pages_parsed == 1
+    assert report.positions_parsed == 2
+    assert report.notices_with_positions == 1
+    assert report.zero_positions is False
     assert report.skipped_invalid == 1
     assert report.skipped_cpv == 0
     assert report.zero_results is False
@@ -135,6 +166,7 @@ async def test_probe_parses_first_page_and_reports_extraction_issues() -> None:
     assert paths[0] == "/robots.txt"
     assert "/listing" in paths
     assert "/detail/2" in paths
+    assert "/detail/1" in paths
     # Archiving and attachment harvesting are forced off for the probe.
     assert all(request.method == "GET" for request in requests)
 
@@ -143,6 +175,9 @@ async def test_probe_parses_first_page_and_reports_extraction_issues() -> None:
     assert payload["notices_discovered"] == 2
     assert payload["notices_parsed"] == 1
     assert payload["skipped"] == {"cpv": 0, "invalid": 1, "stale": 0}
+    assert payload["positions_parsed"] == 2
+    assert payload["notices_with_positions"] == 1
+    assert payload["zero_positions"] is False
     assert payload["portal"] == {
         "id": "probe-portal",
         "name": "Probe Portal",
@@ -174,6 +209,29 @@ def test_read_only_storage_refuses_writes() -> None:
 
     with pytest.raises(ReadOnlyStorageError, match="read-only"):
         asyncio.run(storage.put_bytes("probe/raw.html", b"<html/>", "text/html"))
+
+
+def test_position_counter_requires_a_position_table() -> None:
+    assert count_position_rows(DETAIL_WITH_POSITIONS) == 2
+    assert count_position_rows("<table><tr><td>1</td><td>ignored</td></tr></table>") == 0
+
+
+async def test_probe_warns_when_no_position_rows_are_visible() -> None:
+    transport, _ = make_transport(detail_one=DETAIL_WITHOUT_POSITIONS)
+    async with httpx.AsyncClient(transport=transport) as http:
+        report = await probe_portal(make_target(), make_settings(), client=http)
+
+    assert report.notices_parsed == 1
+    assert report.positions_parsed == 0
+    assert report.zero_positions is True
+    assert ZERO_POSITION_WARNING in report.warnings
+    assert ZERO_POSITION_WARNING in format_probe_report(report)
+
+    empty_transport, _ = make_transport(listing=EMPTY_LISTING)
+    async with httpx.AsyncClient(transport=empty_transport) as http:
+        empty = await probe_portal(make_target(), make_settings(), client=http)
+    assert empty.zero_results is True
+    assert empty.positions_parsed == 0
 
 
 async def test_probe_warns_about_zero_results() -> None:

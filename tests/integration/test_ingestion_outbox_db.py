@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import delete
@@ -47,8 +47,8 @@ def make_tender() -> Tender:
     suffix = datetime.now(UTC).strftime("%H%M%S%f")
     return Tender(
         tender_number=f"OUTBOX-{suffix}",
-        title="Rahmenvertrag Hygiene",
-        client_name="Stadt Muster",
+        title=f"Rahmenvertrag Hygiene {suffix}",
+        client_name=f"Stadt Muster {suffix}",
         procedure=ProcurementProcedure.OPEN_PROCEDURE,
         source_format=TenderSourceFormat.PORTAL,
         submission_deadline=NOW,
@@ -131,6 +131,110 @@ async def test_outbox_failure_returns_job_to_pending_until_attempt_limit() -> No
         await dispose_engine()
 
 
+async def test_retry_and_discard_commit_quarantine_state() -> None:
+    factory = get_session_factory(settings())
+    retry_tender = make_tender()
+    discard_tender = make_tender()
+    retry_job = None
+    discard_job = None
+    try:
+        async with factory() as session:
+            repository = TenderRepository(session)
+            jobs = TenderIngestionJobRepository(session)
+            retry_stored = await repository.save(retry_tender, commit=False)
+            retry_job, _ = await jobs.enqueue(
+                retry_stored.tender.id,
+                portal_name="vergabe.bayern",
+                commit=False,
+            )
+            discard_stored = await repository.save(discard_tender, commit=False)
+            discard_job, _ = await jobs.enqueue(
+                discard_stored.tender.id,
+                portal_name="vergabe.bayern",
+                commit=False,
+            )
+            await session.commit()
+            await jobs.security_fail(retry_job.id, "Eicar-Test-Signature")
+            await jobs.security_fail(discard_job.id, "Eicar-Test-Signature")
+            quarantined = await jobs.list_jobs(quarantined=True, limit=10)
+            assert {view.id for view in quarantined} == {retry_job.id, discard_job.id}
+
+        async with factory() as session:
+            jobs = TenderIngestionJobRepository(session)
+            retried = await jobs.retry_failed(retry_job.id)
+            assert retried.status == "pending"
+            assert retried.attempts == 0
+            assert retried.quarantined is False
+            assert retried.quarantine_reason is None
+            assert retried.last_error is None
+
+            discarded = await jobs.discard(discard_job.id, "closed by operator")
+            assert discarded.status == "skipped"
+            assert discarded.quarantined is False
+            assert discarded.quarantine_reason == "Eicar-Test-Signature"
+            assert discarded.last_error == "closed by operator"
+
+        async with factory() as session:
+            retry_row = await session.get(TenderIngestionJob, retry_job.id)
+            discard_row = await session.get(TenderIngestionJob, discard_job.id)
+            assert retry_row is not None
+            assert retry_row.status == "pending"
+            assert retry_row.quarantined is False
+            assert retry_row.quarantine_reason is None
+            assert retry_row.last_error is None
+            assert discard_row is not None
+            assert discard_row.status == "skipped"
+            assert discard_row.quarantined is False
+            assert discard_row.last_error == "closed by operator"
+            await session.execute(delete(TenderIngestionJob).where(TenderIngestionJob.id == retry_job.id))
+            await session.execute(delete(TenderIngestionJob).where(TenderIngestionJob.id == discard_job.id))
+            await session.execute(delete(TenderORM).where(TenderORM.id == retry_tender.id))
+            await session.execute(delete(TenderORM).where(TenderORM.id == discard_tender.id))
+            await session.commit()
+    finally:
+        await dispose_engine()
+
+
+async def test_stale_processing_locks_are_released() -> None:
+    factory = get_session_factory(settings())
+    tender = make_tender()
+    job = None
+    try:
+        async with factory() as session:
+            repository = TenderRepository(session)
+            jobs = TenderIngestionJobRepository(session)
+            stored = await repository.save(tender, commit=False)
+            job, _ = await jobs.enqueue(
+                stored.tender.id,
+                portal_name="vergabe.bayern",
+                commit=False,
+            )
+            await session.commit()
+            claimed = await jobs.claim_pending(limit=1, worker_id="live-test")
+            assert claimed and claimed[0].attempts == 1
+            row = await session.get(TenderIngestionJob, job.id)
+            assert row is not None
+            row.locked_at = datetime.now(UTC) - timedelta(hours=1)
+            await session.commit()
+
+        async with factory() as session:
+            jobs = TenderIngestionJobRepository(session)
+            assert await jobs.release_stale(older_than_seconds=60) == 1
+
+        async with factory() as session:
+            released = await session.get(TenderIngestionJob, job.id)
+            assert released is not None
+            assert released.status == "pending"
+            assert released.attempts == 0
+            assert released.locked_at is None
+            assert released.locked_by is None
+            await session.execute(delete(TenderIngestionJob).where(TenderIngestionJob.id == job.id))
+            await session.execute(delete(TenderORM).where(TenderORM.id == tender.id))
+            await session.commit()
+    finally:
+        await dispose_engine()
+
+
 async def test_portal_advisory_lock_is_exclusive_per_portal() -> None:
     current = settings()
     engine = get_engine(current)
@@ -177,6 +281,37 @@ async def test_worker_run_history_records_counts_and_duration() -> None:
             assert counts["succeeded"] >= 1
 
             await session.execute(delete(WorkerRun).where(WorkerRun.id == started.id))
+            await session.commit()
+    finally:
+        await dispose_engine()
+
+
+async def test_worker_run_retention_deletes_old_runs() -> None:
+    factory = get_session_factory(settings())
+    old_started = datetime.now(UTC) - timedelta(days=120)
+    cutoff = datetime.now(UTC) - timedelta(days=90)
+    try:
+        async with factory() as session:
+            runs = WorkerRunRepository(session)
+            old = await runs.start(
+                run_type="scrape",
+                resource="retention-old",
+                worker_id="live-test",
+                started_at=old_started,
+            )
+            fresh = await runs.start(
+                run_type="scrape",
+                resource="retention-fresh",
+                worker_id="live-test",
+            )
+            assert await runs.count_older_than(cutoff) >= 1
+            deleted = await runs.delete_older_than(cutoff)
+            assert deleted >= 1
+
+        async with factory() as session:
+            assert await session.get(WorkerRun, old.id) is None
+            assert await session.get(WorkerRun, fresh.id) is not None
+            await session.execute(delete(WorkerRun).where(WorkerRun.id == fresh.id))
             await session.commit()
     finally:
         await dispose_engine()

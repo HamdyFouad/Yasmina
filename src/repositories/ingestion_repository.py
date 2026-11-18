@@ -42,10 +42,8 @@ class IngestionJobView:
     updated_at: datetime | None = None
     tender_number: str | None = None
     tender_title: str | None = None
-
-    @property
-    def quarantined(self) -> bool:
-        return self.status == "failed" and bool((self.last_error or "").startswith("SECURITY:"))
+    quarantined: bool = False
+    quarantine_reason: str | None = None
 
 
 def _loaded(row: TenderIngestionJob, name: str) -> Any:
@@ -83,6 +81,8 @@ def _job_view(
         updated_at=_loaded(row, "updated_at"),
         tender_number=tender_number,
         tender_title=tender_title,
+        quarantined=bool(_loaded(row, "quarantined")),
+        quarantine_reason=_loaded(row, "quarantine_reason"),
     )
 
 
@@ -232,6 +232,8 @@ class TenderIngestionJobRepository:
         row.locked_at = None
         row.locked_by = None
         row.last_error = f"SECURITY: {error}"[:8000]
+        row.quarantined = True
+        row.quarantine_reason = error[:8000]
         await self.session.commit()
 
     async def release(self, job_id: UUID, *, now: datetime | None = None) -> None:
@@ -276,6 +278,7 @@ class TenderIngestionJobRepository:
         *,
         status_filter: str | None = None,
         quarantined: bool | None = None,
+        queue: bool | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[IngestionJobView]:
@@ -291,17 +294,13 @@ class TenderIngestionJobRepository:
         if status_filter is not None:
             statement = statement.where(TenderIngestionJob.status == status_filter)
         if quarantined is True:
-            statement = statement.where(
-                TenderIngestionJob.status == "failed",
-                TenderIngestionJob.last_error.like("SECURITY:%"),
-            )
+            statement = statement.where(TenderIngestionJob.quarantined.is_(True))
         elif quarantined is False:
-            statement = statement.where(
-                or_(
-                    TenderIngestionJob.last_error.is_(None),
-                    TenderIngestionJob.last_error.not_like("SECURITY:%"),
-                )
-            )
+            statement = statement.where(TenderIngestionJob.quarantined.is_(False))
+        if queue is True:
+            statement = statement.where(TenderIngestionJob.status.in_(("pending", "processing")))
+        elif queue is False:
+            statement = statement.where(TenderIngestionJob.status.not_in(("pending", "processing")))
         rows = (await self.session.execute(statement)).all()
         return [
             _job_view(job, tender_number=tender_number, tender_title=title)
@@ -313,22 +312,19 @@ class TenderIngestionJobRepository:
         *,
         status_filter: str | None = None,
         quarantined: bool | None = None,
+        queue: bool | None = None,
     ) -> int:
         statement = select(func.count()).select_from(TenderIngestionJob)
         if status_filter is not None:
             statement = statement.where(TenderIngestionJob.status == status_filter)
         if quarantined is True:
-            statement = statement.where(
-                TenderIngestionJob.status == "failed",
-                TenderIngestionJob.last_error.like("SECURITY:%"),
-            )
+            statement = statement.where(TenderIngestionJob.quarantined.is_(True))
         elif quarantined is False:
-            statement = statement.where(
-                or_(
-                    TenderIngestionJob.last_error.is_(None),
-                    TenderIngestionJob.last_error.not_like("SECURITY:%"),
-                )
-            )
+            statement = statement.where(TenderIngestionJob.quarantined.is_(False))
+        if queue is True:
+            statement = statement.where(TenderIngestionJob.status.in_(("pending", "processing")))
+        elif queue is False:
+            statement = statement.where(TenderIngestionJob.status.not_in(("pending", "processing")))
         return int((await self.session.execute(statement)).scalar_one())
 
     async def quarantine_count(self) -> int:
@@ -348,6 +344,8 @@ class TenderIngestionJobRepository:
         row.locked_at = None
         row.locked_by = None
         row.last_error = None
+        row.quarantined = False
+        row.quarantine_reason = None
         await self.session.commit()
         return _job_view(row)
 
@@ -363,8 +361,50 @@ class TenderIngestionJobRepository:
         row.locked_at = None
         row.locked_by = None
         row.last_error = reason[:8000]
+        # Keep the quarantine reason as history, but the job is no longer an
+        # active quarantine once an operator has closed it out.
+        row.quarantined = False
         await self.session.commit()
         return _job_view(row)
+
+    async def release_stale(
+        self,
+        *,
+        older_than_seconds: int = 900,
+        now: datetime | None = None,
+    ) -> int:
+        """Reset processing jobs whose worker lock has gone stale."""
+
+        if older_than_seconds < 1:
+            raise IngestionRepositoryError("older_than_seconds must be positive")
+        current = now or datetime.now(UTC)
+        cutoff = current - timedelta(seconds=older_than_seconds)
+        rows = (
+            (
+                await self.session.execute(
+                    select(TenderIngestionJob)
+                    .where(
+                        TenderIngestionJob.status == "processing",
+                        or_(
+                            TenderIngestionJob.locked_at.is_(None),
+                            TenderIngestionJob.locked_at < cutoff,
+                        ),
+                    )
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            row.status = "pending"
+            row.attempts = max(0, row.attempts - 1)
+            row.available_at = current
+            row.locked_at = None
+            row.locked_by = None
+        if rows:
+            await self.session.commit()
+        return len(rows)
 
 
 class ScraperStateRepository:

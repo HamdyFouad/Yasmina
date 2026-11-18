@@ -35,3 +35,5 @@ def test_job_view_uses_only_already_loaded_columns() -> None:
     assert view.last_error is None
     assert view.created_at is None
     assert view.updated_at is None
+    assert view.quarantined is False
+    assert view.quarantine_reason is None

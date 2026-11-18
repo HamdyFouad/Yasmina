@@ -43,7 +43,12 @@ waste bags across all thicknesses, volumes and colour standards.
 > dashboard quote entry, RFQ dispatch, persisted-quote offer pricing, and a
 > sales → approver → `.x84` browser flow. P8.2b verifies the cryptographic n8n
 > handshake in CI with a signed mock relay, covers pending-TTL recovery, and
-> ships the deployable n8n RFQ → supplier-quote workflow template.
+> ships the deployable n8n RFQ → supplier-quote workflow template. P8.3 adds the
+> admin-only Workers & Ingestion console (run history, quarantine/DLQ queues,
+> retry/discard and a read-only portal probe); P8.4 hardens it with a dedicated
+> quarantine state, HTML position counts, server-side pagination/filtering, run
+> detail drawers, manual worker triggers, stale-lock recovery, the
+> `/healthz/worker_runs` alias and worker-run retention.
 
 ---
 
@@ -111,7 +116,7 @@ src/
       offers.py          # owner-aware offer retrieval
       invoices.py        # invoice list/detail, payments, credit notes, event chain
       integrations.py    # n8n RFQ dispatch + signed quote callback
-      ops.py             # /healthz/worker run history + outbox metrics
+      ops.py             # worker/ingestion operations, health snapshot + outbox metrics
   repositories/
     tender_repository.py # PostgreSQL tender/position persistence + owner
     offer_repository.py  # offer lines, artifacts and ERPNext names
@@ -325,9 +330,10 @@ authoritative totals, VAT breakdown, credit notes, document downloads and the
 verified GoBD event timeline, the admin-only credit-note
 dialog, the Operations → Outbox console where admins/approvers retry failed ERPNext
 quotation jobs and jump to the linked offer, and the admin-only Operations →
-Workers & Ingestion console with worker-run history, ingestion queue health,
-quarantine/dead-letter tables, retry/discard confirmations and a read-only portal
-probe. The Offers workspace with
+Workers & Ingestion console with paginated/filterable worker-run history,
+ingestion queue health, server-side quarantine/dead-letter tables, retry/discard
+confirmations, run-detail drawers, manual scrape/ingestion triggers, stale-lock
+release and a read-only portal probe with HTML position diagnostics. The Offers workspace with
 status/owner filters, VAT and line-item detail, and the four-eyes approval
 dialog that can optionally issue the ZUGFeRD/XRechnung invoice in the same
 step. Security → Settings enrols or disables TOTP MFA with a QR/manual key and
@@ -393,12 +399,16 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | GET | `/ops/outbox-status` | admin/viewer only; ERPNext quotation outbox counts |
 | GET | `/ops/outbox` | admin/approver/viewer; paginated jobs with `last_error` and status filter |
 | POST | `/ops/outbox/{job_id}/retry` | admin/approver; reset a failed job to pending with 0 attempts |
-| GET | `/ops/worker-runs` | admin only; recent scrape/ingestion run history |
-| GET | `/ops/ingestion` | admin only; ingestion queue, counts, quarantine and DLQ rows |
+| GET | `/ops/worker-runs` | admin only; paginated scrape/ingestion run history with type/status filters |
+| GET | `/healthz/worker_runs` | admin-only compatibility alias for `/ops/worker-runs` |
+| POST | `/ops/worker-runs/scrape` | admin only; launch a detached scrape worker (`portal`, `max_pages`) |
+| POST | `/ops/worker-runs/ingestion` | admin only; launch a detached ingestion batch (`limit`) |
+| GET | `/ops/ingestion` | admin only; paginated queue, counts, quarantine and DLQ rows (`status`, `queue`, `quarantined`) |
 | POST | `/ops/ingestion/{job_id}/retry` | admin only; requeue a failed/quarantined job |
 | POST | `/ops/ingestion/{job_id}/discard` | admin only; terminally skip a failed/quarantined job |
+| POST | `/ops/ingestion/release-stale` | admin only; reset processing jobs older than the lock threshold |
 | GET | `/ops/portals` | admin only; configured portal targets for the read-only probe |
-| POST | `/ops/portals/{portal_id}/probe` | admin only; read-only P7.3 portal diagnostic |
+| POST | `/ops/portals/{portal_id}/probe` | admin only; read-only P7.3 portal diagnostic with position counts |
 | GET | `/admin/catalog/overrides` | admin only; list pinned catalogue fields |
 | POST | `/admin/catalog/overrides` | admin only; add/replace/clear pins |
 | POST | `/invoices/{id}/payments` | admin only |
@@ -489,6 +499,10 @@ metrics for scraping; see [Production deployment & observability](#production-de
 # expire old rows: expired refresh tokens, stale revoked sessions, expired JTIs
 python -m src.admin purge-auth-tokens --dry-run --json
 python -m src.admin purge-auth-tokens --retention-days 14
+
+# keep worker run history bounded (default WORKER_RUN_RETENTION_DAYS=90)
+python -m src.admin purge-worker-runs --dry-run --json
+python -m src.admin purge-worker-runs --retention-days 30
 ```
 
 The matching route retrieves candidates directly from `catalog_articles` using
@@ -796,7 +810,15 @@ does not block the remaining targets or the ingestion pass.
   start/finish times, duration, processed items, error counts and details for
   each scrape and each ingestion batch. `GET /healthz/worker` returns the latest
   run per type, status counts, outbox queue counts and the ten most recent runs;
-  it returns 503 only when the metrics query itself fails.
+  it returns 503 only when the metrics query itself fails. The admin-only
+  `/healthz/worker_runs` alias and `/ops/worker-runs` expose the same paginated
+  run list with type/status filters. Retention defaults to
+  `WORKER_RUN_RETENTION_DAYS=90`; `purge-worker-runs` prunes old rows.
+- **Manual operations:** admins can launch a detached scrape or ingestion worker
+  from the Workers & Ingestion console (or `POST /ops/worker-runs/{scrape,ingestion}`)
+  and reset stale `processing` jobs with `POST /ops/ingestion/release-stale`.
+  Portal/domain advisory locks still prevent overlapping runs; every action is
+  audited.
 - **Telegram alerts:** set `TELEGRAM_BOT_TOKEN` and
   `TELEGRAM_APPROVAL_CHAT_ID` to receive alerts after a scheduled scrape
   exception or when an ingestion job exhausts `max_attempts` and reaches the
@@ -1099,12 +1121,14 @@ GitHub Actions (`.github/workflows/ci.yml`) has six gates:
   `rfq-pending.spec.ts` holds the relay to prove the `409` pending state and
   recovery after a 2-second TTL; `upload-errors.spec.ts` covers malformed GAEB
   parsing and a mocked ClamAV rejection. The operations page is covered by
-  `operations.spec.ts`: an admin sees a seeded worker run, the quarantine and
-  dead-letter rows, renders a mocked read-only portal-probe report, and confirms
-  retry/discard with cancel-first focus; a sales user and an approver get no nav
-  link and are redirected away from `/ops/workers`. The n8n production
-  equivalent is `deploy/n8n/rfq-supplier-workflow.json`. Traces, screenshots and
-  the Playwright HTML report are uploaded on failure.
+  `operations.spec.ts`: an admin pages/filters worker runs, opens the run-detail
+  drawer, sees the quarantine and dead-letter rows, renders a mocked read-only
+  portal-probe report with position counts, triggers scrape/ingestion/release
+  actions against mocked endpoints, and confirms retry/discard with cancel-first
+  focus; a sales user and an approver get no nav link and are redirected away
+  from `/ops/workers`. The n8n production equivalent is
+  `deploy/n8n/rfq-supplier-workflow.json`. Traces, screenshots and the Playwright
+  HTML report are uploaded on failure.
 
 CI uses `.[dev,e-invoicing]`; local installations may also add
 `.[catalogue]` for local BGE-M3 embeddings.
@@ -1139,7 +1163,8 @@ reports are git-ignored. The suite covers the admin-only Users console, the
 manual-cost intake path (`tender-intake.spec.ts`), the supplier-quote → RFQ →
 approval → `.x84` path (`tender-to-export.spec.ts`), the pending-TTL path
 (`rfq-pending.spec.ts`), and the admin-only Workers & Ingestion console
-(`operations.spec.ts`, including Sales/Approver denial). `upload-errors.spec.ts` uses
+(`operations.spec.ts`, including server filters, the run-detail drawer, mocked
+manual-trigger actions and Sales/Approver denial). `upload-errors.spec.ts` uses
 `invalid-tender.x83` plus a Playwright-mocked ClamAV rejection.
 
 ---
@@ -1444,6 +1469,7 @@ All settings live in `src/config.py` and are documented in `.env.example`.
 | SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME`, `SMTP_STARTTLS`, `SMTP_SSL`, `SMTP_TIMEOUT_SECONDS` |
 | ERPNext | `ERPNEXT_BASE_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `ERPNEXT_ITEM_GROUP`, `ERPNEXT_SELLING_PRICE_LIST`, `ERPNEXT_QUOTATION_SERIES`, `QUOTATION_SYNC_MAX_ATTEMPTS`, `QUOTATION_SYNC_BACKOFF_SECONDS`, `QUOTATION_SYNC_BATCH_SIZE` |
 | Portal scrapers | `PORTAL_CONFIG_FILE`, `SCRAPER_REQUEST_DELAY_SECONDS`, `SCRAPER_ROBOTS_CACHE_SECONDS`, `SCRAPER_MAX_PAGES`, `SCRAPER_MAX_CONCURRENT_PORTALS`, `SCRAPER_DOMAIN_LOCK_TTL_SECONDS`, `SCRAPER_PREFER_API`, `SCRAPER_ARCHIVE_RAW`, `SCRAPER_ARCHIVE_PREFIX`, `SCRAPER_USER_AGENTS`, `SCRAPER_HARVEST_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENTS`, `SCRAPER_MAX_ATTACHMENT_MB`, `SCRAPER_SCHEDULE_CRON` |
+| Worker history | `WORKER_RUN_RETENTION_DAYS` (`purge-worker-runs` CLI) |
 | HITL | `ED25519_APPROVAL_PRIVATE_KEY`, `ED25519_APPROVAL_PUBLIC_KEY`, `APPROVAL_SIGNATURE_REQUIRED` |
 | Pricing | `DEFAULT_VAT_RATE`, `DEFAULT_MARGIN_RATE`, `OFFER_VALIDITY_DAYS` |
 
@@ -1586,11 +1612,13 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P8.2 — sourcing and approval loop: supplier-quote list/detail/manual-create APIs, a tender comparison panel (price/validity/delivery/source), RFQ dispatch with idempotency/TTL error handling, persisted-quote offer pricing with manual fallback and coverage warnings, a sales → approver → `.x84` Playwright flow, and malformed-upload/ClamAV-rejection UI coverage
 - [x] P8.2b — RFQ relay verification: deterministic signed mock n8n relay in the E2E stack, outbound HMAC + envelope assertions, signed supplier-quote callback into the comparison panel, stable idempotency keys with a 2-second pending-TTL recovery test, and a deployable `deploy/n8n/rfq-supplier-workflow.json` template
 - [x] P8.3 — operations & ingestion console: admin-only Workers & Ingestion page with worker-run history, ingestion queue health, responsive quarantine/dead-letter tables, retry/discard confirmations with cancel-first focus and audit events, a read-only portal probe with parsed positions, warnings/errors and zero-result diagnostics, and Playwright admin plus Sales/Approver coverage
+- [x] P8.4 — operations hardening: dedicated `quarantined`/`quarantine_reason` columns and migration `0017`, HTML position counts in probes, server-side pagination/filtering for runs and queue/DLQ tables, worker-run detail drawer, manual scrape/ingestion triggers, stale-lock release, `/healthz/worker_runs` alias, worker-run retention CLI and live PostgreSQL retry/discard/release tests
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and
-`docs/ASSUMPTIONS.md` for fields inferred while Sections 5–8 are still being
-written.
+`docs/ASSUMPTIONS.md` for inferred fields. Sections 5–8 are now seeded
+skeletons with authoritative implementation pointers that will be expanded as
+the remaining specification is published.
 
 ## License
 

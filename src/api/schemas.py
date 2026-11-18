@@ -39,10 +39,13 @@ __all__ = [
     "RFQDispatchPayload",
     "RFQSupplier",
     "RefreshTokenRequest",
+    "ReleaseStaleLocksPayload",
     "SupplierQuoteCallbackPayload",
     "TenderOwnerPayload",
     "TokenRequest",
     "UserCreatePayload",
+    "WorkerIngestionTriggerPayload",
+    "WorkerScrapeTriggerPayload",
     "UserRolesPayload",
     "VerifyPayload",
     "WorkflowPayload",
@@ -151,6 +154,25 @@ class IngestionDiscardPayload(BaseModel):
     """Admin reason recorded when a failed ingestion job is discarded."""
 
     reason: str = Field(default="discarded by operator", min_length=3, max_length=512)
+
+
+class ReleaseStaleLocksPayload(BaseModel):
+    """Age threshold for resetting ingestion jobs stuck in ``processing``."""
+
+    older_than_seconds: int = Field(default=900, ge=60, le=86_400)
+
+
+class WorkerScrapeTriggerPayload(BaseModel):
+    """Admin request to launch one scrape worker process."""
+
+    portal: str = Field(default="all", min_length=1, max_length=64)
+    max_pages: int | None = Field(default=1, ge=1, le=5)
+
+
+class WorkerIngestionTriggerPayload(BaseModel):
+    """Admin request to drain a bounded batch of ingestion jobs."""
+
+    limit: int = Field(default=10, ge=1, le=50)
 
 
 class MatchPayload(BaseModel):

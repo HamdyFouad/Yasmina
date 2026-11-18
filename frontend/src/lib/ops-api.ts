@@ -12,6 +12,8 @@ import type {
   ProbeReport,
   QuotationSyncJob,
   QuotationSyncStatus,
+  ReleaseStaleLocksResponse,
+  WorkerCommandResponse,
   WorkerRunsResponse,
   WorkerRunStatus,
   WorkerRunType,
@@ -80,13 +82,21 @@ export async function fetchWorkerRuns(
 }
 
 export async function fetchIngestionJobs(
-  params: { limit?: number; offset?: number; status?: IngestionJobStatus } = {},
+  params: {
+    limit?: number
+    offset?: number
+    status?: IngestionJobStatus
+    quarantined?: boolean
+    queue?: boolean
+  } = {},
 ): Promise<IngestionJobsResponse> {
   const response = await api.get<IngestionJobsResponse>('/ops/ingestion', {
     params: {
       limit: params.limit ?? 200,
       offset: params.offset ?? 0,
       ...(params.status !== undefined ? { status: params.status } : {}),
+      ...(params.quarantined !== undefined ? { quarantined: params.quarantined } : {}),
+      ...(params.queue !== undefined ? { queue: params.queue } : {}),
     },
   })
   return response.data
@@ -121,5 +131,32 @@ export async function probePortalTarget(portalId: string, maxPages = 1): Promise
     null,
     { params: { max_pages: maxPages } },
   )
+  return response.data
+}
+
+export async function triggerScrapeRun(
+  portal: string,
+  maxPages: number,
+): Promise<WorkerCommandResponse> {
+  const response = await api.post<WorkerCommandResponse>('/ops/worker-runs/scrape', {
+    portal,
+    max_pages: maxPages,
+  })
+  return response.data
+}
+
+export async function triggerIngestionRun(limit: number): Promise<WorkerCommandResponse> {
+  const response = await api.post<WorkerCommandResponse>('/ops/worker-runs/ingestion', {
+    limit,
+  })
+  return response.data
+}
+
+export async function releaseStaleLocks(
+  olderThanSeconds: number,
+): Promise<ReleaseStaleLocksResponse> {
+  const response = await api.post<ReleaseStaleLocksResponse>('/ops/ingestion/release-stale', {
+    older_than_seconds: olderThanSeconds,
+  })
   return response.data
 }
