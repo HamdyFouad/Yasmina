@@ -356,6 +356,7 @@ async def test_worker_command_guard_lifecycle_and_cancellation() -> None:
             )
             cancelled = await commands.cancel(cancellable.id, "maintenance")
             assert cancelled.status == "cancelled"
+            assert cancelled.finished_at is not None
             assert await commands.finish(cancellable.id, status="succeeded") is False
 
             await session.execute(

@@ -114,13 +114,18 @@ class WorkerCommandRepository:
             await self.session.commit()
         except IntegrityError as exc:
             await self.session.rollback()
+            # The failed insert leaves all identity-map instances expired. Drop
+            # them so a caller that continues on this session cannot trigger a
+            # synchronous lazy refresh outside SQLAlchemy's greenlet bridge.
+            self.session.expunge_all()
             raise WorkerCommandConflict(
                 f"another {command_type} worker command is already queued or running"
             ) from exc
+        await self.session.refresh(row, attribute_names=["created_at", "updated_at"])
         return _view(row)
 
     async def get(self, command_id: UUID) -> WorkerCommandView | None:
-        row = await self.session.get(WorkerCommand, command_id)
+        row = await self.session.get(WorkerCommand, command_id, populate_existing=True)
         return None if row is None else _view(row)
 
     async def list_commands(
@@ -160,7 +165,7 @@ class WorkerCommandRepository:
         return None if row is None else _view(row)
 
     async def mark_running(self, command_id: UUID, pid: int) -> bool:
-        row = await self.session.get(WorkerCommand, command_id)
+        row = await self.session.get(WorkerCommand, command_id, populate_existing=True)
         if row is None:
             raise WorkerCommandNotFound("worker command not found")
         if row.status != "queued":
@@ -169,6 +174,7 @@ class WorkerCommandRepository:
         row.pid = pid
         row.started_at = datetime.now(UTC)
         await self.session.commit()
+        await self.session.refresh(row, attribute_names=["updated_at"])
         return True
 
     async def finish(
@@ -181,7 +187,7 @@ class WorkerCommandRepository:
     ) -> bool:
         if status not in {"succeeded", "failed"}:
             raise ValueError(f"unsupported terminal worker command status {status!r}")
-        row = await self.session.get(WorkerCommand, command_id)
+        row = await self.session.get(WorkerCommand, command_id, populate_existing=True)
         if row is None:
             raise WorkerCommandNotFound("worker command not found")
         if row.status not in {"queued", "running"}:
@@ -192,10 +198,11 @@ class WorkerCommandRepository:
         if details is not None:
             row.details = dict(details)
         await self.session.commit()
+        await self.session.refresh(row, attribute_names=["updated_at"])
         return True
 
     async def cancel(self, command_id: UUID, reason: str) -> WorkerCommandView:
-        row = await self.session.get(WorkerCommand, command_id)
+        row = await self.session.get(WorkerCommand, command_id, populate_existing=True)
         if row is None:
             raise WorkerCommandNotFound("worker command not found")
         if row.status not in {"queued", "running"}:
@@ -204,4 +211,5 @@ class WorkerCommandRepository:
         row.finished_at = datetime.now(UTC)
         row.error = reason[:8000]
         await self.session.commit()
+        await self.session.refresh(row, attribute_names=["updated_at"])
         return _view(row)

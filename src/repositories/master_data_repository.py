@@ -433,6 +433,9 @@ class SupplierRepository:
         except IntegrityError as exc:
             await self.session.rollback()
             raise MasterDataConflict("supplier name or primary contact conflicts") from exc
+        # Server-side ON UPDATE timestamps are expired by SQLAlchemy; reload
+        # them asynchronously before the caller builds a response view.
+        await self.session.refresh(row, attribute_names=["updated_at"])
 
 
 class CustomerRepository:
@@ -517,3 +520,4 @@ class CustomerRepository:
         except IntegrityError as exc:
             await self.session.rollback()
             raise MasterDataConflict("customer name conflicts") from exc
+        await self.session.refresh(row, attribute_names=["updated_at"])

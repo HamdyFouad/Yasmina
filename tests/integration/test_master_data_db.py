@@ -82,6 +82,7 @@ async def test_supplier_contacts_and_customer_crud_commit() -> None:
                 ),
             )
             assert updated.contacts[0].name == "Updated Contact"
+            assert updated.updated_at is not None
 
             customers = CustomerRepository(session)
             customer = await customers.create_customer(
