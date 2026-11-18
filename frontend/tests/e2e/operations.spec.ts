@@ -19,11 +19,12 @@ test('admin inspects workers, ingestion queues and the probe dialog', async ({ p
     name: /Worker runs with type, resource, status, duration, error counts/,
   })
   await expect(runsRegion).toBeVisible()
-  await expect(runsRegion.getByText('bayern')).toBeVisible()
-  await expect(runsRegion.getByText('Succeeded', { exact: true })).toBeVisible()
+  const bayernRow = runsRegion.getByRole('row', { name: /bayern/ })
+  await expect(bayernRow).toBeVisible()
+  await expect(bayernRow.getByText('Succeeded', { exact: true })).toBeVisible()
 
   // The drawer exposes the full run JSON and error text.
-  await page.getByRole('button', { name: 'View run details for bayern' }).click()
+  await bayernRow.getByRole('button', { name: 'View run details for bayern' }).click()
   const runSheet = page.getByRole('dialog', { name: 'Worker run bayern' })
   await expect(runSheet).toBeVisible()
   await expect(runSheet.getByText(/"source": "e2e-seed"/)).toBeVisible()
@@ -41,7 +42,7 @@ test('admin inspects workers, ingestion queues and the probe dialog', async ({ p
   await expect(runsSection.getByText('Page 1 of 1')).toBeVisible()
   await page.getByRole('combobox', { name: 'Run type' }).click()
   await page.getByRole('option', { name: 'All run types' }).click()
-  await expect(runsRegion.getByText('bayern')).toBeVisible()
+  await expect(bayernRow).toBeVisible()
 
   // The seed has 23 runs, so the second page proves server-side pagination.
   await runsSection.getByRole('button', { name: 'Next page for worker runs' }).click()
