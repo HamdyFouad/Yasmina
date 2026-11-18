@@ -28,6 +28,10 @@ EXPECTED_TABLES = {
     "scraper_states",
     "worker_runs",
     "worker_commands",
+    "purchase_orders",
+    "purchase_order_lines",
+    "supplier_invoices",
+    "supplier_invoice_lines",
     "quotation_sync_jobs",
     "invoice_number_sequences",
     "invoices",
@@ -199,6 +203,28 @@ def test_worker_run_history_shape() -> None:
     assert runs.c.duration_ms.nullable is True
     assert {"ix_worker_runs_started_at", "ix_worker_runs_type_status"} == {
         index.name for index in runs.indexes
+    }
+
+
+def test_procurement_tables_shape() -> None:
+    orders = Base.metadata.tables["purchase_orders"]
+    order_lines = Base.metadata.tables["purchase_order_lines"]
+    invoices = Base.metadata.tables["supplier_invoices"]
+    invoice_lines = Base.metadata.tables["supplier_invoice_lines"]
+
+    assert orders.c.po_number.unique is True
+    assert orders.c.supplier_quote_id.unique is True
+    assert orders.c.status.nullable is False
+    assert "ix_purchase_orders_status" in {index.name for index in orders.indexes}
+    assert "uq_purchase_order_line_number" in {constraint.name for constraint in order_lines.constraints}
+    assert order_lines.c.supplier_quote_line_id.nullable is False
+    assert invoices.c.total_net.nullable is False
+    assert invoices.c.exception_codes.nullable is False
+    assert "uq_supplier_invoice_reference" in {constraint.name for constraint in invoices.constraints}
+    assert "uq_supplier_invoice_po_line" in {constraint.name for constraint in invoice_lines.constraints}
+    assert invoice_lines.c.purchase_order_line_id.nullable is False
+    assert "ck_purchase_orders_delivery_date_after_order" in {
+        constraint.name for constraint in orders.constraints
     }
 
 

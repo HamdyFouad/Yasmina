@@ -30,7 +30,7 @@ import sys
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
@@ -40,8 +40,10 @@ from src.api.security import Role
 from src.config import Settings, get_settings
 from src.db import dispose_engine, get_session_factory
 from src.models.enums import (
+    Currency,
     CustomerOfferStatus,
     ProcurementProcedure,
+    SupplierQuoteStatus,
     TenderSourceFormat,
     TenderStatus,
     UnitOfMeasure,
@@ -51,6 +53,8 @@ from src.models.orm import (
     QuotationSyncJob,
     Supplier,
     SupplierContact,
+    SupplierQuote,
+    SupplierQuoteLine,
     TenderIngestionJob,
     WorkerCommand,
     WorkerRun,
@@ -155,6 +159,9 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
     quarantine_tender_number = f"E2E-QTN-{suffix}"
     supplier_name = f"E2E Hygiene Supplier {suffix}"
     master_customer_name = f"E2E Customer {suffix}"
+    supplier_quote_reference = f"E2E-SQ-{suffix}"[:128]
+    supplier_id = uuid4()
+    supplier_quote_id = uuid4()
 
     factory = get_session_factory(settings)
     try:
@@ -283,6 +290,7 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
                         details={"processed": 1, "failed": 1, "source": "e2e-seed"},
                     ),
                     Supplier(
+                        id=supplier_id,
                         name=supplier_name,
                         legal_name=f"{supplier_name} GmbH",
                         email="rfq@hygiene-gross.de",
@@ -300,6 +308,29 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
                                 email="rfq@hygiene-gross.de",
                                 phone="+49 941 123456",
                                 is_primary=True,
+                            )
+                        ],
+                    ),
+                    SupplierQuote(
+                        id=supplier_quote_id,
+                        supplier_id=supplier_id,
+                        supplier_name=supplier_name,
+                        supplier_contact_email="rfq@hygiene-gross.de",
+                        quote_reference=supplier_quote_reference,
+                        tender_id=tender.id,
+                        status=SupplierQuoteStatus.VALIDATED,
+                        currency=Currency.EUR,
+                        delivery_days=5,
+                        total_net=Decimal("200.00"),
+                        raw_extraction={"source": "e2e-seed"},
+                        lines=[
+                            SupplierQuoteLine(
+                                supplier_quote_id=supplier_quote_id,
+                                line_number=1,
+                                description="Nitrilhandschuhe blau Gr. M (E2E)",
+                                quantity=Decimal("10.0000"),
+                                unit=UnitOfMeasure.KARTON,
+                                unit_price_net=Decimal("20.0000"),
                             )
                         ],
                     ),
@@ -364,6 +395,8 @@ async def seed(settings: Settings, *, suffix: str) -> dict[str, str]:
         "tender_number": tender_number,
         "quarantine_tender_number": quarantine_tender_number,
         "supplier_name": supplier_name,
+        "supplier_quote_reference": supplier_quote_reference,
+        "supplier_quote_id": str(supplier_quote_id),
         "master_customer_name": master_customer_name,
         "customer_name": CUSTOMER_NAME,
         "buyer_reference": BUYER_REFERENCE,

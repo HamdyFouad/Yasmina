@@ -60,7 +60,9 @@ from src.models.enums import (
     InvoiceStatus,
     MaterialType,
     ProcurementProcedure,
+    PurchaseOrderStatus,
     StandardizedColor,
+    SupplierInvoiceStatus,
     SupplierQuoteStatus,
     TenderSourceFormat,
     TenderStatus,
@@ -82,8 +84,12 @@ __all__ = [
     "InvoiceNumberSequence",
     "InvoiceVatSplit",
     "PasswordResetToken",
+    "PurchaseOrder",
+    "PurchaseOrderLine",
     "RefreshToken",
     "Supplier",
+    "SupplierInvoice",
+    "SupplierInvoiceLine",
     "SupplierQuote",
     "SupplierQuoteLine",
     "SupplierQuoteTier",
@@ -412,6 +418,9 @@ class SupplierQuote(Base, TimestampMixin):
     incoterms: Mapped[str | None] = mapped_column(String(32), nullable=True)
     delivery_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    accepted_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
     total_net: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     source_document: Mapped[str | None] = mapped_column(String(512), nullable=True)
     raw_extraction: Mapped[dict[str, Any]] = mapped_column(
@@ -475,6 +484,10 @@ class SupplierQuoteLine(Base, TimestampMixin):
     attributes: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
+    is_accepted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     quote: Mapped[SupplierQuote] = relationship(back_populates="lines")
     tiers: Mapped[list[SupplierQuoteTier]] = relationship(
@@ -515,6 +528,242 @@ class SupplierQuoteTier(Base):
         UniqueConstraint("supplier_quote_line_id", "min_quantity", name="uq_supplier_quote_tier_quantity"),
         CheckConstraint("min_quantity > 0", name="min_quantity_positive"),
         CheckConstraint("unit_price_net >= 0", name="tier_price_non_negative"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Procurement execution: purchase orders and supplier invoices
+# ---------------------------------------------------------------------------
+
+
+class PurchaseOrder(Base, TimestampMixin):
+    """A purchase order generated from one accepted supplier quotation."""
+
+    __tablename__ = "purchase_orders"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    po_number: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    supplier_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("suppliers.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    supplier_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    supplier_contact_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    tender_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenders.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    supplier_quote_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("supplier_quotes.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
+    customer_offer_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("customer_offers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    status: Mapped[PurchaseOrderStatus] = mapped_column(
+        _enum(PurchaseOrderStatus, "purchase_order_status"),
+        nullable=False,
+        default=PurchaseOrderStatus.DRAFT,
+        server_default=text("'DRAFT'"),
+    )
+    currency: Mapped[Currency] = mapped_column(
+        _enum(Currency, "purchase_order_currency", length=3),
+        nullable=False,
+        default=Currency.EUR,
+        server_default=text("'EUR'"),
+    )
+    order_date: Mapped[date] = mapped_column(Date, nullable=False, default=date.today)
+    expected_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    total_net: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("0.00"))
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_by: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    lines: Mapped[list[PurchaseOrderLine]] = relationship(
+        back_populates="purchase_order",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="PurchaseOrderLine.line_number",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        CheckConstraint("total_net >= 0", name="total_net_non_negative"),
+        CheckConstraint(
+            "expected_delivery_date IS NULL OR expected_delivery_date >= order_date",
+            name="delivery_date_after_order",
+        ),
+        Index("ix_purchase_orders_status", "status"),
+        Index("ix_purchase_orders_created_at", "created_at"),
+    )
+
+
+class PurchaseOrderLine(Base, TimestampMixin):
+    __tablename__ = "purchase_order_lines"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    purchase_order_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("purchase_orders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    supplier_quote_line_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("supplier_quote_lines.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    description: Mapped[str] = mapped_column(String(512), nullable=False)
+    tender_item_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tender_items.id", ondelete="SET NULL"), nullable=True
+    )
+
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    unit: Mapped[UnitOfMeasure] = mapped_column(
+        _enum(UnitOfMeasure, "purchase_order_line_unit"), nullable=False
+    )
+    unit_price_net: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    total_net: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    received_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(18, 4), nullable=False, default=Decimal("0.0000"), server_default=text("0.0000")
+    )
+
+    purchase_order: Mapped[PurchaseOrder] = relationship(back_populates="lines")
+
+    __table_args__ = (
+        UniqueConstraint("purchase_order_id", "line_number", name="uq_purchase_order_line_number"),
+        CheckConstraint("quantity > 0", name="quantity_positive"),
+        CheckConstraint("unit_price_net >= 0", name="unit_price_non_negative"),
+        CheckConstraint("total_net >= 0", name="total_non_negative"),
+        CheckConstraint("received_quantity >= 0", name="received_quantity_non_negative"),
+    )
+
+
+class SupplierInvoice(Base, TimestampMixin):
+    """Incoming supplier billing matched against a purchase order."""
+
+    __tablename__ = "supplier_invoices"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    purchase_order_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("purchase_orders.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    supplier_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("suppliers.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    supplier_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    po_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    invoice_number: Mapped[str] = mapped_column(String(128), nullable=False)
+    invoice_date: Mapped[date] = mapped_column(Date, nullable=False)
+    delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    currency: Mapped[Currency] = mapped_column(
+        _enum(Currency, "supplier_invoice_currency", length=3),
+        nullable=False,
+        default=Currency.EUR,
+        server_default=text("'EUR'"),
+    )
+    total_net: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    vat_rate: Mapped[Decimal] = mapped_column(
+        Numeric(6, 4), nullable=False, default=Decimal("0.1900"), server_default=text("0.1900")
+    )
+    total_vat: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    total_gross: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+
+    status: Mapped[SupplierInvoiceStatus] = mapped_column(
+        _enum(SupplierInvoiceStatus, "supplier_invoice_status"),
+        nullable=False,
+        default=SupplierInvoiceStatus.PENDING,
+        server_default=text("'PENDING'"),
+    )
+    exception_codes: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    match_details: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    variance_net: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2), nullable=False, default=Decimal("0.00"), server_default=text("0.00")
+    )
+    matched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    received_by: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    lines: Mapped[list[SupplierInvoiceLine]] = relationship(
+        back_populates="invoice",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="SupplierInvoiceLine.id",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("supplier_id", "invoice_number", name="uq_supplier_invoice_reference"),
+        CheckConstraint("total_net >= 0 AND total_vat >= 0 AND total_gross >= 0", name="totals_non_negative"),
+        CheckConstraint("total_gross = total_net + total_vat", name="totals_consistent"),
+        CheckConstraint("vat_rate >= 0 AND vat_rate <= 1", name="vat_rate_range"),
+        Index("ix_supplier_invoices_status", "status"),
+        Index("ix_supplier_invoices_created_at", "created_at"),
+    )
+
+
+class SupplierInvoiceLine(Base, TimestampMixin):
+    __tablename__ = "supplier_invoice_lines"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid4, server_default=text("gen_random_uuid()")
+    )
+    supplier_invoice_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("supplier_invoices.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    purchase_order_line_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("purchase_order_lines.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    description: Mapped[str] = mapped_column(String(512), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    unit: Mapped[UnitOfMeasure] = mapped_column(
+        _enum(UnitOfMeasure, "supplier_invoice_line_unit"), nullable=False
+    )
+    unit_price_net: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    total_net: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+
+    invoice: Mapped[SupplierInvoice] = relationship(back_populates="lines")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "supplier_invoice_id",
+            "purchase_order_line_id",
+            name="uq_supplier_invoice_po_line",
+        ),
+        CheckConstraint("quantity > 0", name="quantity_positive"),
+        CheckConstraint("unit_price_net >= 0", name="unit_price_non_negative"),
+        CheckConstraint("total_net >= 0", name="total_non_negative"),
     )
 
 

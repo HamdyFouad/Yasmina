@@ -24,6 +24,7 @@ from src.repositories.invoice_repository import InvoiceRepository
 from src.repositories.master_data_repository import CustomerRepository, SupplierRepository
 from src.repositories.offer_repository import OfferRepository
 from src.repositories.ops_repository import OpsRepository
+from src.repositories.procurement_repository import ProcurementRepository
 from src.repositories.quotation_sync_repository import QuotationSyncJobRepository
 from src.repositories.supplier_quote_repository import SupplierQuoteRepository
 from src.repositories.tender_repository import TenderRepository
@@ -58,6 +59,7 @@ __all__ = [
     "get_optional_principal",
     "get_password_reset_repository",
     "get_principal",
+    "get_procurement_repository",
     "get_quotation_sync_repository",
     "get_refresh_token_repository",
     "get_session",
@@ -267,6 +269,12 @@ def get_customer_repository(
     session: AsyncSession = Depends(get_session),
 ) -> CustomerRepository:
     return CustomerRepository(session)
+
+
+def get_procurement_repository(
+    session: AsyncSession = Depends(get_session),
+) -> ProcurementRepository:
+    return ProcurementRepository(session)
 
 
 def get_credit_note_repository(

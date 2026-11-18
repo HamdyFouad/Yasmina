@@ -33,6 +33,13 @@ export async function createSupplierQuote(
   return response.data
 }
 
+export async function acceptSupplierQuote(quoteId: string): Promise<SupplierQuoteResponse> {
+  const response = await api.post<SupplierQuoteResponse>(
+    `/supplier-quotes/${encodeURIComponent(quoteId)}/accept`,
+  )
+  return response.data
+}
+
 export async function dispatchRfq(
   payload: RfqDispatchRequest,
   idempotencyKey: string,

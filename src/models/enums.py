@@ -18,8 +18,10 @@ __all__ = [
     "InvoiceStatus",
     "MaterialType",
     "ProcurementProcedure",
+    "PurchaseOrderStatus",
     "Role",
     "StandardizedColor",
+    "SupplierInvoiceStatus",
     "SupplierQuoteStatus",
     "TenderSourceFormat",
     "TenderStatus",
@@ -155,8 +157,29 @@ class SupplierQuoteStatus(StrEnum):
     RECEIVED = "RECEIVED"
     NORMALIZED = "NORMALIZED"
     VALIDATED = "VALIDATED"
+    ACCEPTED = "ACCEPTED"
     REJECTED = "REJECTED"
     EXPIRED = "EXPIRED"
+
+
+class PurchaseOrderStatus(StrEnum):
+    """Procurement lifecycle of a purchase order."""
+
+    DRAFT = "DRAFT"
+    SENT = "SENT"
+    CONFIRMED = "CONFIRMED"
+    DELIVERED = "DELIVERED"
+    CANCELLED = "CANCELLED"
+
+
+class SupplierInvoiceStatus(StrEnum):
+    """Matching and review state of an incoming supplier invoice."""
+
+    PENDING = "PENDING"
+    MATCHED = "MATCHED"
+    EXCEPTION = "EXCEPTION"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
 
 
 class CustomerOfferStatus(StrEnum):
@@ -178,6 +201,11 @@ class AuditEventType(StrEnum):
     TENDER_OWNER_ASSIGNED = "TENDER_OWNER_ASSIGNED"
     TENDER_ITEM_NORMALIZED = "TENDER_ITEM_NORMALIZED"
     SUPPLIER_QUOTE_INGESTED = "SUPPLIER_QUOTE_INGESTED"
+    SUPPLIER_QUOTE_ACCEPTED = "SUPPLIER_QUOTE_ACCEPTED"
+    PURCHASE_ORDER_CREATED = "PURCHASE_ORDER_CREATED"
+    PURCHASE_ORDER_STATUS_CHANGED = "PURCHASE_ORDER_STATUS_CHANGED"
+    SUPPLIER_INVOICE_RECORDED = "SUPPLIER_INVOICE_RECORDED"
+    SUPPLIER_INVOICE_MATCHED = "SUPPLIER_INVOICE_MATCHED"
     OFFER_PRICED = "OFFER_PRICED"
     OFFER_APPROVED = "OFFER_APPROVED"
     OFFER_REJECTED = "OFFER_REJECTED"

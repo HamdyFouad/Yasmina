@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -10,6 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.models.enums import SupplierQuoteStatus
+from src.models.orm import PurchaseOrder as PurchaseOrderORM
 from src.models.orm import Supplier as SupplierORM
 from src.models.orm import SupplierQuote as SupplierQuoteORM
 from src.models.orm import SupplierQuoteLine as SupplierQuoteLineORM
@@ -75,10 +78,14 @@ def quote_to_schema(orm: SupplierQuoteORM) -> SupplierQuote:
                 delivery_days=line.delivery_days,
                 notes=line.notes,
                 attributes=dict(line.attributes or {}),
+                is_accepted=line.is_accepted,
+                accepted_at=line.accepted_at,
             )
             for line in orm.lines
         ],
         total_net=orm.total_net,
+        accepted_at=orm.accepted_at,
+        accepted_by=orm.accepted_by,
         source_document=orm.source_document,
         raw_extraction=dict(orm.raw_extraction or {}),
         created_at=orm.created_at,
@@ -153,6 +160,8 @@ class SupplierQuoteRepository:
             payment_terms=quote.payment_terms,
             incoterms=quote.incoterms,
             delivery_days=quote.delivery_days,
+            accepted_at=quote.accepted_at,
+            accepted_by=quote.accepted_by,
             total_net=quote.total_net,
             source_document=quote.source_document,
             raw_extraction=dict(quote.raw_extraction),
@@ -176,6 +185,8 @@ class SupplierQuoteRepository:
                 delivery_days=line.delivery_days,
                 notes=line.notes,
                 attributes=dict(line.attributes),
+                is_accepted=line.is_accepted,
+                accepted_at=line.accepted_at,
                 tiers=[
                     SupplierQuoteTierORM(
                         min_quantity=tier.min_quantity,
@@ -219,6 +230,55 @@ class SupplierQuoteRepository:
             select(func.count()).select_from(SupplierQuoteORM).where(SupplierQuoteORM.tender_id == tender_id)
         )
         return int((await self.session.execute(statement)).scalar_one())
+
+    async def list_accepted_without_order(self) -> list[SupplierQuote]:
+        statement = (
+            select(SupplierQuoteORM)
+            .outerjoin(
+                PurchaseOrderORM,
+                PurchaseOrderORM.supplier_quote_id == SupplierQuoteORM.id,
+            )
+            .where(
+                SupplierQuoteORM.status == SupplierQuoteStatus.ACCEPTED,
+                SupplierQuoteORM.supplier_id.is_not(None),
+                PurchaseOrderORM.id.is_(None),
+            )
+            .options(selectinload(SupplierQuoteORM.lines).selectinload(SupplierQuoteLineORM.tiers))
+            .order_by(SupplierQuoteORM.accepted_at.desc(), SupplierQuoteORM.created_at.desc())
+        )
+        rows = (await self.session.execute(statement)).scalars().all()
+        return [quote_to_schema(row) for row in rows]
+
+    async def accept(self, quote_id: UUID, *, actor: str) -> SupplierQuote:
+        row = (
+            await self.session.execute(
+                select(SupplierQuoteORM)
+                .where(SupplierQuoteORM.id == quote_id)
+                .options(selectinload(SupplierQuoteORM.lines))
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise SupplierQuoteRepositoryError("supplier quote not found")
+        if row.status in {SupplierQuoteStatus.REJECTED, SupplierQuoteStatus.EXPIRED}:
+            raise SupplierQuoteRepositoryError(f"supplier quote cannot be accepted from {row.status.value}")
+        if row.status == SupplierQuoteStatus.ACCEPTED:
+            loaded = await self.get(quote_id)
+            if loaded is None:
+                raise SupplierQuoteRepositoryError("supplier quote not found")
+            return loaded
+        now = datetime.now(UTC)
+        row.status = SupplierQuoteStatus.ACCEPTED
+        row.accepted_at = now
+        row.accepted_by = actor
+        for line in row.lines:
+            line.is_accepted = True
+            line.accepted_at = now
+        await self.session.commit()
+        loaded = await self.get(quote_id)
+        if loaded is None:
+            raise SupplierQuoteRepositoryError("supplier quote disappeared after acceptance")
+        return loaded
 
     async def save(self, quote: SupplierQuote) -> StoredSupplierQuote:
         """Persist a quote, returning the existing row for a repeated reference."""

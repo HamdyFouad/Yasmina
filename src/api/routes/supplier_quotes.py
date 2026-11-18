@@ -108,6 +108,50 @@ async def get_supplier_quote(
     return {"quote": _quote_payload(quote)}
 
 
+@router.post("/{quote_id}/accept")
+async def accept_supplier_quote(
+    quote_id: UUID,
+    repository: SupplierQuoteRepository = Depends(get_supplier_quote_repository),
+    tenders: TenderRepository = Depends(get_tender_repository),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_roles(Role.SALES, Role.ADMIN)),
+) -> dict[str, Any]:
+    """Accept a supplier quote and all of its lines for PO generation."""
+
+    existing = await repository.get(quote_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="supplier quote not found")
+    if _is_sales_only(principal):
+        if existing.tender_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="sales users may only accept quotes for their own tenders",
+            )
+        stored = await tenders.get(existing.tender_id)
+        if stored is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="tender not found")
+        _ensure_tender_access(stored, principal)
+
+    try:
+        quote = await repository.accept(quote_id, actor=principal.sub)
+    except SupplierQuoteRepositoryError as exc:
+        message = str(exc)
+        code = status.HTTP_404_NOT_FOUND if "not found" in message else status.HTTP_409_CONFLICT
+        raise HTTPException(status_code=code, detail=message) from exc
+    await audit.append(
+        event_type=AuditEventType.SUPPLIER_QUOTE_ACCEPTED,
+        actor=principal.sub,
+        entity_type="supplier_quote",
+        entity_id=str(quote.id),
+        payload={
+            "tender_id": str(quote.tender_id) if quote.tender_id else None,
+            "quote_reference": quote.quote_reference,
+            "line_count": len(quote.lines),
+        },
+    )
+    return {"quote": _quote_payload(quote)}
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_supplier_quote(
     payload: ManualSupplierQuotePayload,

@@ -130,10 +130,24 @@ the public health surface.
 - Manual worker commands are created before process launch, guarded by a partial
   unique index per active command type, and cancellable through
   `/ops/worker-commands/{id}/cancel`.
+- Supplier quotes are accepted explicitly (`POST /supplier-quotes/{id}/accept`);
+  only accepted quote lines can generate a draft purchase order, and a quote can
+  own at most one PO.
+- Purchase orders follow the guarded lifecycle `DRAFT → SENT → CONFIRMED →
+  DELIVERED`, with `CANCELLED` allowed from the first three states. Delivery
+  fills line `received_quantity` and stamps `delivered_at`.
+- Supplier invoices are matched deterministically against PO quantities
+  (`0.0001`), unit prices (`0.0001`), line and header totals (`0.01`) and the
+  expected delivery date. Deviations persist as stable exception codes and feed
+  the Procurement exception queue.
+- Margin reporting compares the approved customer offer's quoted cost/margin
+  with non-rejected supplier invoices booked against its POs; actual margin is
+  unavailable until the first invoice exists.
 
 **Authoritative code:** `src/api/security.py`, `src/api/deps.py`,
-`src/api/schemas.py`, `src/api/routes/*.py`, `frontend/src/lib/api-client.ts`,
-`frontend/src/lib/ops-api.ts`.
+`src/api/schemas.py`, `src/api/routes/*.py`, `src/repositories/procurement_repository.py`,
+`src/services/procurement_service.py`, `frontend/src/lib/api-client.ts`,
+`frontend/src/lib/ops-api.ts`, `frontend/src/lib/procurement-api.ts`.
 
 ---
 

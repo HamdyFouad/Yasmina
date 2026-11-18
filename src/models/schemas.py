@@ -269,6 +269,8 @@ class SupplierQuoteLine(YasminaSchema):
 
     notes: Annotated[str, Field(max_length=4000)] | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
+    is_accepted: bool = False
+    accepted_at: AwareDatetime | None = None
 
     @model_validator(mode="after")
     def _validate_tiers(self) -> Self:
@@ -300,6 +302,8 @@ class SupplierQuote(YasminaSchema):
 
     lines: list[SupplierQuoteLine] = Field(min_length=1)
     total_net: Money2 | None = None
+    accepted_at: AwareDatetime | None = None
+    accepted_by: Annotated[str, Field(max_length=128)] | None = None
 
     source_document: Annotated[str, Field(max_length=512)] | None = None
     raw_extraction: dict[str, Any] = Field(default_factory=dict)

@@ -283,6 +283,7 @@ export type SupplierQuoteStatus =
   | 'RECEIVED'
   | 'NORMALIZED'
   | 'VALIDATED'
+  | 'ACCEPTED'
   | 'REJECTED'
   | 'EXPIRED'
 
@@ -310,6 +311,8 @@ export interface SupplierQuoteLine {
   delivery_days: number | null
   notes: string | null
   attributes: Record<string, unknown>
+  is_accepted: boolean
+  accepted_at: string | null
 }
 
 export interface SupplierQuote {
@@ -327,6 +330,8 @@ export interface SupplierQuote {
   delivery_days: number | null
   lines: SupplierQuoteLine[]
   total_net: string | null
+  accepted_at: string | null
+  accepted_by: string | null
   source_document: string | null
   raw_extraction: Record<string, unknown>
   created_at: string
@@ -344,6 +349,182 @@ export interface SupplierQuoteListResponse {
 
 export interface SupplierQuoteResponse {
   quote: SupplierQuote
+}
+
+export type PurchaseOrderStatus = 'DRAFT' | 'SENT' | 'CONFIRMED' | 'DELIVERED' | 'CANCELLED'
+
+export type SupplierInvoiceStatus =
+  | 'PENDING'
+  | 'MATCHED'
+  | 'EXCEPTION'
+  | 'APPROVED'
+  | 'REJECTED'
+
+export interface PurchaseOrderLine {
+  id: string
+  purchase_order_id: string
+  supplier_quote_line_id: string
+  line_number: number
+  description: string
+  tender_item_id: string | null
+  quantity: string
+  unit: UnitOfMeasure
+  unit_price_net: string
+  total_net: string
+  received_quantity: string
+}
+
+export interface PurchaseOrder {
+  id: string
+  po_number: string
+  supplier_id: string
+  supplier_name: string
+  supplier_contact_email: string | null
+  tender_id: string | null
+  supplier_quote_id: string | null
+  customer_offer_id: string | null
+  status: PurchaseOrderStatus
+  currency: Currency
+  order_date: string
+  expected_delivery_date: string | null
+  sent_at: string | null
+  confirmed_at: string | null
+  delivered_at: string | null
+  cancelled_at: string | null
+  total_net: string
+  notes: string | null
+  requested_by: string
+  lines: PurchaseOrderLine[]
+  created_at: string
+  updated_at: string
+}
+
+export interface PurchaseOrdersResponse {
+  purchase_orders: PurchaseOrder[]
+  count: number
+  limit: number
+  offset: number
+}
+
+export interface PurchaseOrderResponse {
+  purchase_order: PurchaseOrder
+}
+
+export interface PurchaseOrderCreateRequest {
+  supplier_quote_id: string
+  customer_offer_id?: string | null
+  expected_delivery_date?: string | null
+  notes?: string | null
+}
+
+export interface SupplierInvoiceLine {
+  id: string
+  supplier_invoice_id: string
+  purchase_order_line_id: string
+  description: string
+  quantity: string
+  unit: UnitOfMeasure
+  unit_price_net: string
+  total_net: string
+}
+
+export interface SupplierInvoice {
+  id: string
+  purchase_order_id: string
+  po_number: string
+  supplier_id: string
+  supplier_name: string
+  invoice_number: string
+  invoice_date: string
+  delivery_date: string | null
+  due_date: string | null
+  currency: Currency
+  total_net: string
+  total_vat: string
+  total_gross: string
+  status: SupplierInvoiceStatus
+  exception_codes: string[]
+  variance_net: string
+  match_details: Record<string, unknown>
+  matched_at: string | null
+  notes: string | null
+  received_by: string
+  lines: SupplierInvoiceLine[]
+  created_at: string
+  updated_at: string
+}
+
+export interface SupplierInvoicesResponse {
+  supplier_invoices: SupplierInvoice[]
+  count: number
+  limit: number
+  offset: number
+}
+
+export interface SupplierInvoiceResponse {
+  supplier_invoice: SupplierInvoice
+}
+
+export interface SupplierInvoiceLineRequest {
+  purchase_order_line_id: string
+  quantity: string
+  unit_price_net: string
+  description?: string | null
+}
+
+export interface SupplierInvoiceRequest {
+  purchase_order_id: string
+  invoice_number: string
+  invoice_date: string
+  delivery_date?: string | null
+  due_date?: string | null
+  total_net: string
+  vat_rate?: string
+  notes?: string | null
+  lines: SupplierInvoiceLineRequest[]
+}
+
+export interface MarginSummary {
+  offer_id: string
+  offer_number: string
+  customer_name: string
+  currency: Currency
+  quoted_revenue_net: string
+  quoted_cost_net: string
+  quoted_margin_net: string
+  quoted_margin_rate: string | null
+  actual_cost_net: string
+  actual_margin_net: string | null
+  actual_margin_rate: string | null
+  margin_variance_net: string | null
+  margin_variance_rate: string | null
+  invoice_count: number
+  purchase_order_count: number
+  exception_count: number
+  exception_codes: string[]
+  coverage_rate: string | null
+}
+
+export interface MarginSummariesResponse {
+  margins: MarginSummary[]
+  count: number
+  limit: number
+  offset: number
+}
+
+export interface MarginSummaryResponse {
+  margin: MarginSummary
+}
+
+export interface AcceptedSupplierQuotesResponse {
+  quotes: SupplierQuote[]
+  count: number
+}
+
+export interface ProcurementHealth {
+  purchase_orders: number
+  exceptions: number
+  today: string
 }
 
 export interface ManualSupplierQuoteLineRequest {

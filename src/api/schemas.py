@@ -19,7 +19,7 @@ from pydantic import (
 
 from src.agents.state import OfferRequest
 from src.api.security import Role
-from src.models.enums import UnitOfMeasure
+from src.models.enums import PurchaseOrderStatus, UnitOfMeasure
 from src.models.schemas import CustomerOffer, SupplierQuote
 
 __all__ = [
@@ -44,10 +44,14 @@ __all__ = [
     "PasswordResetPayload",
     "PasswordResetRequestPayload",
     "PricePayload",
+    "PurchaseOrderCreatePayload",
+    "PurchaseOrderStatusPayload",
     "RFQDispatchPayload",
     "RFQSupplier",
     "RefreshTokenRequest",
     "ReleaseStaleLocksPayload",
+    "SupplierInvoiceLinePayload",
+    "SupplierInvoicePayload",
     "SupplierQuoteCallbackPayload",
     "SupplierContactPayload",
     "SupplierPayload",
@@ -330,6 +334,53 @@ class ManualSupplierQuotePayload(BaseModel):
         numbers = [line.line_number for line in self.lines]
         if len(numbers) != len(set(numbers)):
             raise ValueError("line_number values must be unique")
+        return self
+
+
+class PurchaseOrderCreatePayload(BaseModel):
+    """Generate a PO from one accepted supplier quotation."""
+
+    supplier_quote_id: UUID
+    customer_offer_id: UUID | None = None
+    expected_delivery_date: date | None = None
+    notes: str | None = Field(default=None, max_length=4000)
+
+
+class PurchaseOrderStatusPayload(BaseModel):
+    """Move a PO through the procurement state machine."""
+
+    status: PurchaseOrderStatus
+
+
+class SupplierInvoiceLinePayload(BaseModel):
+    purchase_order_line_id: UUID
+    quantity: Decimal = Field(gt=0, max_digits=18, decimal_places=4)
+    unit_price_net: Decimal = Field(ge=0, max_digits=18, decimal_places=4)
+    description: str | None = Field(default=None, max_length=512)
+
+
+class SupplierInvoicePayload(BaseModel):
+    """Incoming supplier invoice captured against a purchase order."""
+
+    purchase_order_id: UUID
+    invoice_number: str = Field(min_length=1, max_length=128)
+    invoice_date: date
+    delivery_date: date | None = None
+    due_date: date | None = None
+    total_net: Decimal = Field(ge=0, max_digits=18, decimal_places=2)
+    vat_rate: Decimal = Field(default=Decimal("0.1900"), ge=0, le=1, max_digits=6, decimal_places=4)
+    notes: str | None = Field(default=None, max_length=4000)
+    lines: list[SupplierInvoiceLinePayload] = Field(default_factory=list, max_length=200)
+
+    @model_validator(mode="after")
+    def _validate_lines_and_dates(self) -> SupplierInvoicePayload:
+        line_ids = [line.purchase_order_line_id for line in self.lines]
+        if len(line_ids) != len(set(line_ids)):
+            raise ValueError("each purchase-order line may appear only once")
+        if self.due_date is not None and self.due_date < self.invoice_date:
+            raise ValueError("due_date must not precede invoice_date")
+        if self.delivery_date is not None and self.delivery_date < self.invoice_date:
+            raise ValueError("delivery_date must not precede invoice_date")
         return self
 
 

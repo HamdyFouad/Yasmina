@@ -52,7 +52,12 @@ waste bags across all thicknesses, volumes and colour standards.
 > worker commands durable with a concurrency guard and cancellation, clamps
 > pagination after row removal, and runs retention from the daily scheduler.
 > P9.1 adds supplier/customer master data with contacts, CRUD APIs, a Master Data
-> workspace, RFQ address-book selection and customer-prefilled e-invoices.
+> workspace, RFQ address-book selection and customer-prefilled e-invoices. P9.2
+> adds procurement execution: accepted supplier quotes generate purchase orders
+> with a guarded DRAFT→SENT→CONFIRMED→DELIVERED lifecycle, supplier invoices are
+> matched against PO quantities/prices/totals/delivery, and actual invoice margin
+> is compared with the approved customer offer in a responsive Procurement
+> workspace and exception queue.
 
 ---
 
@@ -122,6 +127,7 @@ src/
       integrations.py    # n8n RFQ dispatch + signed quote callback
       ops.py             # worker/ingestion operations, health snapshot + outbox metrics
       master_data.py     # supplier/customer CRUD and contact master data
+      procurement.py     # purchase orders, supplier-invoice matching and margins
   repositories/
     tender_repository.py # PostgreSQL tender/position persistence + owner
     offer_repository.py  # offer lines, artifacts and ERPNext names
@@ -134,6 +140,7 @@ src/
     ingestion_repository.py # outbox jobs + scraper watermarks
     quotation_sync_repository.py # durable ERPNext quotation outbox
     worker_run_repository.py # run history for scrapes and ingestion batches
+    procurement_repository.py # POs, supplier invoices, matching and margin reads
     integration_repository.py # durable idempotency-key ledger
     supplier_quote_repository.py # inbound n8n quote persistence
   models/
@@ -184,7 +191,7 @@ src/
     schematron/          # vendored KoSIT EN16931 + XRechnung CIUS rules
     zugferd_generator.py # Factur-X/ZUGFeRD 2.2 CII + PDF embedding
     xrechnung_generator.py # XRechnung 3.0 UBL XML + KoSIT validation
-alembic/                 # async migrations (… 0011 catalogue merge, 0012 tender dedup)
+alembic/                 # async migrations (… 0019 master data, 0020 procurement)
 config/
   portals.yaml           # 120-target engine/API catalogue (verified targets enabled)
 docker/                  # PostgreSQL bootstrap (pgvector, n8n database)
@@ -342,7 +349,10 @@ cancel-run, manual scrape/ingestion triggers, stale-lock release and a read-only
 portal probe with HTML position diagnostics. Admin → Master Data provides
 responsive supplier/customer directories with contacts and billing defaults; the
 RFQ dialog selects saved suppliers and the e-invoice approval selects saved
-customers. The Offers workspace with
+customers. Sales → Procurement converts accepted supplier quotes into purchase
+orders, tracks delivery and container-query exception queues, records supplier
+invoices, re-runs deterministic matching and compares actual invoice margin with
+the approved customer offer. The Offers workspace with
 status/owner filters, VAT and line-item detail, and the four-eyes approval
 dialog that can optionally issue the ZUGFeRD/XRechnung invoice in the same
 step. Security → Settings enrols or disables TOTP MFA with a QR/manual key and
@@ -390,6 +400,7 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | GET | `/supplier-quotes?tender_id={id}` | sales (own tender), viewer/approver/admin |
 | GET | `/supplier-quotes/{id}` | sales (own tender), viewer/approver/admin |
 | POST | `/supplier-quotes` | sales (own tender), admin; dashboard-entered manual quote |
+| POST | `/supplier-quotes/{id}/accept` | sales (own tender), admin; accept all quote lines for PO generation |
 | POST | `/approvals/verify` | viewer/approver/admin |
 | POST | `/approvals/approve` | approver/admin, four-eyes enforced; optional `invoice` block issues ZUGFeRD/XRechnung artifacts |
 | GET | `/approvals/{offer_number}/documents/{format}` | viewer/approver/admin |
@@ -424,6 +435,17 @@ All business routes live under `/api/v1` and require a JWT bearer token.
 | GET | `/customers` | authenticated; paginated/searchable customer billing directory |
 | POST | `/customers` | admin only; create a customer |
 | GET/PUT/DELETE | `/customers/{id}` | authenticated read; admin update/soft-deactivate |
+| GET | `/procurement/purchase-orders` | authenticated; paginated PO tracking with status/search filters |
+| POST | `/procurement/purchase-orders` | sales/admin; generate a draft PO from an accepted supplier quote |
+| GET | `/procurement/purchase-orders/{id}` | authenticated; PO header and lines |
+| POST | `/procurement/purchase-orders/{id}/status` | sales/admin; guarded DRAFT→SENT→CONFIRMED→DELIVERED/CANCELLED transition |
+| GET | `/procurement/supplier-invoices` | authenticated; paginated matching queue (`exception_only`, status, PO/search filters) |
+| POST | `/procurement/supplier-invoices` | sales/admin; record invoice and run deterministic matching |
+| GET | `/procurement/supplier-invoices/{id}` | authenticated; invoice, line matching details and exception codes |
+| POST | `/procurement/supplier-invoices/{id}/rematch` | sales/admin; re-run matching against the current PO |
+| GET | `/procurement/margins[/{offer_id}]` | authenticated; quoted vs actual supplier-invoice margin |
+| GET | `/procurement/accepted-quotes` | authenticated; accepted quotes still waiting for a PO |
+| GET | `/procurement/health` | authenticated; PO and exception counters for the workspace header |
 | GET | `/ops/portals` | admin only; configured portal targets for the read-only probe |
 | POST | `/ops/portals/{portal_id}/probe` | admin only; read-only P7.3 portal diagnostic with position counts |
 | GET | `/admin/catalog/overrides` | admin only; list pinned catalogue fields |
@@ -626,6 +648,30 @@ Invoke-RestMethod -Method Post `
   -Headers @{ Authorization = "Bearer $token"; "Idempotency-Key" = "rfq-2026-0001" } `
   -ContentType "application/json" -Body $body
 ```
+
+### Procurement execution API
+
+Accepting a supplier quote (`POST /supplier-quotes/{id}/accept`) flips the quote
+to `ACCEPTED`, stamps every line as accepted and makes it available to
+`GET /procurement/accepted-quotes`. `POST /procurement/purchase-orders` then
+snapshots the supplier, quote lines, tender and — when exactly one approved
+customer offer exists for the tender — that offer, into a draft PO. The PO number
+is stable (`PO-YYYY-XXXXXXXX`) and duplicate POs for the same quote are rejected.
+
+The PO state machine is enforced server-side: `DRAFT → SENT → CONFIRMED →
+DELIVERED`, with cancellation allowed from DRAFT/SENT/CONFIRMED. Delivery stamps
+`delivered_at` and fills each line's `received_quantity`. Supplier invoices are
+matched in the same transaction against PO line quantities (`0.0001` tolerance),
+unit prices (`0.0001`), line totals (`0.01`), header totals (`0.01`) and the PO
+expected delivery date. Deviations persist as `EXCEPTION` with stable codes
+(`QUANTITY_MISMATCH`, `PRICE_MISMATCH`, `LINE_TOTAL_MISMATCH`,
+`TOTAL_MISMATCH`, `DELIVERY_LATE`, `UNKNOWN_PO_LINE`, `DUPLICATE_PO_LINE`) and
+surface in the Procurement exception queue.
+
+`GET /procurement/margins` compares the approved offer's quoted cost/margin with
+non-rejected supplier invoices booked against its POs. Actual margin, absolute
+and rate variance, invoice coverage, and exception counts are returned as
+decimal strings; the UI shows "Awaiting invoice" until the first invoice exists.
 
 ### Catalogue override API
 
@@ -1187,8 +1233,10 @@ approval → `.x84` path (`tender-to-export.spec.ts`), the pending-TTL path
 (`rfq-pending.spec.ts`), and the admin-only Workers & Ingestion console
 (`operations.spec.ts`, including server filters, the run-detail drawer, mocked
 manual-trigger actions and Sales/Approver denial). `master-data.spec.ts` covers
-supplier/customer creation, deactivation and RFQ address-book prefill; the
-golden path selects the seeded customer to prefill the e-invoice.
+supplier/customer creation, deactivation and RFQ address-book prefill;
+`procurement.spec.ts` accepts a seeded supplier quote and converts it into a
+purchase order through the Procurement workspace. The golden path selects the
+seeded customer to prefill the e-invoice.
 `upload-errors.spec.ts` uses `invalid-tender.x83` plus a Playwright-mocked
 ClamAV rejection.
 
@@ -1640,6 +1688,7 @@ secrets in production, and verifies that Argon2id password hashing is available.
 - [x] P8.4 — operations hardening: dedicated `quarantined`/`quarantine_reason` columns and migration `0017`, HTML position counts in probes, server-side pagination/filtering for runs and queue/DLQ tables, worker-run detail drawer, manual scrape/ingestion triggers, stale-lock release, `/healthz/worker_runs` alias, worker-run retention CLI and live PostgreSQL retry/discard/release tests
 - [x] P8.5 — local reliability hardening: durable `worker_commands` lifecycle with concurrency guard and cancel-run, pagination clamping after row removal, scheduler-driven worker-run retention, migration `0018`
 - [x] P9.1 — supplier & customer master data: extended supplier contacts and customer billing schema (migration `0019`), authenticated CRUD APIs, admin Master Data directories with responsive tables/dialogs, RFQ address-book selection and customer-prefilled e-invoice approval
+- [x] P9.2 — procurement execution: accepted supplier quotes generate purchase orders with a guarded DRAFT/SENT/CONFIRMED/DELIVERED/CANCELLED lifecycle (migration `0020`), supplier-invoice matching for quantities/prices/totals/delivery, actual-vs-quoted margin tracking, container-query Procurement workspace with exception queues, live PostgreSQL lifecycle tests and a Playwright accepted-quote→PO journey
 - [x] P2 — Telegram notifier (failure/dead-letter alerts) and production ERPNext/n8n workflow templates
 
 See `docs/DETAILED_SPEC.md` for the engineering contract and

@@ -23,6 +23,8 @@ export interface Fixtures {
   tender_number: string
   quarantine_tender_number: string
   supplier_name: string
+  supplier_quote_reference: string
+  supplier_quote_id: string
   master_customer_name: string
 }
 

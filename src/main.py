@@ -28,6 +28,7 @@ from src.api.routes import (
     master_data,
     offers,
     ops,
+    procurement,
     supplier_quotes,
     tenders,
 )
@@ -128,6 +129,7 @@ def create_app(settings: Settings | None = None, *, run_startup_checks: bool = T
     application.include_router(approvals.router, prefix="/api/v1")
     application.include_router(offers.router, prefix="/api/v1")
     application.include_router(supplier_quotes.router, prefix="/api/v1")
+    application.include_router(procurement.router, prefix="/api/v1")
     application.include_router(invoices.router, prefix="/api/v1")
     application.include_router(master_data.router, prefix="/api/v1")
     application.include_router(admin_catalog.router, prefix="/api/v1")

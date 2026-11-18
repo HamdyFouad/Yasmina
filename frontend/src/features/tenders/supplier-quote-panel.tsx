@@ -1,12 +1,14 @@
 import * as React from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, ClipboardList, Plus, RadioTower, RefreshCw } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertTriangle, CheckCircle2, ClipboardList, Plus, RadioTower, RefreshCw } from 'lucide-react'
+import { toast } from 'sonner'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { StatusBadge } from '@/components/status-badge'
 import { apiErrorMessage } from '@/lib/api-error'
-import { fetchSupplierQuotes } from '@/lib/sourcing-api'
+import { acceptSupplierQuote, fetchSupplierQuotes } from '@/lib/sourcing-api'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import type { SupplierQuote, Tender } from '@/types/domain'
 
@@ -33,9 +35,21 @@ export function SupplierQuotePanel({
   onDispatchRfq: () => void
 }) {
   const captionId = React.useId()
+  const queryClient = useQueryClient()
   const quotes = useQuery({
     queryKey: ['supplier-quotes', tender.id],
     queryFn: () => fetchSupplierQuotes(tender.id, { limit: 50 }),
+  })
+  const acceptQuote = useMutation({
+    mutationFn: (quoteId: string) => acceptSupplierQuote(quoteId),
+    onSuccess: async (result) => {
+      toast.success(`Supplier quote ${result.quote.quote_reference} accepted`, {
+        description: 'Create the purchase order from the Procurement workspace.',
+      })
+      await queryClient.invalidateQueries({ queryKey: ['supplier-quotes', tender.id] })
+      await queryClient.invalidateQueries({ queryKey: ['procurement', 'accepted-quotes'] })
+      await queryClient.invalidateQueries({ queryKey: ['procurement', 'purchase-orders'] })
+    },
   })
   const rows = quotes.data?.quotes ?? []
 
@@ -58,6 +72,12 @@ export function SupplierQuotePanel({
           </div>
         ) : null}
       </div>
+
+      {acceptQuote.isError ? (
+        <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive">
+          {apiErrorMessage(acceptQuote.error)}
+        </p>
+      ) : null}
 
       {quotes.isLoading ? (
         <div className="space-y-2">
@@ -100,7 +120,7 @@ export function SupplierQuotePanel({
           tabIndex={0}
           className="stacked-table max-h-80 overflow-auto rounded-md border border-border focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         >
-          <table className="w-full min-w-[720px] border-collapse text-sm">
+          <table className="w-full min-w-[900px] border-collapse text-sm">
             <caption id={captionId} className="sr-only">
               Supplier quotes with price, validity, delivery terms, source and line coverage
             </caption>
@@ -123,6 +143,12 @@ export function SupplierQuotePanel({
                 </th>
                 <th scope="col" className="px-3 py-2 text-right text-xs font-medium uppercase">
                   Lines
+                </th>
+                <th scope="col" className="px-3 py-2 text-left text-xs font-medium uppercase">
+                  Status
+                </th>
+                <th scope="col" className="px-3 py-2 text-right text-xs font-medium uppercase">
+                  Action
                 </th>
               </tr>
             </thead>
@@ -159,6 +185,31 @@ export function SupplierQuotePanel({
                     className="whitespace-nowrap px-3 py-2 text-right align-top"
                   >
                     {quote.line_count.toLocaleString('de-DE')}
+                  </td>
+                  <td data-label="Status" className="px-3 py-2 align-top">
+                    <StatusBadge status={quote.status} />
+                  </td>
+                  <td data-label="Action" className="whitespace-nowrap px-3 py-2 text-right align-top">
+                    {canEdit &&
+                    quote.status !== 'ACCEPTED' &&
+                    quote.status !== 'REJECTED' &&
+                    quote.status !== 'EXPIRED' ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={acceptQuote.isPending}
+                        aria-label={`Accept quote for ${quote.supplier_name} ${quote.quote_reference}`}
+                        onClick={() => acceptQuote.mutate(quote.id)}
+                      >
+                        <CheckCircle2 />
+                        Accept quote
+                      </Button>
+                    ) : quote.status === 'ACCEPTED' ? (
+                      <span className="text-xs font-medium text-success">Ready for PO</span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
                   </td>
                 </tr>
               ))}

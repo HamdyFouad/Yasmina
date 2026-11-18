@@ -1395,3 +1395,44 @@ for deterministic fixture and chain-verification tests.
 - **Deactivation.** DELETE marks `is_active=false` rather than deleting history.
   Inactive suppliers/customers disappear from active RFQ/invoice selectors but
   remain visible in the admin directory and historical records.
+
+## Procurement execution assumptions (P9.2)
+
+- **Quote acceptance.** `SupplierQuoteStatus.ACCEPTED` is explicit. Accepting a
+  quote stamps `accepted_at`/`accepted_by` and marks every line `is_accepted` with
+  its own timestamp. A rejected/expired quote cannot be accepted; repeating the
+  action is idempotent. Only accepted lines generate PO lines.
+- **One PO per quote.** `purchase_orders.supplier_quote_id` is unique. The PO
+  snapshots supplier name/contact, currency, tender, accepted lines and (when
+  resolvable) the latest approved/SENT/ACCEPTED customer offer for the tender.
+  The supplier quote itself remains the historical source.
+- **PO numbering.** `PO-YYYY-XXXXXXXX` uses the order year and eight random hex
+  characters. It is not a gapless legal sequence; invoices retain the gapless
+  `INV-`/`GS-` numbering.
+- **State machine.** `DRAFT → SENT → CONFIRMED → DELIVERED`; cancellation is
+  allowed from DRAFT, SENT and CONFIRMED. DELIVERED/CANCELLED are terminal.
+  Transitions stamp `sent_at`, `confirmed_at`, `delivered_at` or `cancelled_at`;
+  DELIVERED sets each line's `received_quantity` to the ordered quantity.
+- **Supplier invoices.** An invoice belongs to one PO and snapshots
+  `po_number`/supplier. Supplier + invoice number is unique. VAT defaults to 19 %
+  and totals are computed with `Decimal`; line totals must equal the header net
+  within `0.01`.
+- **Matching tolerances.** Quantities and unit prices use `0.0001`; line/header
+  totals use `0.01`. Exception codes are `QUANTITY_MISMATCH`, `PRICE_MISMATCH`,
+  `LINE_TOTAL_MISMATCH`, `TOTAL_MISMATCH`, `DELIVERY_LATE`, `UNKNOWN_PO_LINE` and
+  `DUPLICATE_PO_LINE`. A matched invoice has no codes; otherwise status is
+  `EXCEPTION`.
+- **Margin.** Quoted cost is the sum of approved-offer line quantity × cost unit
+  price. Actual cost is the sum of non-rejected supplier invoices for POs linked
+  to that offer. Actual margin/rate and variance are unavailable until an invoice
+  exists; rejected invoices are excluded. `coverage_rate` is actual cost divided
+  by quoted cost.
+- **Roles.** All authenticated roles may read procurement data; sales/admin may
+  accept quotes, create/transition POs, record/re-match invoices. Every mutation
+  is audited (`SUPPLIER_QUOTE_ACCEPTED`, `PURCHASE_ORDER_CREATED`,
+  `PURCHASE_ORDER_STATUS_CHANGED`, `SUPPLIER_INVOICE_RECORDED`,
+  `SUPPLIER_INVOICE_MATCHED`).
+- **UI.** The Procurement workspace uses a container-query metric grid and
+  exception-card grid in addition to the shared stacked-table container query, so
+  it adapts to its pane rather than the viewport. Approvers/viewers see a
+  read-only workspace.
